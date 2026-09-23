@@ -4,7 +4,11 @@
 // 2026-07-27): sendComposer gates the send on an explicit confirm when clearConfirmDetail returns a
 // detail. Pure helpers here so the gate's logic is node-testable without the DOM.
 
-// mirrors the kernel's _is_clear_cmd (sdk_backend.py) — the same truth table, client-side
+// mirrors the kernel's _is_clear_cmd (sdk_backend.py), the same truth table, client-side. The only
+// divergence is which leading/trailing code points each side treats as whitespace: JS String.trim() and
+// Python str.strip() have whitespace sets that differ on a few non-typeable control/BOM code points (the
+// BOM/ZWNBSP U+FEFF, NEL U+0085 and the like). Pre-existing and not reachable from the composer or a
+// keyboard, so the two predicates agree on every send a user can make; deliberately NOT reconciled here.
 export function isClearCmd(text: string): boolean {
   const t = text.trim();
   return t === "/clear" || t.startsWith("/clear ");

@@ -25,7 +25,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { newPending, pendingBody, reconcilePending, dropPending, scanFrom, queuedCopyToHide, landedIn, provisionalIn, bareGroupLabel, sentAtLabel, type TailEvent, type PendingSend } from "./send-pending";
+import { newPending, pendingBody, reconcilePending, clearBoundarySeen, dropPending, scanFrom, queuedCopyToHide, landedIn, provisionalIn, bareGroupLabel, sentAtLabel, type TailEvent, type PendingSend } from "./send-pending";
 
 const read = (f: string) => fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", f), "utf8");
 const RENDER = read("render.ts");
@@ -537,7 +537,7 @@ test("a send pressed against no frame (a placeholder tab): the first frame's cop
   assert.deepEqual(prompt[0].at?.seen, ["u-same-second"]);
   assert.equal(prompt[0].at?.after, "u-same-second");
   // render.ts marks the entry when the press finds no resident session, and stamps it nowhere else
-  assert.match(RENDER, /const p = newPending\(text, imgPaths, Date\.now\(\), qid, paths\);\s*\n\s*arr\.push\(p\);/);
+  assert.match(RENDER, /const p = newPending\(text, imgPaths, Date\.now\(\), qid, paths, clear\);\s*\n\s*arr\.push\(p\);/);
   assert.match(RENDER, /if \(!s\) \{ p\.late = true; return; \}/);
   // the clock the bound compares against: the kernel stamps the echo atom at its receipt of the send, in
   // whole seconds (sdk_backend.py send). That the chat builder ships every event's stamp as iso(t) is
@@ -1005,4 +1005,59 @@ test("the bare header counts the handed ones apart — 'with the session' — an
   // the dress: the taken bubble closes its dashes into a quiet solid edge; its label part wears the accent
   assert.match(CSS, /\.queued-bubble\.handed \{ border-style: solid;/);
   assert.match(CSS, /\.queued-count \.handed \{ color: var\(--accent\); \}/);
+});
+
+test("a /clear entry ends at its CLEAR BOUNDARY, one boundary per entry in press order", () => {
+  // A /clear resets the transcript: it lands NO record and, in a same-second batch, is never overtaken,
+  // so clearBoundary (the fresh episode it forks, passed by the ingest site) is its only exit besides a ✕.
+  // ONE boundary ends ONE /clear, the OLDEST still pending; a queued /clear that has not run keeps its bubble.
+  const cl = (n: number): PendingSend => newPending("/clear", undefined, T0 + n, "echo:clr" + n, undefined, true);
+  const msg = (): PendingSend => newPending("do the thing", undefined, T0 + 5, "echo:m");
+  const fresh: TailEvent[] = [{ kind: "clear", uuid: "clear:fresh", ts: new Date(T0).toISOString() }];
+  // no boundary this push → the /clear bubble rides on (cancellable)
+  let r = reconcilePending(fresh, [cl(1)], false);
+  assert.equal(r.cleared.length, 0);
+  assert.equal(r.keep.length, 1, "no boundary → the /clear bubble stays");
+  // a boundary this push → the /clear entry is retired, neither kept nor drawn
+  r = reconcilePending(fresh, [cl(1)], true);
+  assert.deepEqual(r.cleared.map((p) => p.qid), ["echo:clr1"]);
+  assert.equal(r.keep.length, 0);
+  assert.equal(r.inject.length, 0, "a retired /clear is not drawn");
+  // /clear, message, /clear on ONE boundary → only the OLDEST /clear ends; the second rides to its own boundary
+  r = reconcilePending(fresh, [cl(1), msg(), cl(2)], true);
+  assert.deepEqual(r.cleared.map((p) => p.qid), ["echo:clr1"], "one boundary ends one /clear, the oldest in press order");
+  assert.ok(r.keep.some((p) => p.qid === "echo:clr2"), "the second /clear rides on to its own boundary");
+  // a message entry (not clear-flagged) is NEVER boundary-retired, boundary or not
+  r = reconcilePending(fresh, [msg()], true);
+  assert.equal(r.cleared.length, 0, "only a clear-flagged entry ends at a boundary");
+  assert.equal(r.keep.length, 1, "the message rides on to its own landing");
+});
+
+test("a SOLO /clear of a small session (head-only fresh episode, constant system:head, NO clear card) retires the /clear entry", () => {
+  // The MEDIUM the review caught: the fresh episode of a small-session solo /clear carries the CONSTANT
+  // system:head head card and NO clear card, so a bare all-uuid overlap fork test sees system:head shared and
+  // fires nothing, and the /clear bubble hangs until the producer's episode tick later mints a card. The
+  // transcript-TURN fork test catches it: the page held real turns, the fresh episode shares none.
+  const prev: TailEvent[] = [
+    { kind: "system", uuid: "system:head" },
+    { kind: "user", uuid: "u1", md: "tidy the imports" },
+    { kind: "assistant", uuid: "a1", md: "done" },
+  ];
+  const freshHeadOnly: TailEvent[] = [{ kind: "system", uuid: "system:head" }];   // constant head card, no clear card, no turns
+  assert.equal(clearBoundarySeen(prev, freshHeadOnly), true,
+    "a head-only fresh episode is a fork even though system:head is shared and there is no clear card");
+  assert.equal(clearBoundarySeen(prev, []), true, "an empty fresh episode after a real conversation is a fork too");
+  // an APPEND (a new real turn on the same transcript) shares the held turns → NOT a boundary
+  assert.equal(clearBoundarySeen(prev, [...prev, { kind: "assistant", uuid: "a2", md: "more" }]), false,
+    "an append shares the held turns → not a boundary (the /clear bubble is not retired on an append)");
+  // a window slide (the tail re-windows past WIRE_TAIL, first uuid changes, same transcript) still shares a tail turn
+  assert.equal(clearBoundarySeen(prev, [{ kind: "system", uuid: "system:head" }, { kind: "assistant", uuid: "a1", md: "done" }, { kind: "assistant", uuid: "a3", md: "later" }]), false,
+    "a window slide keeps some held turn → not a boundary");
+  // a >=2-episode /clear brings a NEW clear card → boundary the ordinary way
+  assert.equal(clearBoundarySeen(prev, [{ kind: "clear", uuid: "clear:fresh" }, { kind: "system", uuid: "system:head" }]), true, "a new clear card is a boundary");
+  // and the entry actually RETIRES when the detected boundary is passed to reconcilePending
+  const clearEntry = newPending("/clear", undefined, 1_700_000_000_050, "echo:solo", undefined, true);
+  const r = reconcilePending(freshHeadOnly, [clearEntry], clearBoundarySeen(prev, freshHeadOnly));
+  assert.deepEqual(r.cleared.map((p) => p.qid), ["echo:solo"], "the solo /clear entry retires at the head-only fresh episode");
+  assert.equal(r.keep.length, 0);
 });

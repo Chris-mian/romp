@@ -17,6 +17,7 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { StagedStack, quoteReplyBody, stagedRunBody, stagedPosts } from "./staged-messages";
 import { mintQid } from "./send-pending";   // the copy's id routeUserMessage mints per post, in the kernel's echo form
+import { isClearCmd } from "./clear-confirm";   // the REAL /clear predicate, handed to the lifted routeUserMessage (the executed pin, not the inline mirror)
 
 const requireCjs = createRequire(__filename);
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
@@ -68,8 +69,10 @@ type Hooks = {
   StagedStack: typeof StagedStack; quoteReplyBody: typeof quoteReplyBody; stagedPosts: typeof stagedPosts; mintQid: typeof mintQid;
   posted: Posted[];                                                   // every vscodeApi.postMessage frame, in order, without the copy's id
   qids: string[];                                                     // the id each kernel-bound frame carried (one per post), kept apart so the frames compare by body
-  optimistic: { sid: string; text: string; imgPaths?: string[] }[];   // every registerOptimistic call
+  optimistic: { sid: string; text: string; imgPaths?: string[]; clear?: boolean }[];   // every registerOptimistic call (clear: a /clear that ends at its boundary)
   persists: number; down: Set<string>; provisional: Set<string>; toasts: string[];
+  backend?: string;                                                   // the lifted routeUserMessage reads liveSession(sid)?.status?.backend to gate the /clear flag off for Codex
+  isClearCmd: typeof isClearCmd;                                      // the REAL predicate from clear-confirm.ts, so the lift's /clear routing is EXECUTED against it, not an inline mirror
 };
 type Api = {
   routeUserMessage: (sid: string, text: string, cites: unknown[] | undefined, imgPaths?: string[]) => void;
@@ -92,8 +95,10 @@ function lift(): (hooks: Hooks) => Api {
     const stagedMsgs = new H.StagedStack();
     const stagedOpen = new Set(), stagedCollapsed = new Set(), stagedScroll = new Map();
     const quoteReplyBody = H.quoteReplyBody, stagedPosts = H.stagedPosts, mintQid = H.mintQid;
+    const isClearCmd = H.isClearCmd;   // the REAL clear-confirm.ts predicate (the lift cannot import; the test file hands it in), so the /clear routing is executed against it
+    const liveSession = (id) => ({ status: { backend: H.backend || "sdk" } });   // routeUserMessage reads liveSession(sid)?.status?.backend to gate the /clear boundary flag off for Codex
     const vscodeApi = { postMessage: (m) => { const { qid, ...frame } = m; if (qid !== undefined) H.qids.push(qid); H.posted.push(qid !== undefined ? frame : m); } };
-    const registerOptimistic = (sid, text, imgPaths) => { H.optimistic.push({ sid, text, imgPaths }); };
+    const registerOptimistic = (sid, text, imgPaths, qid, paths, clear) => { H.optimistic.push(clear ? { sid, text, imgPaths, clear } : { sid, text, imgPaths }); };
     const persistDrafts = () => { H.persists++; };
     const hostIsDown = (id) => H.down.has(id); const isProvisionalId = (id) => H.provisional.has(id);
     const warnToast = (msg) => { H.toasts.push(msg); };
@@ -116,7 +121,7 @@ function world(): { H: Hooks; api: Api; strip: FakeEl; document: FakeDocument } 
   const strip = new FakeEl("div");
   const document: FakeDocument = { activeElement: null, getElementById: (id) => id === "composer-staged" ? strip : null };
   FakeEl.doc = document;
-  const H: Hooks = { FakeEl, document, StagedStack, quoteReplyBody, stagedPosts, mintQid, posted: [], qids: [], optimistic: [], persists: 0, down: new Set(), provisional: new Set(), toasts: [] };
+  const H: Hooks = { FakeEl, document, StagedStack, quoteReplyBody, stagedPosts, mintQid, isClearCmd, posted: [], qids: [], optimistic: [], persists: 0, down: new Set(), provisional: new Set(), toasts: [] };
   return { H, api: lift()(H), strip, document };
 }
 const listOf = (strip: FakeEl): FakeEl => { const l = strip.querySelector(".staged-list"); assert.ok(l, "the strip holds a .staged-list"); return l; };
@@ -302,6 +307,34 @@ test("flushStaged routes the posts stagedPosts composes, one routeUserMessage ca
   api.stagedMsgs.push(A, { text: "/compact", cites: [Q1] });
   api.flushStaged(A);
   assert.deepEqual(H.posted.filter(send), [{ type: "sendMessage", id: A, text: quoteReplyBody([Q1], "/compact") }]);
+});
+
+test("a batched /clear gets its optimistic bubble flagged to end at the boundary; the message gets a plain one", () => {
+  // The round-one fix suppressed the /clear bubble entirely, which cost the socket-down trace/cancel and the
+  // Codex restore. Now BOTH are delivered AND both get an optimistic bubble; a non-Codex /clear's bubble is
+  // flagged `clear` so reconcileOptimistic ends it at the clear boundary (the fresh episode), not on a landing
+  // it never gets. Executed against the REAL isClearCmd (imported), so a routing change that breaks the predicate reds here.
+  const { H, api } = world();   // H.backend defaults to "sdk" (non-Codex)
+  api.stagedMsgs.push(A, { text: "/clear", cites: [] });
+  api.flushStaged(A, { text: "rebuild the search index", cites: [] });
+  assert.deepEqual(H.posted.filter(send), [
+    { type: "sendMessage", id: A, text: "/clear" },                    // the /clear is delivered
+    { type: "sendMessage", id: A, text: "rebuild the search index" },  // and so is the message
+  ], "both reach the kernel");
+  assert.deepEqual(H.optimistic, [
+    { sid: A, text: "/clear", imgPaths: undefined, clear: true },       // the /clear's bubble ends at the clear boundary
+    { sid: A, text: "rebuild the search index", imgPaths: undefined },  // the message's bubble ends on its landing
+  ], "both get an optimistic bubble; only the /clear is flagged to end at the boundary");
+});
+
+test("a batched /clear on a Codex session is NOT flagged (it is refused, so its bubble ends the ordinary way)", () => {
+  // gate off for Codex only (as /new at render.ts ~20393): a Codex /clear reaches no boundary, so it is not
+  // flagged and its bubble ends on the refusal/warn-handler, which needs the entry to exist to restore the box.
+  const { H, api } = world();
+  H.backend = "codex";
+  api.flushStaged(A, { text: "/clear", cites: [] });
+  assert.deepEqual(H.optimistic, [{ sid: A, text: "/clear", imgPaths: undefined }],
+    "the Codex /clear still gets a bubble (for the refusal restore), but NOT the boundary-end flag");
 });
 
 test("Send now releases the stack alone, and a session that is not reachable keeps it, with a word to the user", () => {

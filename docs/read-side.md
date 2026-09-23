@@ -267,6 +267,12 @@ pending bubble, painted at the press, has no lifetime either: it ends on the sam
 events, read from the events after the send (a landing of the text, the kernel's
 never-delivered verdict, or the user's ✕), and a record the CLI wrote from several
 back-to-back sends retires one bubble per text block (`blocks` on the user event).
+A transcript-resetting `/clear` is the one exception: it writes no record of its own,
+so it never lands and, in a same-second batch with a message, is never overtaken
+either; its bubble ends on the CLEAR BOUNDARY instead, the fresh episode the `/clear`
+forks (one boundary ends one `/clear`, in press order), and the kernel retires its own
+`/clear` echo at that same boundary by the taken copy's id. A Codex `/clear` is
+refused, reaches no boundary, and ends the ordinary way on that refusal.
 While the socket is down the bubble is labelled "not confirmed", until a kernel
 copy of the send clears the label. A send that landed mid-turn (`absorbed` on the
 user chat event) is placed where the model READ it: at its landing time, the

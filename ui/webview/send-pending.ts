@@ -12,7 +12,11 @@ import { markerLabel } from "./time-marker";
 //     pending send with the same text has already claimed,
 //   - the kernel's NEVER-DELIVERED verdict on it, placed after the same anchor (its dropped-echo bubble
 //     takes over, with the copy-to-composer and dismiss actions),
-//   - the user's ✕ (render.ts's qx delegate drops the entry).
+//   - the user's ✕ (render.ts's qx delegate drops the entry),
+//   - for a transcript-resetting /clear (which lands NO record and, in a same-second batch, is never
+//     overtaken either), the CLEAR BOUNDARY: the fresh episode the /clear forks, carried in as
+//     `clearBoundary`, ends one /clear entry per boundary in press order (a Codex /clear is refused, so it
+//     is not flagged and ends the ordinary way, on the refusal).
 // A kernel PROVISIONAL (its echo atom, its queued bubble) only COVERS one of ours for the push it is
 // visible on — the durable record is the kernel's (a persisted echo, the dropped marking, the fed-text
 // guard in prune_live), but if it blinks, ours steps straight back in; a copy seen after the press also
@@ -92,6 +96,11 @@ export type PendingSend = {
                        //   a queued copy after the press that no earlier same-text send claimed): the send
                        //   reached it, so a connection drop before or after cannot have lost it — `lost` is
                        //   cleared and never set again
+  clear?: boolean;     // a transcript-resetting /clear (on a non-Codex backend): it writes NO record of its own, so it
+                       //   never LANDS and is never OVERTAKEN in a same-second batch. Its bubble ends on the CLEAR
+                       //   BOUNDARY instead (the fresh episode the /clear forks in, carried to reconcilePending as
+                       //   clearBoundary), one boundary per /clear entry in press order. A Codex /clear is refused (no
+                       //   boundary), so it is NOT flagged here and its bubble ends the ordinary way, on the refusal
 };
 
 /** The slice of a chat event the decisions read (render.ts's ChatEvent is a superset). */
@@ -149,8 +158,8 @@ export function mintQid(): string {
 
 /** A fresh entry, wearing the id the press minted: the caller's (render.ts mints it first and posts it with the send,
  *  so the kernel's copy and this entry wear one id), or a new one. */
-export function newPending(text: string, imgPaths?: string[], now: number = Date.now(), qid: string = mintQid(), paths?: string[]): PendingSend {
-  return { text, body: pendingBody(text, imgPaths), ts: now, imgPaths, qid, ...(paths && paths.length ? { paths } : {}) };
+export function newPending(text: string, imgPaths?: string[], now: number = Date.now(), qid: string = mintQid(), paths?: string[], clear?: boolean): PendingSend {
+  return { text, body: pendingBody(text, imgPaths), ts: now, imgPaths, qid, ...(paths && paths.length ? { paths } : {}), ...(clear ? { clear: true } : {}) };
 }
 
 /** EXACT text match, trimmed: the composer trims what it sends and the kernel strips what it lands
@@ -353,6 +362,7 @@ export type Reconciled = {
                                               //   the whole wait, and the ✎ answered "too late")
   landed: { p: PendingSend; idx: number }[];  // retired by a landing; idx = the landed event's index
   lost: PendingSend[];                        // retired by the kernel's never-delivered verdict
+  cleared: PendingSend[];                     // a /clear entry retired at its CLEAR BOUNDARY (the fresh episode it forked): it lands no record, so this is its only exit besides a ✕
 };
 
 /** One push's decision for a session's pending sends, read off the KERNEL's events (the caller has
@@ -399,7 +409,30 @@ function locateId(events: TailEvent[], from: number, qid: string): { where: "lan
   return { where: provisional ? "provisional" : "none" };
 }
 
-export function reconcilePending(events: TailEvent[], list: PendingSend[]): Reconciled {
+/** A transcript TURN (user or assistant), by a real record id, never a head/overlay card (system:head, a
+ *  clear/clearing/queued card) and never our optimistic or the kernel's echo copy. The fork test below
+ *  compares these alone, so the constant system:head uuid every small session carries at floor 0 can never
+ *  mask a fork. */
+const isTranscriptTurn = (e: TailEvent): boolean =>
+  (e.kind === "user" || e.kind === "assistant") && !!e.uuid && !isOptimisticUuid(e.uuid) && !isKernelEchoUuid(e.uuid);
+
+/** Did THIS push carry a /clear's CLEAR BOUNDARY (the fresh episode a /clear forks) relative to what the
+ *  page held (`prevEvents`)? Two shapes: a NEW clear card (kind "clear", a uuid not already resident: the
+ *  >=2-episode case), OR a FORK: the page held a real conversation (some transcript turns) and the fresh
+ *  episode shares NONE of them. The fork branch is what catches a SOLO /clear of a small session, whose
+ *  fresh episode the kernel mints empty or head-only (no clear card, and the constant system:head shared),
+ *  so a bare all-uuid overlap test (sharesAnyUuid) never sees it. render.ts gates this on an APPLIED frame. */
+export function clearBoundarySeen(prevEvents: TailEvent[] | undefined, msgEvents: TailEvent[] | undefined): boolean {
+  const prev = prevEvents || [], msg = msgEvents || [];
+  const prevClear = new Set(prev.filter((e) => e.kind === "clear").map((e) => e.uuid));
+  if (msg.some((e) => e.kind === "clear" && !prevClear.has(e.uuid))) return true;   // a NEW clear card
+  const prevTurns = prev.filter(isTranscriptTurn);
+  if (!prevTurns.length) return false;             // no conversation was held → nothing forked (a first build, an empty session)
+  const msgTurns = new Set(msg.filter(isTranscriptTurn).map((e) => e.uuid));
+  return !prevTurns.some((e) => msgTurns.has(e.uuid));   // the fresh episode shares none of the held turns → a fork
+}
+
+export function reconcilePending(events: TailEvent[], list: PendingSend[], clearBoundary: boolean = false): Reconciled {
   // First reconcile after the send: whatever the events ALREADY hold for this text is background — an
   // older identical message, an old echo, an undismissed never-delivered bubble — not this send. Only
   // what appears after the anchor, beyond that set, is this send's (the user 2026-08-09, who watched
@@ -410,7 +443,13 @@ export function reconcilePending(events: TailEvent[], list: PendingSend[]): Reco
   const lateOwn = new Map<string, number>();
   for (const p of list) if (!p.at && p.late) lateOwn.set(p.text, (lateOwn.get(p.text) || 0) + 1);
   for (const p of list) if (!p.at) p.at = stampBase(events, p, p.late ? lateOwn.get(p.text) || 1 : 0);
-  const r: Reconciled = { keep: [], inject: [], unqueue: [], handed: [], landed: [], lost: [], echoHide: [] };
+  const r: Reconciled = { keep: [], inject: [], unqueue: [], handed: [], landed: [], lost: [], echoHide: [], cleared: [] };
+  // A /clear resets the transcript, so it lands no record and is never overtaken in a batch, so its bubble
+  // ends on the CLEAR BOUNDARY (the fresh episode it forked, `clearBoundary` from the ingest site), never
+  // by text. ONE boundary retires ONE /clear entry, the OLDEST still pending (press order): /clear,message,
+  // /clear forks twice and each fork ends its own /clear, not both. A queued /clear that has not run reaches
+  // no boundary and rides on as a cancellable bubble.
+  const clearTarget = clearBoundary ? list.find((p) => p.clear) : undefined;
   const claimed = new Map<string, number>();           // "index\0text" → copies of that text in that landing taken by earlier entries THIS push
   const owned = new Set<string>();                     // the identities the pending sends were pressed with: an echo, a queued copy or a landing wearing one is that send's, never a text match
   for (const p of list) if (p.qid) owned.add(p.qid);
@@ -428,6 +467,7 @@ export function reconcilePending(events: TailEvent[], list: PendingSend[]): Reco
   };
   const takenCopies = new Map<string, Set<number>>();  // text → queued-copy positions taken by an earlier entry THIS push
   for (const p of list) {
+    if (p === clearTarget) { r.cleared.push(p); continue; }   // its /clear boundary arrived: retired, not kept or injected
     const at = p.at!;
     const from = scanFrom(events, at);
     let landedIdx = -1, lostIdx = -1, echoIdx = -1, idCopy = -1;
