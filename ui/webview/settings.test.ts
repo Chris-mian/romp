@@ -8,7 +8,7 @@ const store: Record<string, string> = {};
   setItem: (k: string, v: string) => { store[k] = v; },
   removeItem: (k: string) => { delete store[k]; },
 };
-import { loadSettings, saveSettings, DEFAULT_SETTINGS, paneSet, OPTIONAL_PANES } from "./settings";
+import { loadSettings, saveSettings, installSettingsSync, DEFAULT_SETTINGS, paneSet, OPTIONAL_PANES } from "./settings";
 
 test("loadSettings returns defaults when nothing is stored", () => {
   delete store["romp:settings"];
@@ -63,10 +63,12 @@ test("stripGroupRows defaults ON: every tag group on its own row; an explicit fa
   delete store["romp:settings"];
 });
 
-// The state badge became the DEFAULT 2026-09-23 (the user 2026-09-21's follow-up). The EXISTING key is kept, read
-// `!== false`: no writer ever merged the old default into stored profiles (the gear's load() defaults exclude the key,
-// no webview saveSettings caller, broadcastSettings/installSettingsSync write the stored object as-is), so a stored
-// false is always a chosen off, and a fresh key would only discard it.
+// The state badge became the DEFAULT 2026-09-23 (the user 2026-09-21's follow-up). The MECHANISM of the flip is the
+// default itself (DEFAULT_SETTINGS.tabStateBadge = true, supplied by the spread when the key is absent); the read
+// `!== false` is only the GUARD around it, keeping a chosen false off and coercing a non-boolean stored value to a real
+// boolean. The EXISTING key is kept, not a fresh one: no writer ever merged the old default into stored profiles (the
+// gear's load() defaults exclude the key, no webview saveSettings caller, broadcastSettings/installSettingsSync write
+// the stored object as-is), so a stored false is always a chosen off, and a fresh key would only discard it.
 test("tabStateBadge defaults ON (the badge is the default): absent reads on, a chosen false stays off through a save and a settings-sync write, a literal true stays on", () => {
   assert.equal(DEFAULT_SETTINGS.tabStateBadge, true);
   delete store["romp:settings"];
@@ -75,14 +77,35 @@ test("tabStateBadge defaults ON (the badge is the default): absent reads on, a c
   assert.equal(loadSettings().tabStateBadge, false, "a literal false is a CHOSEN off and stays off");
   store["romp:settings"] = JSON.stringify({ tabStateBadge: true });
   assert.equal(loadSettings().tabStateBadge, true, "a literal true stays on");
+  // the read's DISTINCT effect (its only one the default spread does not already cover): a NON-boolean stored value,
+  // from a corrupt or foreign write, coerces to a real boolean ON, never leaks as the raw value. Delete the read line
+  // and this reads back 0/""/null (a falsy badge that no code path intends); the default spread cannot catch it, since
+  // the key is present. This is the guard, distinct from the default.
+  for (const bad of [0, null, "", "yes", 1]) {
+    store["romp:settings"] = JSON.stringify({ tabStateBadge: bad });
+    assert.equal(loadSettings().tabStateBadge, true, "a non-boolean stored tabStateBadge (" + JSON.stringify(bad) + ") reads ON as a real boolean");
+  }
   // a chosen off survives a whole-object save (saveSettings merges every default, yet keeps the chosen false, not the new on)
   delete store["romp:settings"];
   saveSettings({ tabStateBadge: false });
   assert.equal(loadSettings().tabStateBadge, false, "the chosen off survives a save");
   assert.equal(JSON.parse(store["romp:settings"]).tabStateBadge, false, "…stored as the literal false, never flipped to the new default");
-  // a settings-sync write (installSettingsSync writes the peer pane's object verbatim) carrying the chosen off keeps it
-  store["romp:settings"] = JSON.stringify({ tabStateBadge: false, compact: true, colormap: "aurora" });
-  assert.equal(loadSettings().tabStateBadge, false, "the chosen off survives a settings-sync write");
+  // a settings-sync write, driven through installSettingsSync's OWN message handler (not a store poke): the handler
+  // applies the peer pane's object verbatim, so a chosen off carried in it stays off here
+  delete store["romp:settings"];
+  const handlers: Record<string, (e: any) => void> = {};
+  const prevWindow = (globalThis as any).window, prevEvent = (globalThis as any).Event;
+  (globalThis as any).window = { addEventListener: (t: string, fn: (e: any) => void) => { handlers[t] = fn; }, dispatchEvent: () => {} };
+  (globalThis as any).Event = class { type: string; constructor(t: string) { this.type = t; } };
+  try {
+    installSettingsSync();
+    handlers.message({ data: { type: "settingsSync", settings: { tabStateBadge: false, compact: true, colormap: "aurora" } } });
+    assert.equal(JSON.parse(store["romp:settings"]).tabStateBadge, false, "the sync handler wrote the peer object verbatim");
+    assert.equal(loadSettings().tabStateBadge, false, "the chosen off survives a settings-sync write applied by installSettingsSync");
+  } finally {
+    if (prevWindow === undefined) delete (globalThis as any).window; else (globalThis as any).window = prevWindow;
+    if (prevEvent === undefined) delete (globalThis as any).Event; else (globalThis as any).Event = prevEvent;
+  }
   delete store["romp:settings"];
 });
 

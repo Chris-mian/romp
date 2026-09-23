@@ -558,7 +558,7 @@ test("badge mode executed: the real applyTabBadgeMode re-inks an AFTER-side stat
 
 test("badge OFF, executed: a cold tab's needsYouCount change repaints it, so its title (the count in both modes) never goes stale (item 1)", () => {
   const { H, api, sessions, tabMeta, settings } = world();
-  settings.tabStateBadge = false;                    // ring mode, the default
+  settings.tabStateBadge = false;                    // ring mode (a chosen-off browser; the badge is the default since 2026-09-23)
   tabMeta.set("sk", { name: "dev", color: { bg: "#334455", fg: "#ffffff" } });
   api.skeletonTabs.ids.add("sk");                    // a cold tab: listed, not a full session, its kernel status frame held
   api.skeletonTabs.status.set("sk", { state: "working", needsYou: true, needsYouCount: 3 });
