@@ -1974,9 +1974,9 @@ class ActsUnderAFailedWrite(_World):
             with mock.patch.object(os, "stat", flapping_stat), mock.patch.object(Path, "read_text", flapping_read):
                 f = km.build_feed(NOW, self.live)
             self.assertEqual((f["dismissedCount"], f["canUndoClear"], len(bellrows())), (2, True, 4), "a stat-level fault: the pane holds the last landed set and the bell files its row")
-            served0 = km._CLEARED_STATS["served"]
+            served0, derived0 = km._CLEARED_STATS["served"], km._CLEARED_STATS["derived"]
             self.assertEqual(set(km._cleared_ids()), {A + ":g1", nid}, "the lift, seen through a memo hit alone: the served clean set")
-            self.assertEqual(km._CLEARED_STATS["served"] - served0, 1, "premise: the lift WAS a memo hit (the served count moved by one), not a landed read of a file whose stat moved between the flap and the lift, which would end the episode on the landed road and leave this leg green for the wrong reason (the second contributor's post-merge review of PR 2041)")
+            self.assertEqual((km._CLEARED_STATS["served"] - served0 >= 1, km._CLEARED_STATS["derived"] - derived0), (True, 0), "premise: the lift WAS a memo hit (served moved, derived did not), not a landed read of a file whose stat moved between the flap and the lift, which would end the episode on the landed road and leave this leg green for the wrong reason (the second contributor's post-merge reviews of PRs 2041 and 2056: the cumulative served counter alone stayed green under a slot reset in module order)")
             self.assertEqual(km._cleared_read_fault[0], "", "premise: the served clean set ended the reader's episode (PR 2025)")
             with mock.patch.object(os, "stat", flapping_stat), mock.patch.object(Path, "read_text", flapping_read):
                 km.build_feed(NOW, self.live)                                   # the SAME fault again: the bell's table compares the row's text under the path, so only an ended episode files it
@@ -2061,9 +2061,136 @@ class ActsUnderAFailedWrite(_World):
                 self.assertEqual(set(got), {A + ":g1"}, "the bytes this read parsed were the good ones")
                 self.assertEqual((len(rows()) - n0, len(bell())), (1, 1), "premise: the interposed build filed the fault once")
                 self.assertNotEqual(km._cleared_read_fault[0], "", "the stale clean read ended no episode: the reader's flag still holds the fault")
+                derived0 = km._CLEARED_STATS["derived"]
                 with contextlib.redirect_stderr(io.StringIO()):
                     f = km.build_feed(NOW, self.live)
-                self.assertEqual((len(rows()) - n0, len(bell()), f["dismissedCount"]), (1, 1, 1), "one unbroken fault: one judge row and one bell row after the next build (before: the stale read ended both episodes and the next build filed a second of each), and the pane holds the set the racing read parsed, the last landed one (the round-one verifier of PR 2056: a first-ever read that raced a fault left the display on the cold arm, the cleared cards back at a count of 0)")
+                self.assertEqual((len(rows()) - n0, len(bell()), f["dismissedCount"]), (1, 2, 1), "one unbroken fault: one judge row after the next build (before: the stale read ended both episodes and the next build filed a second), the pane holding the set the racing read parsed, the last landed one (the round-one verifier of PR 2056: a first-ever read that raced a fault left the display on the cold arm, the cleared cards back at 0), and TWO bell rows: the interposed build's cold row, then the warm row once the landed set is served, since the cold row's two clauses (nothing reads as cleared, no earlier read) are both false by then (the second contributor's post-merge review of PR 2056)")
+                self.assertEqual(km._CLEARED_STATS["derived"] - derived0, 0, "the moved read took no slot: the next build is served from the slot the interposed build memoized (a moved read taking the slot under its stale key would make the next build derive again)")
+        log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
+
+    def test_a_moved_parse_is_kept_as_the_landed_set_only_when_no_read_landed_since_it_began(self):
+        """The second contributor's post-merge review of PR 2056: the moved branch's landed write was unconditional, so when a clear appended
+        during the nudge walk's parse was derived by a display build BEFORE the walk's post-parse stat, the walk's OLDER parse overwrote the
+        build's NEWER landed set, and after the next fault the pane showed the older set (a cleared card back, Undo lit for the wrong stack).
+        The write happens only when no read landed since this one began (every landed write mints a new tuple, so identity says it). Both
+        interleavings: the older parse stands down (count 2 after the fault; before: 1), and the newer parse racing a fault is kept (count 2;
+        a presence-only condition, write only when none stands, would discard it: 1)."""
+        log = jd.STATE / "cleared.jsonl"
+        one = json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n"
+        two = one + json.dumps({"id": B + ":g1", "t": 2, "op": "clear"}) + "\n"
+        bad = b"\xff\xfe\x00 not text\n"
+        reset = lambda: (km._CLEARED_MEMO.__setitem__("slot", None), km._CLEARED_MEMO.__setitem__("landed", None), km._cleared_read_fault.__setitem__(0, ""), km._state_fault_seen.clear(), km._SYNC_NOTICES.clear())
+        real_read, once = Path.read_text, [True]
+        # A: the walk parses ONE clear; under its parse a second clear is appended and a build derives it; the walk's post-parse stat differs
+        log.write_text(one); reset()
+
+        def racing_read(q, *a, **kw):
+            data = real_read(q, *a, **kw)
+            if q == log and once[0]:
+                once[0] = False
+                log.write_text(two)                                             # the clear appended under the parse
+                km.build_feed(NOW, self.live)                                   # and a build derives it before the walk's post-parse stat
+            return data
+        with mock.patch.object(Path, "read_text", racing_read):
+            got = km._cleared_ids()
+        self.assertEqual(set(got), {A + ":g1"}, "premise: the walk parsed the older bytes")
+        self.assertEqual(set(km._CLEARED_MEMO["landed"][1]), {A + ":g1", B + ":g1"}, "the landed set is the build's newer one (before: the walk's older parse overwrote it)")
+        with contextlib.redirect_stderr(io.StringIO()):
+            log.write_bytes(bad); km._CLEARED_MEMO["slot"] = None
+            f = km.build_feed(NOW, self.live)
+        self.assertEqual((f["dismissedCount"], f["canUndoClear"]), (2, True), "after the fault the pane shows the newer set (before: 1, a cleared card back and Undo lit for the wrong stack)")
+        # B, the mirror: a landed set stands from an earlier build; a clear is appended and the walk parses BOTH; under its parse the file goes bad
+        # and a build files the fault (no landed write): the walk's newer parse is the last landed set
+        log.write_text(one); reset()
+        km.build_feed(NOW, self.live)                                           # the standing landed set: one clear
+        log.write_text(two); once[0] = True
+
+        def racing_read2(q, *a, **kw):
+            data = real_read(q, *a, **kw)
+            if q == log and once[0]:
+                once[0] = False
+                log.write_bytes(bad)
+                with contextlib.redirect_stderr(io.StringIO()):
+                    km.build_feed(NOW, self.live)                               # files the fault; the landed set stays the older one
+            return data
+        with mock.patch.object(Path, "read_text", racing_read2):
+            got = km._cleared_ids()
+        self.assertEqual(set(got), {A + ":g1", B + ":g1"}, "premise: the walk parsed the newer bytes")
+        with contextlib.redirect_stderr(io.StringIO()):
+            f = km.build_feed(NOW, self.live)
+        self.assertEqual(f["dismissedCount"], 2, "the newer parse racing the fault is kept as the landed set (a presence-only condition would have discarded it: 1)")
+        log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
+
+    def test_a_read_whose_pre_read_stat_failed_proves_nothing_and_ends_no_episode(self):
+        """The second contributor's post-merge review of PR 2056: the post-parse guard was skipped when the pre-read stat failed (a log created
+        between the walk's stat and its read; a permission flap on the directory lifting before the read), so a racing read reset the flag,
+        emptied the bell's table and recorded no landed set, and the next build filed a second judge row and a second bell row over a count of 0.
+        With no stat to compare, the read proves nothing: it ends no episode and is kept as the landed set under the path-only key."""
+        log = jd.STATE / "cleared.jsonl"
+        rows = lambda: [r for r in self._rows("cleared-unreadable") if "the read" in r.get("note", "")]
+        bell = lambda: [n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]
+        good = json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n"
+        for err, name in ((errno.EACCES, "EACCES"), (errno.ENOENT, "ENOENT")):
+            with self.subTest(stat=name):
+                log.write_text(good); km._CLEARED_MEMO["slot"] = None; km._CLEARED_MEMO["landed"] = None; km._cleared_read_fault[0] = ""
+                km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]
+                n0 = len(rows())
+                real_stat, real_read, once_stat, once_read = os.stat, Path.read_text, [True], [True]
+
+                def failing_stat(q, *a, **kw):
+                    if os.fspath(q) == str(log) and once_stat[0]:
+                        once_stat[0] = False
+                        raise OSError(err, os.strerror(err), str(q))         # the pre-read stat fails once
+                    return real_stat(q, *a, **kw)
+
+                def racing_read(q, *a, **kw):
+                    data = real_read(q, *a, **kw)
+                    if q == log and once_read[0]:
+                        once_read[0] = False
+                        log.write_bytes(b"\xff\xfe\x00 not text\n"); km.build_feed(NOW, self.live)   # the file goes bad and a build files the fault
+                    return data
+                with contextlib.redirect_stderr(io.StringIO()), mock.patch.object(os, "stat", failing_stat), mock.patch.object(Path, "read_text", racing_read):
+                    got = km._cleared_ids()
+                self.assertEqual(set(got), {A + ":g1"}, "premise: the bytes read were the good ones")
+                self.assertNotEqual(km._cleared_read_fault[0], "", "the flag holds the fault (before: a read with no pre-read stat reset it)")
+                with contextlib.redirect_stderr(io.StringIO()):
+                    f = km.build_feed(NOW, self.live)
+                self.assertEqual((len(rows()) - n0, len(bell()), f["dismissedCount"]), (1, 2, 1), "one fault: one judge row, the cold then the warm bell row, and the pane holds the parsed set under the path-only key (before: 2, 2, 0)")
+        log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
+
+    def test_a_clean_parse_racing_a_read_fault_that_moved_no_stat_ends_no_episode(self):
+        """The second contributor's post-merge review of PR 2056: an EIO on the read moves no stat, so a racing clean parse's post-parse stat
+        equalled its pre-read key and the parse ended the episode the fault had opened; the fault refiled at its next occurrence, two judge rows
+        for one fault. The read snapshots the reader's flag before its read and compares it after the parse beside the stat."""
+        log = jd.STATE / "cleared.jsonl"
+        rows = lambda: [r for r in self._rows("cleared-unreadable") if "the read" in r.get("note", "")]
+        bell = lambda: [n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]
+        log.write_text(json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n"); km._CLEARED_MEMO["slot"] = None; km._CLEARED_MEMO["landed"] = None; km._cleared_read_fault[0] = ""
+        km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]
+        n0 = len(rows())
+        real_read, once = Path.read_text, [True]
+
+        def eio(q, *a, **kw):
+            if q == log:
+                raise OSError(errno.EIO, "Input/output error", str(q))
+            return real_read(q, *a, **kw)
+
+        def racing_read(q, *a, **kw):
+            data = real_read(q, *a, **kw)
+            if q == log and once[0]:
+                once[0] = False
+                with mock.patch.object(Path, "read_text", eio):
+                    km.build_feed(NOW, self.live)                               # a build's read faults with the file unmoved: the fault is filed
+            return data
+        with contextlib.redirect_stderr(io.StringIO()), mock.patch.object(Path, "read_text", racing_read):
+            got = km._cleared_ids()
+        self.assertEqual(set(got), {A + ":g1"}, "premise: the parse was clean")
+        self.assertEqual((len(rows()) - n0, len(bell())), (1, 1), "premise: the interposed build filed the fault once")
+        self.assertNotEqual(km._cleared_read_fault[0], "", "the flag holds the fault (before: the clean parse with an unmoved stat ended the episode)")
+        with contextlib.redirect_stderr(io.StringIO()), mock.patch.object(Path, "read_text", eio):
+            f = km.build_feed(NOW, self.live)                                   # the same fault at its next occurrence
+        self.assertEqual((len(rows()) - n0, f["dismissedCount"]), (1, 1), "one judge row for one fault (before: two, the episode ended between them), the pane holding the parsed set")
+        self.assertEqual(len(bell()), 2, "the bell: the cold row, then the warm row once the parsed set stands as the landed one")
         log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
 
     def test_a_memoized_fault_returning_through_a_memo_hit_after_a_different_fault_files_its_judge_row(self):
@@ -2158,7 +2285,7 @@ class ActsUnderAFailedWrite(_World):
         self.assertRegex(ds, r'"clears-log" \(a clears-log write refused')
         self.assertRegex(ds.replace("\n", " "), r'"cleared-unreadable" is also the kernel\'s own reader\'s\s+kind for the clears log[^)]*holding the last landed set[^)]*one row per fault episode\s+ended by a landed read, an absent log or a different fault', "the kind list mirrors the docs: the display reader serves the last landed set, the read still files the row (the second contributor's post-merge comment on PR 2032: it still said the build read the log as nothing cleared)")
         self.assertIn('"owed-note"', ds)
-        self.assertRegex(km._cleared_ids_display.__doc__.replace("\n", " "), r"each under its own episode memo: the\s+reader's flag holds the fault's copy and the bell's table holds the row's key for the path\. The bell re-files on every change of the fault's\s+text; the reader re-files through the derive arm and through a memo hit returning a fault that differs from the flag; a clean read ends both\s+only when a stat taken after its parse equals the key taken before its read", "the display reader's docstring states the head's episode rule: how each memo re-files and when a clean read ends both (the round-one verifiers of PRs 2041 and 2056: an earlier sentence pinned prose the code no longer did)")
+        self.assertRegex(km._cleared_ids_display.__doc__.replace("\n", " "), r"each under its own episode memo: the\s+reader's flag holds the fault's copy and the bell's table holds the row's key for the path\. The bell re-files on every change of the fault's\s+text; the reader re-files through the derive arm and through a memo hit returning a fault that differs from the flag; a clean read ends both\s+only on the landed arm whose post-parse stat and pre-read flag both stand where the read found them, the served landed hit and the absent\s+log being the other two endings", "the display reader's docstring states the head's episode rule: how each memo re-files and when a clean read ends both (the round-one verifiers of PRs 2041 and 2056: an earlier sentence pinned prose the code no longer did)")
         # the note helper's and the refusal sender's own docstrings (the round-two verifier of PR 2025: the helper's sentence was pinned by nothing)
         self.assertRegex(km._clears_log_fault_note.__doc__.replace("\n", " "), r"the kernel's own READ of the log files under `cleared-unreadable`,\s+the kind the judge's side-file reader files for the same file, one row per fault episode", "the helper names the read as the kind's second writer")
         self.assertIn("`cleared-unreadable` for the read-fault account's read of it", km._gesture_store_refusal.__doc__, "the sender names the read-fault account's kind")

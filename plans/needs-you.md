@@ -272,10 +272,12 @@ shows nothing cleared and the row says so. The gestures never take the memo's se
 account's stack for the read behind it. Every clear or undo account carries its stack except any sent while the clears log cannot be
 read, a refused clear alone shipping none too, so a stack-less frame from the current kernel is that road beside an older kernel's
 frame and a federated pane's. A served read carries its state's fault into the episode: a set served from the memo after a fault
-that lifted with the file unmoved ends the episode, so the same fault before the next append is a new one and is said again. A clean
-read ends the episodes only when a stat taken after its parse still equals the one taken before its read: a set parsed from bytes that
-left the disk before a fault ends nothing (the nudge walk parses beside the display builds), and a memoized fault returning through a
-memo hit after a different fault files its judge row, so one row per episode holds across every ending.
+that lifted with the file unmoved ends the episode, so the same fault before the next append is a new one and is said again. The
+episodes end on three arms: a landed parse whose post-parse stat and pre-read flag both stand where the read found them, a served
+landed hit, and an absent log. A set parsed from bytes that left the disk before a fault, or while a fault was filed, ends nothing
+(the nudge walk parses beside the display builds) and is kept as the last landed set only when no read landed since it began, so an
+older parse never overwrites the newer set a build derived meanwhile; a memoized fault returning through a memo hit after a different
+fault files its judge row, so one row per episode holds across every ending.
 
 ### Completed is safe to clear unread
 
