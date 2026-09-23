@@ -5798,6 +5798,88 @@ def _gc_session_order(known):
                 pass                                 # filed once per episode by the write door; the next pass retries
 
 
+# ── the VIEWER'S arrangement, kept here as OPAQUE DATA (the user 2026-09-23) ───────────────────────
+# The order sessions are SHOWN in is computed in the browser and always will be: it spans every kernel
+# the dashboard has attached, and no kernel can order sids belonging to a machine it has never heard of
+# (the 2026-07-31 ruling, commit e9870995, which is why session-order.json below is only this kernel's
+# arrival-order SEED). What changed on 2026-09-23 is where the finished list LIVES. It used to live in
+# one browser's localStorage, so a phone and a desktop looking at the same sessions showed them in
+# different orders with no way to reconcile. Now the kernel the browser is talking to persists it,
+# serves it on connect and pushes it when it changes, and every viewer of this kernel converges.
+#
+# Storing it is not ordering it, and the distinction is the whole point. This file is a list of STRINGS
+# this kernel never interprets: they are viewer-relative, host-prefixed ids ("gpu1:<uuid>" for a session
+# on an attached machine, a bare uuid for one of ours), and nothing here parses a prefix, matches an
+# entry against a live session, reorders, prunes or gc's them. The VIEWER owns all of that — it is the
+# only party that can see every host at once — and republishes the result. Read as JSON, written back as
+# JSON, bounded, and otherwise untouched.
+#
+# Last write wins, deliberately: two devices dragging at the same moment is not a case worth a merge
+# protocol, and the browsers each hold a full list, so the loser's next drag re-establishes its own.
+_view_order_lock = threading.Lock()      # read-modify-write from many threads, like _order_lock above
+_VIEW_ORDER_CAP = 2000                   # the browser's own backstop (view-order.ts VIEW_ORDER_CAP), mirrored
+#                                          so a client bug cannot grow this file without bound
+_view_order_lkg = [None]                 # last known good: served over a transient read fault, never persisted
+_VIEW_ORDER_NO_PROOF = object()          # the write path's "the store could not be read" marker (below)
+
+
+def _view_order_path():
+    return jd.STATE / "view-order.json"
+
+
+def _view_order_served():
+    """(order, stored) for the wire: the arrangement to serve and whether this kernel HAS one at all --
+    or None when it cannot say, in which case the caller sends NO frame.
+
+    `stored` is the migration's whole signal (view-order.ts viewOrderToPublish): a browser that holds an
+    arrangement and meets a kernel with none publishes its own, so nobody's existing order is lost in the
+    move -- while a kernel whose arrangement is legitimately EMPTY (every session gone, or a viewer who
+    arranged nothing) must not be refilled from some other browser's stale local key. Absent file -> no
+    arrangement.
+
+    The DISPLAY read never raises. A transient fault over a store we HAVE read serves the last known good
+    and says stored, since a file we could not read is not a file that is missing -- answering "no
+    arrangement" under an EIO would invite the next browser to publish its own over an order that is
+    still sitting there. A fault with NO last known good (this kernel has never read the file) is the
+    honest silence: [] would have every viewer adopt an empty arrangement over the one they are showing,
+    and "stored" would be a claim about a file we have not read. The fault itself is loud once per
+    episode (_note_state_fault), as every state read's is."""
+    p = _view_order_path()
+    try:
+        raw = _read_state_json(p, expect=list)
+    except _StateUnreadable as e:
+        _note_state_fault(e)
+        lkg = _view_order_lkg[0]
+        return (list(lkg), True) if lkg is not None else None
+    _clear_state_fault(p)
+    if raw is None:
+        return [], False
+    order = [x for x in raw if isinstance(x, str)]
+    _view_order_lkg[0] = list(order)
+    return order, True
+
+
+def _write_view_order(order):
+    """Publish the viewer's arrangement. Raises _StateUnwritable on a failed publish, so the gesture is
+    refused loudly rather than silently dropped. Returns whether anything CHANGED: a viewer republishing
+    the list it was just served (every viewer of this kernel does, the moment a host's report makes them
+    all adopt the same arrival) is not a change, and a change is the only thing worth pushing."""
+    new = [x for x in order if isinstance(x, str)][-_VIEW_ORDER_CAP:]
+    with _view_order_lock:                           # the read and the publish as one step (_order_lock's rule)
+        try:
+            raw = _read_state_json(_view_order_path(), expect=list)
+        except _StateUnreadable:
+            raw = _VIEW_ORDER_NO_PROOF               # cannot prove it unchanged -> publish. Safe here and only
+            #                                          here: this write REPLACES the list whole, so unlike the
+            #                                          session order's merge it never splices against a
+            #                                          fabricated read. The push that follows is the honest one.
+        if raw is not _VIEW_ORDER_NO_PROOF and isinstance(raw, list) and [x for x in raw if isinstance(x, str)] == new:
+            return False
+        _write_state_json(_view_order_path(), json.dumps(new))
+        _view_order_lkg[0] = new
+    return True
+
+
 def _merge_session_order(incoming):
     """Splice a drag's order into the persisted one WITHOUT disturbing lanes the drag didn't touch. A drag
     publishes the order of the sids on ONE surface (chat tabs, or timeline lanes) — usually a SUBSET of all
@@ -52472,7 +52554,8 @@ def _send_slot_delta(c, key, ftype, payload, pre, sig, parts=None):
 #   tagEdit — the targeted `tagEdit` op (create / rename / recolor / addMember / removeMember /
 #             delete / move, by tag id), the `tagEditAck` / `viewsAck` answers on the poster's socket,
 #             and the write sequence (`seq`) on every views blob.
-KERNEL_WS_CAPS = ("tagEdit", "chatProto2")   # chatProto2: the uuid-anchored chat wire (T323 stage 4b)
+KERNEL_WS_CAPS = ("tagEdit", "chatProto2", "viewOrder")   # chatProto2: the uuid-anchored chat wire (T323 stage 4b);
+#                                              viewOrder: this kernel keeps the viewer's arrangement (2026-09-23)
 # The caps frame: {type: "caps", caps: [...], viewsSeq: int|null}. `viewsSeq` (the 2026-09-05
 # review) is the write seq of the views blob the READY HANDLER'S OWN connect push served this client — the
 # tabOrder frame's for a chat page, the timeline skeleton's (`data.views`), the feed frame's — read from
@@ -52505,6 +52588,52 @@ def _views_seq_of(msg):
         return int(v["seq"])
     except (TypeError, ValueError):
         return None
+
+
+def _view_order_frame():
+    """{type: "viewOrder", order, stored} — the viewer's arrangement this kernel keeps (2026-09-23).
+
+    `order` is a list of strings this kernel never interprets (the store's comment says why that is not
+    the thing the 2026-07-31 ruling ruled out); `stored` says whether this kernel has an arrangement at
+    all, which the client's migration turns on (view-order.ts viewOrderToPublish). Sent to a client on
+    its `ready` -- the connect push -- and to every client the moment a setViewOrder CHANGES the store,
+    which is the event the viewer's other devices converge on. Nothing periodic reads it.
+
+    None when the store could not be read and nothing is known-good (_view_order_served): no frame goes,
+    and every page keeps the arrangement it is showing rather than adopting a guess."""
+    served = _view_order_served()
+    if served is None:
+        return None
+    order, stored = served
+    return {"type": "viewOrder", "order": order, "stored": stored}
+
+
+def _send_view_order(c, fr=None):
+    """One client's copy, on its own dedup slot: a client already holding this arrangement byte for byte
+    is sent nothing, so the connect push and the change push cannot double up on it."""
+    try:
+        if fr is None:
+            fr = _view_order_frame()
+        if fr is not None:
+            _send_client(c, ("vieworder",), fr)
+    except Exception:                                # never widen a connect push or a drag's reply
+        sys.stderr.write("viewOrder send: %s\n" % traceback.format_exc())
+
+
+def _broadcast_view_order():
+    """The change event: every connected client learns the new arrangement now. Built ONCE and handed to
+    each client's dedup slot -- the viewer that posted it holds it already and is skipped there."""
+    try:
+        fr = _view_order_frame()
+    except Exception:
+        sys.stderr.write("viewOrder: %s\n" % traceback.format_exc())
+        return
+    if fr is None:
+        return
+    with _clients_lock:
+        clients = list(_clients)
+    for c in clients:
+        _send_view_order(c, fr)
 
 
 def _send_caps(client, views_seq=None):
@@ -64283,13 +64412,14 @@ function spSavePrefs(){try{localStorage.setItem(SP_PREFS_KEY,JSON.stringify({ran
 spLoadPrefs();
 // "your order" (T247f, the user 2026-09-08): the order the tab strip and the timeline lanes show — the
 // kernel's shared seed per host (session-order.json; hosts local-first then attach order, remote ids
-// host-prefixed the way federation prefixes them) arranged by THIS viewer's own drag order, read from
-// the same localStorage key the strip reads (view-order.ts VIEW_ORDER_KEY). spApplyViewOrder is that
-// module's applyViewOrder, twinned here because the landing page loads no webview bundle; a node test
+// host-prefixed the way federation prefixes them) arranged by the viewer's own drag order, read from the
+// same localStorage keys the strip reads (view-order.ts): the kernel's arrangement cached for this
+// browser since 2026-09-23, else the pre-move local key. spApplyViewOrder is that module's
+// applyViewOrder, twinned here because the landing page loads no webview bundle; a node test
 // (ui/webview/spend-order-twin.test.ts) holds the two together. Sessions the order does not know (dead,
 // archived, an older peer's) trail in their spend order.
 function spApplyViewOrder(seed,view){var clean=function(xs){var out=[],seen=Object.create(null);(xs||[]).forEach(function(x){if(typeof x==='string'&&!seen[x]){seen[x]=1;out.push(x);}});return out;};var s=clean(seed);if(!view||!view.length)return s;var want=Object.create(null),placed=Object.create(null),out=[];s.forEach(function(x){want[x]=1;});clean(view).forEach(function(id){if(want[id]){placed[id]=1;out.push(id);}});s.forEach(function(id){if(!placed[id])out.push(id);});return out;}
-function spViewOrder(){try{var o=JSON.parse(localStorage.getItem('romp:vieworder')||'[]');return Array.isArray(o)?o:[];}catch(e){return [];}}
+function spViewOrder(){try{var r=localStorage.getItem('romp:vieworder:shared');if(r===null)r=localStorage.getItem('romp:vieworder');var o=JSON.parse(r||'[]');return Array.isArray(o)?o:[];}catch(e){return [];}}
 function spKey(d,s){return (s.host&&s.host!==d.host)?(s.host+':'+s.sid):s.sid;}
 function spOrdered(d){var ss=(d.sessions||[]).slice();if(SP.order!=='yours')return ss;
 var seed=(d.order||[]).map(function(p){return (p[0]&&p[0]!==d.host)?(p[0]+':'+p[1]):p[1];});
@@ -71678,6 +71808,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._push_one(client)
             finally:
                 seqs, _VIEWS_SERVED.seqs = _VIEWS_SERVED.seqs, None
+            # The viewer's ARRANGEMENT this kernel keeps (2026-09-23), before the caps frame like every
+            # other part of the connect push: the page applies it to the strip, the lanes and the feed's
+            # groups the moment it lands, and a browser that carries an arrangement into a kernel that has
+            # none publishes its own off this frame, so the move loses nobody's order. Its own dedup slot,
+            # so a reconnect that changes nothing costs nothing.
+            _send_view_order(client)
             # What this kernel can do for the page (KERNEL_WS_CAPS), after the pushes above and on every
             # `ready`: the shell's socket, which re-sends ready at every open, learns them again; a page
             # whose views writes were in flight across a drop learns, when a ready reaches its socket and
@@ -72222,6 +72358,26 @@ class Handler(BaseHTTPRequestHandler):
             _order_audit("client:" + str(msg.get("surface") or "?"),
                          msg.get("old") or [], msg.get("new") or [],
                          stack=str(msg.get("stack") or "") + ("\n[user drag]" if msg.get("drag") else ""))
+        elif msg and msg.get("type") == "setViewOrder" and isinstance(msg.get("order"), list):
+            # A drag on ANY surface of ANY viewer of this kernel (the user 2026-09-23): the browser hands
+            # over the arrangement it computed over every attached host, and this kernel keeps it so the
+            # viewer's phone and their other desktop read the same order. Stored WHOLE and OPAQUE -- the
+            # ids are host-prefixed and viewer-relative and nothing here reads them (the store's comment
+            # has the argument). Last write wins.
+            try:
+                changed = _write_view_order(msg["order"])
+            except (_StateUnreadable, _StateUnwritable) as e:
+                # The arrangement could not be published. Said to the viewer who dragged rather than
+                # swallowed: their tabs are sitting where they put them on this page and would silently
+                # spring back on the next reload, and every other device would never hear about it.
+                sys.stderr.write("romp-kernel: setViewOrder refused: %s\n" % e)
+                _reply(client, {"type": "warn", "text": "Couldn't save the order you dragged: %s" % e})
+            else:
+                # The CHANGE is the event every other viewer converges on -- nothing polls for it, and an
+                # unchanged republish (every viewer writes the same list when a host reports a new session)
+                # pushes nothing at all.
+                if changed:
+                    _broadcast_view_order()
         elif msg and msg.get("type") in ("reorderTabs", "writeOrder") and isinstance(msg.get("order"), list):
             # tab-drag or lane-drag → reorder BOTH surfaces. MERGE the dragged surface's order into the
             # persisted one (don't overwrite): a chat-tab drag must not drop/reshuffle timeline-only lanes.

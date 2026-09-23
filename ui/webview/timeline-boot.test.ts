@@ -115,14 +115,17 @@ test("bridges post the same kernel ops as the web boot", () => {
   ]);
 });
 
-test("a lane drag posts NOTHING to a kernel — it arranges this browser's own view", () => {
-  // Order moved out of the kernel (the user 2026-07-31, ./view-order): a kernel can only record an order
-  // over its OWN sids, which is exactly why hosts could never interleave. The drag writes localStorage and
-  // federation re-emits; sending a `writeOrder` op alongside would put the kernel back in charge of a
-  // per-viewer choice and make a drag here move the tabs on another machine.
+test("a lane drag posts the WHOLE arrangement to the local kernel, never a per-kernel writeOrder", () => {
+  // Two rulings, and only one of them moved. The ORDER is still computed here, over every attached host
+  // at once: a `writeOrder` op would hand each kernel a fragment of its own sids, which is exactly why
+  // hosts could never interleave before 2026-07-31. What the kernel gets since 2026-09-23 is the finished
+  // list, host prefixes and all, as opaque data to KEEP — so a drag here reaches the viewer's phone and
+  // their other desktop instead of stopping at this webview (the user 2026-09-23).
   const { sent, post } = posts();
   bridgeFunctions(post).__rompTimelineWriteOrder(["a", "TESTHOST:b"]);
-  assert.deepEqual(sent, []);
+  assert.deepEqual(sent, [{ type: "setViewOrder", order: ["a", "TESTHOST:b"] }]);
+  assert.ok(!sent.some((m: any) => m.type === "writeOrder" || m.type === "reorderTabs"),
+    "a kernel is never asked to order sids it does not know about");
 });
 
 test("installDomHelpers supplies the 3 Obsidian helpers", () => {

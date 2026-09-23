@@ -710,8 +710,8 @@ test("a closed session leaves the arrangement; a detached host's sessions keep t
     fm.inbound("TESTHOST", { type: "tabOrder", order: [V], tabs: [{ id: V, name: "tests" }] });
     fm.inbound("", { type: "tabOrder", order: ["b"], tabs: [{ id: "b", name: "api" }] });   // a closed
     assert.deepEqual(lastOrder(emitted), ["b", "TESTHOST:" + V]);
-    assert.ok(!JSON.parse(store.get("romp:vieworder")!).includes("a"), "the closed id is pruned from storage");
-    assert.ok(JSON.parse(store.get("romp:vieworder")!).includes("TESTHOST:" + V),
+    assert.ok(!JSON.parse(store.get("romp:vieworder:shared")!).includes("a"), "the closed id is pruned from storage");
+    assert.ok(JSON.parse(store.get("romp:vieworder:shared")!).includes("TESTHOST:" + V),
       "the remote id stays placed — its host simply wasn't the one reporting");
   });
 });

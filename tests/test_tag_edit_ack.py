@@ -886,8 +886,14 @@ class Capability(_Wire):
                         "the caps frame follows the push: the shim's stale banner clears on the first real frame "
                         "after a reconnect, which must stay the resync frame itself")
         self.assertNotIn("tabOrder", types, "no strip from the handler itself: the connect push is the one source")
+        # the viewer's arrangement rides the connect push too (2026-09-23), before the caps frame like
+        # every other part of it — its own frame, on its own dedup slot
+        self.assertLess(types.index("viewOrder"), types.index("caps"))
+        self.assertEqual(next(m for m in self.sent if m["type"] == "viewOrder"),
+                         {"type": "viewOrder", "order": [], "stored": False},
+                         "no arrangement stored here yet, which is what a browser carrying one publishes against")
         caps = next(m for m in self.sent if m["type"] == "caps")
-        self.assertEqual(caps, {"type": "caps", "caps": ["tagEdit", "chatProto2"], "viewsSeq": None},
+        self.assertEqual(caps, {"type": "caps", "caps": ["tagEdit", "chatProto2", "viewOrder"], "viewsSeq": None},
                          "no store exists yet: the stubbed push carried no seq and the store has none; viewsSeq is null, "
                          "the key always present")
         # a RE-SENT ready (the shim, on a reconnected socket) gets the caps again — the event a page

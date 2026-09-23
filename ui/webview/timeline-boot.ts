@@ -12,7 +12,7 @@
 // headlessly; timeline-main.ts is the thin entry that wires it to the real
 // window.
 
-import { writeViewOrder } from "./view-order";
+import { setViewOrderPublisher, writeViewOrder } from "./view-order";
 
 export type Post = (m: Record<string, unknown>) => void;
 
@@ -86,11 +86,18 @@ export function openExternalMessage(url: string): Record<string, unknown> {
 // exact global names the view uses (pinned against the kernel's _TIMELINE_BOOT
 // by timeline-boot.test.ts).
 export function bridgeFunctions(post: Post): Record<string, (...a: any[]) => void> {
+  // This page has no federation manager, so nothing publishes the window slot a browser pane's arrangement
+  // rides (view-order.ts viewOrderPublisher); the host pipes every message to the kernel verbatim, so the
+  // bridge's own `post` is the channel (2026-09-23). Without it a lane drag here would move this webview's
+  // lanes and nobody else's.
+  setViewOrderPublisher((order) => post({ type: "setViewOrder", order: order.slice() }));
   return {
     __rompTimelineOpenExternal: (url: string) => post(openExternalMessage(String(url))),
-    // A lane drag writes the VIEWER's arrangement (the user 2026-07-31), the same store the chat strip
-    // writes — not the kernel's session-order.json, which is only the arrival-order seed now. Sending it
-    // to a kernel could never interleave hosts anyway: each one can only record its own sids.
+    // A lane drag writes the VIEWER's arrangement, the same store the chat strip writes — not the kernel's
+    // session-order.json, which is only the arrival-order seed. The list is computed here, over every host
+    // at once, because no single kernel can order sids it does not know about (the 2026-07-31 ruling); the
+    // publisher installed below then hands that finished list to the kernel to KEEP, so the arrangement
+    // follows the viewer across their devices (2026-09-23). Not a per-kernel order in either direction.
     __rompTimelineWriteOrder: (order: unknown) =>
       writeViewOrder(Array.isArray(order) ? order.filter((x): x is string => typeof x === "string") : []),
     __rompTimelineCompact: (name: string) => post({ type: "compact", name }),

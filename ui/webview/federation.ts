@@ -11,8 +11,9 @@
 // local kernel is just connection #0 with the empty-string host key, so its messages pass through
 // unprefixed and the single-kernel path is byte-for-byte unchanged.
 
-import { adoptArrivals, applyViewOrder, applyViewOrderTo, churnSwaps, healOrder, pruneViewOrder,
-         readViewOrder, writeViewOrder, VIEW_ORDER_KEY, VIEW_ORDER_EVENT } from "./view-order";
+import { adoptArrivals, adoptSharedOrder, applyViewOrder, applyViewOrderTo, churnSwaps, healOrder,
+         pruneViewOrder, readViewOrder, viewOrderToPublish, writeViewOrder,
+         VIEW_ORDER_KEY, VIEW_ORDER_SHARED_KEY, VIEW_ORDER_EVENT } from "./view-order";
 import { adoptViews, capsAdopts, announcedSeq, announcedAfter } from "./views-writes";
 import { hostOf, bareId, hostDialLive } from "./host-prefix";
 import { installPerfTelemetry, classifyFrame, type RompPerf } from "./perf-telemetry";
@@ -377,6 +378,13 @@ export function routeOutbound(msg: any, knownHosts?: ReadonlySet<string>): Route
   // display name would have taken the name-addressed route below to that host — tag names and
   // session names share a field name, not a meaning).
   if (msg.type === "tagEdit" || msg.type === "setTimelineViews") return [{ host: LOCAL, msg }];
+
+  // The VIEWER'S arrangement goes to the LOCAL kernel WHOLE, ids still host-prefixed (2026-09-23). It is
+  // one list over every host — the thing no single kernel can compute — and the kernel this browser talks
+  // to keeps it as opaque data so the viewer's other devices read the same order. Splitting it by host,
+  // which the `order[]` rule right below would do, is exactly the shape the 2026-07-31 ruling ruled out:
+  // each kernel would get a fragment of its own sids and the interleaving would be gone.
+  if (msg.type === "setViewOrder") return [{ host: LOCAL, msg }];
 
   // order[] (reorderTabs / the timeline's writeOrder): split across the hosts it touches.
   if (Array.isArray(msg.order) && msg.order.some((x: any) => typeof x === "string")) {
@@ -1105,12 +1113,19 @@ export class FederationManager {
     // missing (the user 2026-08-02). A view arrangement is not new information about what exists; only a
     // host's own report is, so only an inbound tabOrder push may touch the store (absorbHostReport).
     const reorder = () => { this.emitMergedOrder(); this.emitMergedFeed(); this.emitMergedTimeline(false); };
-    w.addEventListener("storage", (e: StorageEvent) => { if (!e.key || e.key === VIEW_ORDER_KEY) reorder(); });
+    w.addEventListener("storage", (e: StorageEvent) => { if (!e.key || e.key === VIEW_ORDER_SHARED_KEY || e.key === VIEW_ORDER_KEY) reorder(); });
     w.addEventListener(VIEW_ORDER_EVENT, reorder);
     // The kernel-served timeline page boots from an inline script that cannot import this module, so the
     // one implementation of the write is published here for it (its VS Code twin imports it directly).
     w.__rompWriteOrder = (order: unknown) =>
       writeViewOrder(Array.isArray(order) ? order.filter((x: unknown): x is string => typeof x === "string") : []);
+    // …and how an arrangement reaches the KERNEL that keeps it (2026-09-23). Each pane bundle holds its own
+    // module copy of view-order.ts — federation.ts is never imported into one — so this window slot is the
+    // only channel that crosses them: a drag in the chat's bundle calls its own writeViewOrder, which finds
+    // this and routes the list to the local kernel. The ids ride PREFIXED, exactly as the arrangement holds
+    // them; routeOutbound sends setViewOrder to the local kernel whole rather than splitting it by host,
+    // because this list is one viewer's arrangement over every host, not a per-kernel order.
+    w.__rompPublishViewOrder = (order: readonly string[]) => this.outbound({ type: "setViewOrder", order: order.slice() });
     this.poll();
     setInterval(() => this.poll(), 4000); // converge on attach/detach made from the shell's network panel
     // the remote sockets' liveness watchdog (socketVerdict above) — the shim's 5s tick, for the relay side
@@ -1220,6 +1235,22 @@ export class FederationManager {
     // a kernel's `caps` frame describes THAT kernel; the panes hold only the LOCAL kernel's (its views
     // store is the one they write). A remote's would read as the local kernel's — dropped here.
     if (m && m.type === "caps" && host !== LOCAL) return;
+    // The ARRANGEMENT the kernel keeps for this viewer (2026-09-23), served on connect and pushed on every
+    // change — the event the other devices converge on. Only the LOCAL kernel's counts: a remote kernel's
+    // store is whatever dashboard sits in front of THAT machine, and taking it would let one viewer's drag
+    // rearrange another's. Either this browser's own arrangement is the one that survives the move (a
+    // kernel with no store yet: publish it, and the push that comes back is what every other viewer of
+    // this kernel adopts) or the kernel's wins; adoptSharedOrder is silent when it changes nothing, so a
+    // viewer seeing its own publish come back does not re-announce it. Never handed on to the panes: they
+    // read the arrangement through the merged re-emits below, as they always have.
+    if (m && m.type === "viewOrder") {
+      if (host !== LOCAL) return;
+      const served = Array.isArray(m.order) ? m.order.filter((x: unknown): x is string => typeof x === "string") : [];
+      const mine = viewOrderToPublish(m.stored === true, readViewOrder());
+      if (mine) writeViewOrder(mine);   // …which caches, publishes and announces in one step
+      else adoptSharedOrder(served);    // …which announces only when it CHANGED; the announce is what re-emits all three
+      return;
+    }
     // The local kernel's caps frame is the reconnect event: each replayed views store adopts the blob its
     // gate last turned away when the frame names it (the 2026-09-05 review; capsAdopts),
     // as the panes do — the kernel sends its connect push before this frame and `viewsSeq` is the seq of

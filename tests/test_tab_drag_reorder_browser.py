@@ -26,7 +26,8 @@ gap) was tried and reverted here, and it lands every one of these drops under th
 This lab drives the real /chat page of a hermetic kernel: twenty sessions, three under one tag (the group's
 row), two under a second tag (its own row) and fifteen in no tag (the trail's row), REAL mouse drags (page.mouse
 down, a run of moves across the strip, up over the target tab), the tab order read from the DOM and from the
-persisted arrangement (romp:vieworder). The classic theme is the control; the yatharth theme is set the way the
+persisted arrangement (romp:vieworder:shared, the kernel's arrangement as this browser caches it). The classic theme
+is the control; the yatharth theme is set the way the
 user sets it, the `theme` key of the romp:settings store (theme.ts and the kernel's inline reader turn it into
 the body class).
 
@@ -150,7 +151,7 @@ const layout = () => page.evaluate(() => {
   const tabs = items.filter((i) => i.id);
   const tops = [...new Set(tabs.map((t) => t.top))].sort((a, b) => a - b);
   const rows = tops.map((top) => tabs.filter((t) => t.top === top));
-  let stored = null; try { stored = JSON.parse(localStorage.getItem("romp:vieworder")); } catch (e) {}
+  let stored = null; try { stored = JSON.parse(localStorage.getItem("romp:vieworder:shared")); } catch (e) {}
   return { bar: { left: b.left, top: b.top, w: r1(b.width), h: r1(b.height), clientWidth: bar.clientWidth, gap: getComputedStyle(bar).columnGap },
            theme: document.body.classList.contains("chat-theme-yatharth") ? "yatharth" : "classic",
            items, tabs, rows, order: tabs.map((t) => t.id), stored };
@@ -517,7 +518,7 @@ class ServedTabDragReorder(unittest.TestCase):
     def _table(c):
         return ("\n  theme %(theme)s (column gap %(gap)s)\n  from %(from)s\n  released over %(over)s at strip x=%(rx)s y=%(ry)s"
                 "\n  rows before %(pre)s\n  rows after  %(post)s\n  landed rect %(landed)s\n  order after %(order)s"
-                "\n  stored (romp:vieworder) %(stored)s\n  drag events %(ev)s\n  the gesture's tail %(tail)s\n  #tabs children %(items)s"
+                "\n  stored (romp:vieworder:shared) %(stored)s\n  drag events %(ev)s\n  the gesture's tail %(tail)s\n  #tabs children %(items)s"
                 % dict(c, rx=c["release"]["x"], ry=c["release"]["y"], pre=c["preRows"], post=c["postRows"], order=c["postOrder"]))
 
     def _assert_landed_under_cursor(self, c):

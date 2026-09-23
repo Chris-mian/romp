@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Session order belongs to the VIEWER, not to a kernel (the user 2026-07-31).
+"""Session order is COMPUTED by the viewer, not by a kernel (the user 2026-07-31).
 
 Each kernel used to own the order of its own sessions and the browser concatenated the per-host lists, so
-hosts always drew as blocks and a drag that mixed them was undone on the next merge — no kernel can record
-an order over sids belonging to another one. The arrangement now lives in the browser (ui/webview/
-view-order.ts), and each kernel's list is only the arrival-order SEED it starts from.
+hosts always drew as blocks and a drag that mixed them was undone on the next merge — no kernel can order
+sids belonging to another one. The arrangement is computed in the browser (ui/webview/view-order.ts), and
+each kernel's list is only the arrival-order SEED it starts from. That half stands.
 
-This pins the kernel-side half: the timeline page's inline boot must hand a lane drag to the browser store
-rather than posting it back here. Synthetic ids only.
+Since 2026-09-23 the finished list is KEPT by the kernel the browser is talking to (tests/
+test_view_order_store.py), as opaque data, so it follows the viewer to their phone and their other
+desktop. Storing is not ordering: nothing there parses a host prefix or reorders anything.
+
+This pins the kernel-side half of the first ruling, which the second does not touch: the timeline page's
+inline boot hands a lane drag to the browser's own writer, never to a per-kernel `writeOrder` that would
+see only this kernel's sids. Synthetic ids only.
 """
 import inspect
 import os
@@ -52,6 +57,18 @@ class TheKernelListIsNowOnlyASeed(unittest.TestCase):
         self.assertTrue(callable(km._session_order))
         self.assertTrue(callable(km._merge_session_order))
         self.assertTrue(callable(km._gc_session_order))
+
+    def test_the_arrangement_store_is_a_separate_file_the_seed_never_touches(self):
+        # The two must not be conflated: session-order.json is THIS kernel's own sids, gc'd against its own
+        # sessions; view-order.json is a viewer's list over every attached machine, which this kernel has no
+        # standing to prune. A gc over the arrangement would drop every remote id on sight.
+        self.assertNotEqual(km._view_order_path().name, "session-order.json")
+        gc = inspect.getsource(km._gc_session_order)
+        self.assertNotIn("view-order", gc, "the seed's self-clean never reaches the viewer's arrangement")
+        for fn in (km._view_order_served, km._write_view_order, km._view_order_frame):
+            src = inspect.getsource(fn)
+            self.assertNotIn("_alive_sessions", src)
+            self.assertNotIn("split(", src, "%s reads an id's host prefix — the store is opaque" % fn.__name__)
 
 
 if __name__ == "__main__":

@@ -356,6 +356,11 @@ How a page looks is kept in the browser you are using. What the kernel acts on,
 Auto Nudge or Task tracking for instance, is sent to every machine you are
 connected to.
 
+The order you drag your tabs into is kept by your kernel rather than by one
+browser, so it follows you: arrange the strip on the desktop and your phone
+lists them the same way, with no reload. The last drag wins, and a phone shows
+the arrangement but cannot change it.
+
 A machine that was set differently while you were apart asks rather than
 changes: a line under the row, and a card on the feed, each offering **Apply**
 or **Keep mine**. A picker above the settings tabs says which machine you are

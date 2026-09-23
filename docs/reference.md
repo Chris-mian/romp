@@ -4899,7 +4899,12 @@ adds that tag and drops the tag of the group you right-clicked it in, leaving it
 **+** adds the tag without moving the tab. **Group tabs by tag**, at the foot of the tag
 button's menu, turns the sections off for this browser. On a phone the session picker, which stands in
 for the strip, lists the sessions the same way: each under its tag's heading, in the same order, and
-nothing folded (its tag menu has the same switch). The Sessions pane has the same
+nothing folded (its tag menu has the same switch). The order you have DRAGGED your tabs into follows
+you: your kernel keeps it, so the phone picker and every other browser you open read the sessions in
+the order you arranged them on the desktop, and a drag on one device moves them on the others while you
+watch, without a reload. The last drag wins — two devices dragging at the same moment settle on whichever
+landed second. The phone shows the arrangement but cannot change it: the picker has no drag. The groups,
+their order, and which sessions sit in each of them are the same everywhere too. The Sessions pane has the same
 sections: **Group by tag** in its Filter menu (off until you turn it on, per browser) lays the
 lanes out one section per tag in the same order, each session under every tag it carries and
 the untagged sessions behind a divider, with the tag's chip, the caret and the count on a row
@@ -5090,6 +5095,16 @@ on the phone layout.
 Settings sit in two stores. What a page looks like is kept in the browser you
 are looking at: the theme, the transcript's density, which panes exist here,
 the tab widgets, the backend a new session starts on. None of it travels.
+
+One thing that used to sit there does travel now: the order you drag your tabs
+into. Your kernel keeps it — one arrangement for the tab strip, the timeline's
+lanes and the feed's groups at once — and serves it to every browser, phone and
+editor panel looking at that kernel, so they all read the same. Dragging
+anywhere moves it everywhere, as it happens; the last drag wins. Sessions
+running on attached machines are arranged in with the rest, and the kernel keeps
+the list without reading it: it can neither order nor prune sessions belonging to
+a machine it has never heard of, which is why the arranging itself stays in the
+browser, where every machine is visible at once.
 
 What the kernel acts on is kept by the kernel, and most of those rows say
 **Follows to every connected machine's kernel.** under them: one click there

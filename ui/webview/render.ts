@@ -48,7 +48,7 @@ import { prebuildPlan, type ViewState } from "./prebuild";
 import { historyMarks, historyBands, windowSpans, HIST_H, HIST_GAP } from "./glow-history";
 import { newSkeletonState, applyTabOrderSkeleton, onStatus, holdStatus, onFull, onDismiss, onSocketUp, nextPrefetch, renderKind } from "./skeleton-tabs";
 import { reconcileTabOrder, adoptArrival } from "./tab-order";
-import { applyViewOrder, readViewOrder, writeViewOrder } from "./view-order";   // the read: a page with no federation manager arranges its own strip (applyTabOrder, frame-listener.ts paneArranges)
+import { adoptSharedOrder, applyViewOrder, readViewOrder, setViewOrderPublisher, viewOrderToPublish, writeViewOrder } from "./view-order";   // the read: a page with no federation manager arranges its own strip (applyTabOrder, frame-listener.ts paneArranges)
 import { planStrip, readTabGroups, writeTabGroups, setSectionCollapsed, sectionRef, isPinned, setPinned, prunePinned, reachableFrom, headWords,
          followAdoption, reorderTagOrder, homeSectionOf, neighborOfFolded, revealedTabs, TABGROUPS_KEY, TABGROUPS_EVENT, type TabSection, type StripItem } from "./tab-groups";
 import { snapshotModel, snapshotHeading, rowWords, type SnapModel, type SnapRow } from "./tab-snapshot";
@@ -5726,14 +5726,23 @@ function fadedColor(hex: string, amount = 1): string {
 // (./tab-order). This replaced a parallel client sort (effIdx + a firstSeen tiebreaker) that diverged from
 // the kernel and made tabs jump on ordinary activity — invisible to the kernel's own (passing) order tests.
 
+// A page that never has a federation manager (a VS Code webview — frame-listener.ts paneArranges) is a
+// viewer of this kernel like any other, so it publishes its arrangement the same way (2026-09-23). Its
+// host pipes every message to the kernel verbatim, so this slot is all the wiring it needs; the browser
+// page leaves it alone and uses the window slot federation.js publishes instead (view-order.ts
+// viewOrderPublisher). A page whose manager is MISSING installs nothing: it shows the seed and refuses
+// drags, and an order that never passed through the arrangement must never be published.
+if (paneArranges(window as any)) setViewOrderPublisher((o) => vscodeApi?.postMessage({ type: "setViewOrder", order: o.slice() }));
+
 // Persist the current full tab order. Called only after a drag — the one client action that changes it.
 //
-// This writes to THIS BROWSER, not to the kernel (the user 2026-07-31): order is a property of how you are
-// looking at the fleet, so arranging tabs on the laptop has no business moving them on the desktop — and
-// only a browser-side list can interleave hosts at all, since no single kernel can record an order over
-// sids it does not know about. Each kernel keeps its own list as the arrival-order SEED; ./view-order
-// layers this over it, and federation re-emits the tab strip, the timeline lanes and the feed's groups
-// together so all three surfaces read the same way.
+// The list this writes is computed HERE, in the browser, because only a browser-side list can interleave
+// hosts at all — no single kernel can record an order over sids it does not know about (the 2026-07-31
+// ruling, still true). Where it is KEPT moved to the kernel on 2026-09-23: writeViewOrder caches it for
+// this browser and hands it to the local kernel as opaque data, so the arrangement follows the user to
+// their phone and their other desktop instead of stopping at this browser. Each kernel keeps its own
+// session list as the arrival-order SEED; ./view-order layers this over it, and federation re-emits the
+// tab strip, the timeline lanes and the feed's groups together so all three surfaces read the same way.
 function commitTabOrder() {
   if (fedMissing) return;   // an order that never passed through the arrangement is not an arrangement: never written (see fedMissing)
   writeViewOrder(order.slice());
@@ -19489,6 +19498,22 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     if (typeof m.selfHost === "string" && m.selfHost) adoptSelfHost(m.selfHost);   // the LOCAL kernel's own name: federation puts only its own on the merged frame
     captureViews(m.views || null);
     applyTabOrder(m.order, m.tabs, { reemit: m.reemit === true, freshHost: typeof m.freshHost === "string" ? m.freshHost : undefined }, m.live);
+  }
+  // The kernel's arrangement for this viewer (2026-09-23), reaching a page that arranges its own strip —
+  // a VS Code webview, whose host pipes kernel frames through verbatim. A page WITH a federation manager
+  // never sees this frame: the manager consumes it and re-emits the three merged surfaces arranged. The
+  // pane's current `order` stands in for the seed: it is the kernel's list already arranged by the order
+  // this frame replaces, so ids the new arrangement does not name keep the places they are showing in.
+  else if (m.type === "viewOrder" && paneArranges(window as any)) {
+    const served = Array.isArray(m.order) ? m.order.filter((x: any) => typeof x === "string") : [];
+    const mine = viewOrderToPublish(m.stored === true, readViewOrder());
+    if (mine) writeViewOrder(mine);
+    else if (adoptSharedOrder(served)) {
+      const arranged = applyViewOrder(order, readViewOrder());
+      order.length = 0;
+      for (const id of arranged) order.push(id);
+      renderTabs();
+    }
   }
   else if (m.type === "renamed" && m.id && typeof m.name === "string") {
     notePendingMeta(pendingTabMeta, m.id, { name: m.name });   // kernel truth — hold it against a push built pre-rename
