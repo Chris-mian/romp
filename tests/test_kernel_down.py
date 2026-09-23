@@ -285,6 +285,87 @@ class DownRoute(unittest.TestCase):
         self.assertEqual(body, {"ok": True, "canceled": True, "pid": os.getpid()})
 
 
+class HostedTurnsAreNotWaitedOn(unittest.TestCase):
+    """2026-09-22 (a post-merge review of a kernel refresh from an older main): the two routes that wait on the
+    in-flight count, /down here and the manager's quiet-window /busy, on the REAL SdkBackend. A session under a
+    per-session host (T315; on by default since T348) keeps its CLI and its turn across the stop, so neither
+    route waits on it and /down never names it as about to be cut; a kernel child's turn is still waited on and
+    named. Before the fix /down sat out its whole wait over a hosted turn and then named it, and /busy answered
+    busy over hosted-only work, which held a quiet refresh and asked for the drain hold on every idle session."""
+
+    HOSTED = "11111111-2222-3333-4444-555555555501"
+    CHILD = "11111111-2222-3333-4444-555555555502"
+
+    _post = DownRoute._post
+    _down = DownRoute._down
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sb = load_source("romp_sdk_backend_down_hosted", os.path.join(BIN, "romp_sdk_backend.py"))
+
+    def setUp(self):
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self._saved_be = km._sdk_backend
+        self._saved_live_map = km._live_map
+        km._live_map = lambda *a, **k: {}     # no live sessions in a test
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "session-hosts"), "w") as f:
+            f.write("off")                    # a state root of its own: hosts pinned off (no session connects)
+        self.be = self.sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        km._sdk_backend = self.be
+
+    def tearDown(self):
+        t = self.be._drain_wake_timer
+        if t is not None:
+            t.cancel()
+        km._sdk_backend = self._saved_be
+        km._live_map = self._saved_live_map
+        self.srv.shutdown()
+        self.srv.server_close()
+
+    def _session(self, sid, name, hosted):
+        s = self.sb.SdkSession(self.be, {"sid": sid, "name": name, "cwd": "/TESTDIR"})
+        s.inflight = 1                        # a turn in flight, never started here
+        if hosted:
+            s._host = object()                # a live host transport, as the drain reads it; never called
+        self.be.sessions[sid] = s
+        return s
+
+    def _busy(self):
+        with urllib.request.urlopen("http://127.0.0.1:%d/busy" % self.port, timeout=60) as r:
+            j = json.loads(r.read())
+        return j["busy"], j["inflight"], j["background"]
+
+    def test_busy_reads_a_hosted_turn_alone_as_quiet(self):
+        self._session(self.HOSTED, "web", hosted=True)
+        self.assertEqual(self.be.would_cut(), [], "sanity: a restart would detach it, and cut nothing")
+        self.assertEqual(self._busy(), (0, 0, 0), "the quiet window has nothing to wait on")
+
+    def test_busy_counts_a_kernel_child_beside_a_hosted_turn(self):
+        self._session(self.HOSTED, "web", hosted=True)
+        self._session(self.CHILD, "api", hosted=False)
+        self.assertEqual(self._busy(), (1, 1, 0), "the kernel child's turn, not the hosted one")
+
+    def test_down_is_quiet_at_once_over_a_hosted_turn(self):
+        self._session(self.HOSTED, "web", hosted=True)
+        status, body = self._down({"wait": 5})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["quiet"], body)
+        self.assertEqual((body["busy"], body["inflight"]), (0, []))
+        self.assertLess(body["waited"], 5, "the wait never sat on a turn the stop does not cut")
+
+    def test_down_waits_on_and_names_a_kernel_child_alone(self):
+        self._session(self.HOSTED, "web", hosted=True)
+        self._session(self.CHILD, "api", hosted=False)
+        status, body = self._down({"wait": 0.3})
+        self.assertEqual(status, 200)
+        self.assertFalse(body["quiet"])
+        self.assertEqual(body["busy"], 1, "the kernel child's turn, not the hosted one")
+        self.assertEqual(body["inflight"], ["api"], "the report names only what the stop cuts")
+
+
 class QuiesceLease(unittest.TestCase):
     """The quiesce on the REAL SdkBackend, where the route's fake above cannot reach: the lease's wake
     timer, and the resume notice a turn cut by `romp down` gets at the next start. The timer cases

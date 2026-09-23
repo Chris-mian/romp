@@ -2431,7 +2431,7 @@ try:
 except Exception:
     d = {}
 if d.get("quiet"):
-    print("[romp] quiet: no turn in flight (waited %ss)" % d.get("waited", 0))
+    print("[romp] quiet: no turn the stop would cut (waited %ss)" % d.get("waited", 0))   # a turn under a session host keeps running (2026-09-22)
 else:
     names = ", ".join(str(n) for n in (d.get("inflight") or [])) or "?"
     print("[romp] %s session(s) still mid-turn after %ss (%s); stopping anyway; they pick up where "
