@@ -333,7 +333,7 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
    Needs-you/retrying ring for the top-right dot and the amber left dot; mirror styles.css's rules here, since the
    gear's hosts load feed.css and gear.css, not the chat's sheet. The Blocked (ring-needs-you) ring stays, above. */
 #rsettings .rs-widget-demo .tab-dot.retrying, #rsettings .rs-preview .tab-dot.retrying { background: transparent; box-shadow: inset 0 0 0 1.5px var(--st-retrying-bg, #e67e22); visibility: visible; }   /* a HOLLOW amber ring: the strip's shape cue mirrored so the preview matches (styles.css .tab-dot.retrying) */
-#rsettings .rs-widget-demo .tab-badge, #rsettings .rs-preview .tab-badge { position: absolute; top: 2px; right: 2px; width: 8px; height: 8px; border-radius: 50%; background: var(--st-needs-bg, #d946ef); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5); pointer-events: none; z-index: 3; }
+#rsettings .rs-widget-demo .tab-badge, #rsettings .rs-preview .tab-badge { position: absolute; top: 3px; right: 3px; width: 8px; height: 8px; border-radius: 50%; background: var(--st-needs-bg, #d946ef); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5); pointer-events: none; z-index: 3; }
 #rsettings .rs-widget-demo .tab-badge:not(:empty), #rsettings .rs-preview .tab-badge:not(:empty) { width: auto; min-width: 14px; height: 14px; border-radius: 7px; padding: 0 3px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; color: #000; font-weight: 700; font-size: 9px; line-height: 1; }
 body.theme-light #rsettings .rs-widget-demo .tab-badge:not(:empty), body.theme-light #rsettings .rs-preview .tab-badge:not(:empty) { color: var(--st-needs-fg, #ffffff); }
 

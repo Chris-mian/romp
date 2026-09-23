@@ -129,3 +129,15 @@ The retrying ring stays in ring mode (byte-identical to today); the left-dot ret
   ui/webview/comment-mark.test.ts. With the frame landing on the targeted push and the connect push re-sending it, the
   four comment served labs' comments-frame wait shrinks from 120s to 30s, and the labs' cause comments name the measured
   mechanism (the frame reached a page with no listener yet, the dedup suppressed the re-send).
+
+- 2026-09-23 (the badge nudge, the user, who wanted the dot a pixel lower and further from the edge and the tab widened
+  when the keycap shows): the top-right dot's inset grew from 2px to 3px (dense 1px to 2px) in styles.css `.tab-badge`
+  and the gear.css demo, so it sits a hair lower and clear of the edge. AND a tab that carries BOTH the hot-key keycap
+  (`.tab-key`) and a non-empty count badge now reserves the badge's box at its right: `.tab:has(.tab-key):has(.tab-badge:not(:empty))`
+  takes a wider right padding (21px, the 3px inset + the 14px min-width box + a 4px gap; dense 17px off the 2px inset,
+  12px box and 3px gap), so the whole in-flow run (the gauge, the keycap, the close ✕) sits LEFT of the badge instead
+  of under it. It fires only with a keycap present, so a plain badge tab is unchanged, and the badge stays anchored to
+  the padding box so its corner does not move. The served lab (tests/test_tab_badge_browser.py) pins the 3px/2px inset
+  (red at the old offsets) and, with a hot key seeded on the needs-you tabs, the keycap left of the badge box in both
+  themes and both chromes (red with no widen rule). The kernel's mobile `.m-badge` is a `position:static` reserve-room
+  flow item, not this absolute corner dot, so it is untouched.
