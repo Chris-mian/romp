@@ -164,9 +164,10 @@ class GcFreeze:
         review): a plain collect with the freeze IN PLACE first (cheap, it takes a cycle allocated since the last freeze),
         then the owed refs are re-read; only when one survived does it unfreeze and walk the frozen heap (the up-to-full
         pause). A release the cheap walk took whole counts as a LOAD pass, so the backstop's bound does not stretch. A
-        BACKSTOP is blind (no owed refs) and unfreezes straight away. After the collect, before the re-freeze, an owed ref
-        still alive is kept by a LIVE ROOT, not a cycle: a wasted pause, counted as a survivor and dropped (never
-        re-registered)."""
+        BACKSTOP is blind (no owed refs) and unfreezes straight away. After the collect and the re-freeze, an owed ref still
+        alive is kept by a LIVE ROOT, not a cycle: a wasted pause, counted as a survivor and dropped (never re-registered).
+        The re-read runs after the re-freeze, which is harmless: a freeze collects nothing, so a ref alive after the collect
+        is alive after the freeze too."""
         t0 = self._clock()
         reclaimed = False
         if kind == "release":
