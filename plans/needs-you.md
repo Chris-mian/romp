@@ -275,9 +275,10 @@ frame and a federated pane's. A served read carries its state's fault into the e
 that lifted with the file unmoved ends the episode, so the same fault before the next append is a new one and is said again. The
 episodes end on three arms: a landed parse whose post-parse stat and pre-read flag both stand where the read found them, a served
 landed hit, and an absent log. A set parsed from bytes that left the disk before a fault, or while a fault was filed, ends nothing
-(the nudge walk parses beside the display builds) and is kept as the last landed set only when no read landed since it began, so an
-older parse never overwrites the newer set a build derived meanwhile; a memoized fault returning through a memo hit after a different
-fault files its judge row, so one row per episode holds across every ending.
+(the nudge walk parses beside the display builds) and is kept as the last landed set only when its parsed length is at least the
+standing set's: the log is append-only within an episode, so the longer parse is the newer state whichever of two racing reads writes
+first, and a shorter file arrives only through the absent arm, which records length zero; a memoized fault returning through a memo hit
+after a different fault files its judge row, so one row per episode holds across every ending.
 
 ### Completed is safe to clear unread
 

@@ -2072,9 +2072,11 @@ class ActsUnderAFailedWrite(_World):
         """The second contributor's post-merge review of PR 2056: the moved branch's landed write was unconditional, so when a clear appended
         during the nudge walk's parse was derived by a display build BEFORE the walk's post-parse stat, the walk's OLDER parse overwrote the
         build's NEWER landed set, and after the next fault the pane showed the older set (a cleared card back, Undo lit for the wrong stack).
-        The write happens only when no read landed since this one began (every landed write mints a new tuple, so identity says it). Both
-        interleavings: the older parse stands down (count 2 after the fault; before: 1), and the newer parse racing a fault is kept (count 2;
-        a presence-only condition, write only when none stands, would discard it: 1)."""
+        The landed memo is versioned by the parse itself: the log is append-only within an episode, so a moved write wins only when its parsed
+        length is at least the standing set's (the round-one verifier of PR 2070: a rule keyed on the memo's identity let the first of two moved
+        writes win and dropped the newer parse). Both interleavings here: the older parse stands down (count 2 after the fault; the base run
+        reds earlier, at the landed set holding the older parse), and the newer parse racing a fault is kept (count 2; a presence-only
+        condition, write only when none stands, would discard it: 1)."""
         log = jd.STATE / "cleared.jsonl"
         one = json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n"
         two = one + json.dumps({"id": B + ":g1", "t": 2, "op": "clear"}) + "\n"
@@ -2119,6 +2121,109 @@ class ActsUnderAFailedWrite(_World):
         with contextlib.redirect_stderr(io.StringIO()):
             f = km.build_feed(NOW, self.live)
         self.assertEqual(f["dismissedCount"], 2, "the newer parse racing the fault is kept as the landed set (a presence-only condition would have discarded it: 1)")
+        log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
+
+    def test_two_moved_reads_settle_by_parsed_length_whichever_writes_first(self):
+        """The round-one verifier of PR 2070: among two concurrent MOVED reads a rule keyed on the memo's identity let the first writer win, so
+        a newer parse that finished second was dropped (the newer read parsed three clears, the memo held one, the pane showed one after the
+        next fault, where the base kept all three). Neither identity, a read ticket nor a pre-read stat can order two moved parses, each only a
+        bound on its bytes' version; the parse itself can: the log is append-only within an episode, so the longer parse is the newer state.
+        Both orders: the older bytes written first, then the newer parse wins (count 3); the newer written first, then the older parse stands
+        down (count 3 too; the base, writing unconditionally, gives 1)."""
+        log = jd.STATE / "cleared.jsonl"
+        one = json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n"
+        three = one + json.dumps({"id": B + ":g1", "t": 2, "op": "clear"}) + "\n" + json.dumps({"id": P + ":g1", "t": 3, "op": "clear"}) + "\n"
+        bad = b"\xff\xfe\x00 not text\n"
+        reset = lambda: (km._CLEARED_MEMO.__setitem__("slot", None), km._CLEARED_MEMO.__setitem__("landed", None), km._cleared_read_fault.__setitem__(0, ""), km._state_fault_seen.clear(), km._SYNC_NOTICES.clear())
+        real_read = Path.read_text
+        # order 1: X starts on one clear; before X's bytes are parsed, Y reads the same older bytes, two clears are appended under Y's parse (Y
+        # moved, Y writes one clear), and X's read returns the NEWER bytes (three) with X's pre-read stat older still: X's parse must win
+        log.write_text(one); reset()
+        state = {"x": True, "y": True}
+
+        def x_read(q, *a, **kw):
+            if q == log and state["x"]:
+                state["x"] = False
+
+                def y_read(q2, *a2, **kw2):
+                    data = real_read(q2, *a2, **kw2)
+                    if q2 == log and state["y"]:
+                        state["y"] = False
+                        log.write_text(three)                                   # appended under Y's parse: Y's stat moves
+                    return data
+                with mock.patch.object(Path, "read_text", y_read):
+                    self.assertEqual(set(km._cleared_ids()), {A + ":g1"}, "premise: Y parsed the older bytes")
+                self.assertEqual(set(km._CLEARED_MEMO["landed"][1]), {A + ":g1"}, "premise: Y's moved write landed the older set")
+                log.write_bytes(bad)                                            # X's stat moves too (the file goes bad after X's bytes)
+                return three                                                    # X's bytes: the newer state, read before the fault
+            return real_read(q, *a, **kw)
+        with contextlib.redirect_stderr(io.StringIO()), mock.patch.object(Path, "read_text", x_read):
+            got = km._cleared_ids()
+        self.assertEqual(len(got), 3, "premise: X parsed three clears")
+        self.assertEqual(set(km._CLEARED_MEMO["landed"][1]), set(got), "the newer parse wins the landed memo though it wrote second (the identity rule dropped it)")
+        with contextlib.redirect_stderr(io.StringIO()):
+            f = km.build_feed(NOW, self.live)
+        self.assertEqual(f["dismissedCount"], 3, "after the next fault the pane shows all three (the identity rule: 1)")
+        # order 2: X starts on one clear; N appends two, reads three, moves (the file goes bad under N's parse) and writes three; then X's older
+        # parse finishes and must stand down
+        log.write_text(one); reset(); state.update(x=True, y=True)
+
+        def x_read2(q, *a, **kw):
+            data = real_read(q, *a, **kw)
+            if q == log and state["x"]:
+                state["x"] = False
+                log.write_text(three)
+
+                def n_read(q2, *a2, **kw2):
+                    d2 = real_read(q2, *a2, **kw2)
+                    if q2 == log and state["y"]:
+                        state["y"] = False
+                        log.write_bytes(bad)                                    # N's stat moves after its bytes
+                    return d2
+                with contextlib.redirect_stderr(io.StringIO()), mock.patch.object(Path, "read_text", n_read):
+                    self.assertEqual(len(km._cleared_ids()), 3, "premise: N parsed the newer bytes and moved")
+                self.assertEqual(len(km._CLEARED_MEMO["landed"][1]), 3, "premise: N's moved write landed the newer set")
+            return data
+        with contextlib.redirect_stderr(io.StringIO()), mock.patch.object(Path, "read_text", x_read2):
+            got = km._cleared_ids()
+        self.assertEqual(set(got), {A + ":g1"}, "premise: X parsed the older bytes")
+        self.assertEqual(len(km._CLEARED_MEMO["landed"][1]), 3, "the older parse stands down (the base wrote it over the newer set)")
+        with contextlib.redirect_stderr(io.StringIO()):
+            f = km.build_feed(NOW, self.live)
+        self.assertEqual(f["dismissedCount"], 3, "after the next fault the pane shows all three (the base: 1)")
+        log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
+
+    def test_a_read_with_no_pre_read_stat_under_a_standing_fault_ends_no_episode_and_records_the_landed_set(self):
+        """The round-one verifier of PR 2070: the failed-stat disjunct was pinned by nothing, since in both racing legs the fault filed during
+        the parse routed them through the flag clause. This leg is the disjunct's own: a fault already standing, no flag movement, the pre-read
+        stat failing once (a directory permission flap lifting before the read), then a clean read. It proves nothing about the file's state:
+        the episode stays open and the landed set is recorded under the path-only key (the base ended the episode and recorded nothing)."""
+        log = jd.STATE / "cleared.jsonl"
+        bell = lambda: [n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]
+        log.write_bytes(b"\xff\xfe\x00 not text\n"); km._CLEARED_MEMO["slot"] = None; km._CLEARED_MEMO["landed"] = None; km._cleared_read_fault[0] = ""
+        km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]
+        with contextlib.redirect_stderr(io.StringIO()):
+            km.build_feed(NOW, self.live)                                       # the standing fault: the flag holds it, the bell's table its row
+        fault = km._cleared_read_fault[0]
+        self.assertTrue(fault and len(bell()) == 1, "premise: a fault stands")
+        log.write_text(json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n"); km._CLEARED_MEMO["slot"] = None   # the file reads again
+        real_stat, once = os.stat, [True]
+
+        def failing_stat(q, *a, **kw):
+            if os.fspath(q) == str(log) and once[0]:
+                once[0] = False
+                raise OSError(errno.EACCES, "Permission denied", str(q))       # the pre-read stat fails once; the read itself lands
+            return real_stat(q, *a, **kw)
+        with mock.patch.object(os, "stat", failing_stat):
+            got = km._cleared_ids()
+        self.assertEqual(set(got), {A + ":g1"}, "premise: the read landed")
+        self.assertEqual(km._cleared_read_fault[0], fault, "the episode stays open: a read with no pre-read stat proves nothing (before: it ended it)")
+        self.assertIn(str(log), km._state_fault_seen, "and the bell's row stands")
+        landed = km._CLEARED_MEMO["landed"]
+        self.assertIsNotNone(landed, "the landed set is recorded (before: nothing, the key being None)")
+        self.assertEqual((landed[0], set(landed[1])), ((str(log),), {A + ":g1"}), "under the path-only key")
+        self.assertEqual(set(km._cleared_ids()), {A + ":g1"}, "the next read, with its stat, lands and ends the episode")
+        self.assertEqual(km._cleared_read_fault[0], "")
         log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
 
     def test_a_read_whose_pre_read_stat_failed_proves_nothing_and_ends_no_episode(self):
