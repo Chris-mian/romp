@@ -260,13 +260,13 @@ class TurnEndHandover(unittest.TestCase):
         log shows the exec done (`reexeced`: the new code serving), so the frame sits unread in the receive buffer; then
         the refresh goes out through the transport's writer in the same synchronous step, as a write's send does. The
         failed send closes the connection before the loop can read the frame, and the stream ends through the socket's-end
-        branch, whose on_lost is what reads it as the handover. The journal writer lags each record by 0.2 s, so the host's
+        branch, whose on_lost is what reads it as the handover. The journal writer lags each record by 1.0 s, so the host's
         handover (which waits for the journal to land) sends its frame well after the kernel has taken the result and
         begun its hold: without it the frame could reach the kernel in the result's own read and be taken with it. That
         lag is a margin, so every chunk the kernel's socket reader returns is recorded, and the result's handler notes
         whether any so far carried the frame, asserted first: a lost margin reports itself as the harness miss it is,
         never as the product failing (2026-09-23, the review of this lane)."""
-        self._start(_test_journal_delay_s=0.2)
+        self._start(_test_journal_delay_s=1.0)   # a whole second of margin over the kernel reader's read (review, 2026-09-23)
         out = {}
         chunks, real_read = [], asyncio.StreamReader.read
         frame = ht.sh.encode_frame({"t": "reexec-now"}).strip()
@@ -297,7 +297,7 @@ class TurnEndHandover(unittest.TestCase):
             s, end = self._run(go())
         self.assertIs(out.get("frame_early"), False, "a harness miss, not a product failure: the reexec-now frame reached the "
                                                      "kernel's reader with the result or ahead of its handling, so the host's "
-                                                     "0.2 s journal lag was not margin enough (%r)" % out)
+                                                     "1.0 s journal lag was not margin enough (%r)" % out)
         self.assertTrue(out.get("exec"), "the host exec'd while the kernel's loop was held: %r" % self._hostlog())
         self.assertEqual(self._hostlog("reexec")[0].get("frameBuffered"), 0, "the frame reached the kernel's socket")
         self.assertTrue(out.get("open") and out.get("closed_by_write"), "the refresh was the first write, and its failure closed "
