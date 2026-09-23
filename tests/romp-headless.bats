@@ -260,8 +260,9 @@ start_wait_kernel() {   # $1 = POST response body; $2 = the poll script; $3 = th
     # compaction's end by noRetry as the kernel marks them; R the systemError end once more, A's words at a later
     # stamp, as a second compaction failing the same way leaves them (2026-09-21); T a turn's rejection, which carries
     # no mark), then optionally "/<n>" for the row's compactEnd, the backend's bracket-end record (the post-merge
-    # review, 2026-09-21): a count of n whose last end is clean, or "/<n>L" whose last end is loud with notice A's
-    # words (a sample without "/" is a row with no record: a Claude session, or a kernel from before the record); the
+    # review, 2026-09-21): a count of n whose last end is clean, "/<n>L" whose last end is loud with notice A's
+    # words, or "/<n>X" whose last end is the restarted kernel's, loud with notice X's words (2026-09-22; a sample
+    # without "/" is a row with no record: a Claude session, or a kernel from before the record); the
     # last sample repeating; the default "q,c,c,q" is the armed-only-after-quiet walk. $3 is the baseline read's
     # suffix in the same syntax ("A" = notice A from before this wait, "/0" = a record with no end yet). $4 makes that
     # many baseline reads answer 500 first (a kernel blip the CLI must retry).
@@ -274,7 +275,9 @@ NOTICES = {"A": {"text": "Codex could not compact this conversation (it reported
            "B": {"text": "This conversation stopped being available while it was compacting (Codex reported notLoaded); nothing was compacted as far as romp can tell",
                  "at": 1781100009.5, "limit": False, "noRetry": True},
            "T": {"text": "codex turn/start rejected: the synthetic rejection a turn leaves as it ends",
-                 "at": 1781100006.5, "limit": False}}
+                 "at": 1781100006.5, "limit": False},
+           "X": {"text": "romp restarted while this conversation was compacting; whether Codex compacted it is unknown",
+                 "at": 1781100019.5, "limit": False, "noRetry": True}}
 NOTICES["R"] = dict(NOTICES["A"], at=1781100014.5)   # the same words as A at a new stamp: told from A by the stamp alone
 class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
@@ -294,11 +297,17 @@ class H(http.server.BaseHTTPRequestHandler):
         st, _, rec = sample.partition("/")
         row = {"id": "11111111-2222-3333-4444-555555555555", "name": "busy1",
                "compacting": st[0] == "c", "launchError": NOTICES.get(st[1:2])}
-        if rec:   # the end record: "<n>" a count whose last end is clean, "<n>L" one whose last end is loud with A's words
-            n, loud = int(rec.rstrip("L")), rec.endswith("L")
+        if rec:   # the end record: "<n>" a count whose last end is clean, "<n>L" one whose last end is loud with A's words,
+                  # "<n>X" one whose last end is the restarted kernel's, loud with X's words (2026-09-22). The stamp is
+                  # one fixed value for "<n>" and the notice's for "<n>L" and "<n>X", so at one n the three are three
+                  # different records under the CLI's identity judgment (the count with the stamp): a walk that flips
+                  # between them at one count means a new end there, which the kernel never produces (it writes count
+                  # and stamp together, once per end), so flip only to mean one (found in review, 2026-09-22)
+            n, loud = int(rec.rstrip("LX")), rec[-1:] in ("L", "X")
+            words = NOTICES["A" if rec[-1] == "L" else "X"] if loud else None
             row["compactEnd"] = {"ends": n, "kind": ("loud" if loud else "clean") if n else "",
-                                 "text": NOTICES["A"]["text"] if loud else "",
-                                 "at": (NOTICES["A"]["at"] if loud else 1781100005.5) if n else None}
+                                 "text": words["text"] if loud else "",
+                                 "at": (words["at"] if loud else 1781100005.5) if n else None}
         b = json.dumps([row]).encode()
         self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers()
         self.wfile.write(b)
@@ -321,6 +330,7 @@ PY
 }
 
 NOTICE_A="Codex could not compact this conversation"
+NOTICE_X="romp restarted while this conversation was compacting"
 NOTICE_B="This conversation stopped being available while it was compacting"
 NOTICE_T="codex turn/start rejected"
 
@@ -503,12 +513,14 @@ NOTICE_T="codex turn/start rejected"
 
 @test "romp compact --wait does not read the bit falling as done when the row carries a record whose count did not move" {
     # every end advances the count: a bit that fell with the count unmoved is an end the kernel has not recorded, never
-    # a compaction. A kernel restarted mid-compaction from a baseline of zero has exactly this shape (the restarted kernel
-    # serves zero again, the same as the baseline, so the wait cannot tell it from the baseline); the timeout names it
+    # a compaction. A kernel restarted mid-compaction from a baseline of zero had exactly this shape until its load
+    # recorded that end (2026-09-22, the restart cases below); on a kernel that records it, the shape is a record lost
+    # with the kernel (a clean end saved its bit, the kernel died before the next poll, and the restarted one serves
+    # zero again) or a kernel from before the record, and the timeout's line names both (2026-09-22)
     start_wait_kernel '{"ok": true, "queued": false}' 'q/0,c/0,q/0' '/0'
     run "$ROMP_SCRIPT" compact busy1 --wait --timeout 6
     [ "$status" -eq 1 ]
-    [[ "$output" == *"the compaction's end was never recorded (a kernel restart mid-compaction can do this)"* ]]
+    [[ "$output" == *"the compaction's end was never recorded, or its record was lost to a kernel restart right after it"* ]]
     [[ "$output" != *"still compacting"* ]]
     [[ "$output" != *"busy1 compacted"* ]]
 }
@@ -516,8 +528,12 @@ NOTICE_T="codex turn/start rejected"
 @test "romp compact --wait on a QUEUED compaction baselines the record's count from the arming sample: the prior compaction's loud end is not ours" {
     # the prior compaction ends loudly (count 4, loud, notice A) before the arming sample; ours then runs and completes
     # (count 5, clean, the notice cleared by a turn). Judged against the read before the request (count 3), the prior
-    # compaction's loud end would be new and exit 1
-    start_wait_kernel '{"ok": true, "queued": true}' 'c/3,qA/4L,cA/4,q/5' '/3'
+    # compaction's loud end would be new and exit 1. The record stays 4L while ours runs, as the kernel keeps it (one
+    # stamp per count): a walk that served the clean stamp at 4 under the compacting sample read as a new clean end
+    # there, and the case passed on that sample, done at 4 s with the count-5 sample never served (found in review,
+    # 2026-09-22). Retained behavior from the record's introduction, pinned: a wait that keeps the pre-request record
+    # as a queued wait's baseline exits 1 at the arming sample
+    start_wait_kernel '{"ok": true, "queued": true}' 'c/3,qA/4L,cA/4L,q/5' '/3'
     run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
     [ "$status" -eq 0 ]
     [[ "$output" == *"queued for busy1"* ]]
@@ -533,15 +549,123 @@ NOTICE_T="codex turn/start rejected"
     [[ "$output" != *"busy1 compacted"* ]]
 }
 
-@test "romp compact --wait reads a count below its baseline as a kernel restart and judges the rest of the wait without the record" {
-    # the kernel restarted after the compacting sample (its in-memory count back to 1, below the baseline of 3); ours
-    # was seen compacting and the bit then fell: the wait tolerates the blip as it always has, on the bit alone, rather
-    # than holding out for a count the restarted kernel can no longer reach
-    start_wait_kernel '{"ok": true, "queued": false}' 'q/3,c/3,q/1' '/3'
-    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+@test "romp compact --wait reads a count below its baseline as a kernel restart and judges the record it started over: a clean end is done" {
+    # the kernel restarted between two polls and the record it started over holds one clean end (count 1, below the
+    # baseline of 3), the compaction never caught mid-flight: done on the record, rather than holding out for a count
+    # the restarted kernel can no longer reach. No compacting sample was seen, so the bit alone cannot print done here
+    # (before the record was judged past a restart, this walk ran to the timeout's did-not-see-it-start line), which
+    # is what pins the judgment to the record (2026-09-22)
+    start_wait_kernel '{"ok": true, "queued": false}' 'q/3,q/1' '/3'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 6
     [ "$status" -eq 0 ]
     [[ "$output" == *"done — busy1 compacted"* ]]
     [[ "$output" != *"did not compact"* ]]
+}
+
+@test "romp compact --wait reads a count below its baseline as a kernel restart and exits 1 with the restarted kernel's recorded end" {
+    # the kernel restarted after the compacting sample with the compaction still running: its load ended it as a loud
+    # end it records (count 1, below the baseline of 2), and the message parked behind the compaction was delivered
+    # by the same boot and cleared the notice before this poll, so the row reads quiet with no notice. Judged as a row
+    # without the record, the bit alone printed done here over an outcome nobody knows (2026-09-22)
+    start_wait_kernel '{"ok": true, "queued": false}' 'q/2,c/2,q/1X' '/2'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"busy1 did not compact: $NOTICE_X"* ]]
+    [[ "$output" != *"busy1 compacted"* ]]
+}
+
+@test "romp compact --wait reads the restarted kernel's recorded end from a baseline of one, where the count alone reads unmoved" {
+    # the restart's record always starts at one (the load's one loud end), so against a baseline of one (a session
+    # compacted once before) the count reads neither below nor above it, and the message parked at the restart has
+    # cleared the notice: judged by the count alone, no branch fired and the wait ran to its timeout's never-recorded
+    # line over an end the load had recorded. The record's identity is its count with its last end's stamp, and the
+    # restart's stamp is new (found in review, 2026-09-22)
+    start_wait_kernel '{"ok": true, "queued": false}' 'q/1,c/1,q/1X' '/1'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 8
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"busy1 did not compact: $NOTICE_X"* ]]
+    [[ "$output" != *"never recorded"* ]]
+    [[ "$output" != *"busy1 compacted"* ]]
+}
+
+@test "romp compact --wait tells the restarted kernel's recorded end from a loud end of the same count by its stamp alone" {
+    # the identity is the record's count WITH its last end's stamp: here the baseline is one loud end (a compaction
+    # Codex refused, or a previous restart's own end) and the restart's record is one loud end too, so the count and
+    # the kind both read unmoved and only the stamp says this is a new end. A judgment reading the kind beside the count
+    # runs this walk to its timeout's never-recorded line; the sibling case above cannot tell, since its baseline is
+    # clean (the third review, 2026-09-22)
+    start_wait_kernel '{"ok": true, "queued": false}' 'q/1L,c/1L,q/1X' '/1L'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 8
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"busy1 did not compact: $NOTICE_X"* ]]
+    [[ "$output" != *"$NOTICE_A"* ]]
+    [[ "$output" != *"never recorded"* ]]
+    [[ "$output" != *"busy1 compacted"* ]]
+}
+
+@test "romp compact --wait from a baseline of zero reads the restarted kernel's recorded end: exit 1 with its words, not the timeout" {
+    # the same restart from a record with no end yet: the load's recorded end moves the count to one, which the
+    # count-advanced judgment reads like any end. Before the load recorded it, the restarted kernel served zero again
+    # and the wait ran to its timeout's never-recorded line (2026-09-22)
+    start_wait_kernel '{"ok": true, "queued": false}' 'q/0,c/0,q/1X' '/0'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"busy1 did not compact: $NOTICE_X"* ]]
+    [[ "$output" != *"never recorded"* ]]
+    [[ "$output" != *"busy1 compacted"* ]]
+}
+
+@test "romp compact --wait reads a count back at zero below its baseline as a restart that found no compaction running, and judges the rest on the bit" {
+    # the compaction ended and saved its bit down before the kernel died (a loud end saves its notice in the same write,
+    # which the notice judgment reads while it stands; a death between that save and the parked message's ACK loses the
+    # record with the kernel and the boot's delivery clears the notice, a residual for persisting the record beside the
+    # bit in the registry row), so the restarted kernel had no end to record: from this sample on the row is judged as
+    # one without the record, and the bit seen and then fallen is done (2026-09-22)
+    start_wait_kernel '{"ok": true, "queued": false}' 'q/3,c/3,q/0' '/3'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"busy1 compacted"* ]]
+    [[ "$output" != *"did not compact"* ]]
+}
+
+@test "romp compact --wait judges a record that appears on a row baselined without one: the restart's loud end exits 1, not done on the bit" {
+    # the baseline row carried no record (a live kernel from before it, on a checkout pulled ahead of its refresh); the
+    # kernel was replaced mid-wait by one with the record, whose load ended the compaction it found still running as a
+    # loud end it records (count 1, X's words), and the message parked at the restart cleared the notice before this
+    # poll. Judged only when the baseline carried the record, the sample fell through to the bit, seen and then fallen,
+    # which printed done over an outcome nobody knows (found in review, 2026-09-22). From a baseline of no end, a count
+    # above zero is an end since, by its kind
+    start_wait_kernel '{"ok": true, "queued": false}' 'q,c,q/1X' ''
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"busy1 did not compact: $NOTICE_X"* ]]
+    [[ "$output" != *"busy1 compacted"* ]]
+}
+
+@test "romp compact --wait keeps the bit's judgment for a record at zero that appears on a row baselined without one" {
+    # the same replacement mid-wait, but the newer kernel found no compaction running (ours ended and saved its bit
+    # before the old kernel went), so it serves a record with no end: the kernel that ran the compaction kept no record
+    # for the fallen bit to be held against, so the bit seen and then fallen is done, as the baseline row would have
+    # been judged (retained behavior, pinned beside the case above, 2026-09-22)
+    start_wait_kernel '{"ok": true, "queued": false}' 'q,c,q/0' ''
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"busy1 compacted"* ]]
+    [[ "$output" != *"did not compact"* ]]
+}
+
+@test "romp compact --wait leaves the rest of a wait unjudged after a count back at zero, even when a record appears again" {
+    # the two roads never mix (2026-09-22): a count back at zero marks the baseline unjudged rather than empty, so a
+    # later record on the same wait (a coincidental compaction on the restarted kernel; ours ended before the death) is
+    # not read as an end since a baseline of no end. No compacting sample was seen, so the bit cannot print done
+    # either, and the wait runs to its did-not-see-it-start line; with the mark the empty string, the loud record
+    # exited 1 with a coincidental end's words
+    start_wait_kernel '{"ok": true, "queued": false}' 'q/3,q/0,q/1L' '/3'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 6
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"didn't see the compaction start"* ]]
+    [[ "$output" != *"did not compact"* ]]
+    [[ "$output" != *"busy1 compacted"* ]]
 }
 
 @test "romp compact --wait refuses a leading-zero timeout (octal to the poll arithmetic)" {

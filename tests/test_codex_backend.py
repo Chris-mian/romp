@@ -5145,6 +5145,45 @@ class NativeCompact(unittest.TestCase):
         self.assertIs(row["compacting"], False, "the client failure's save carries the bracket down")
         self.assertTrue(be.kill(sid))
 
+    def test_the_restart_end_is_recorded_so_the_record_outlives_the_notice_a_parked_message_clears(self):
+        # The load's restart end wrote its notice and no record (found 2026-09-22 building the docs that follow the
+        # post-merge note on #1998): the boot re-arms every queued session, so a message parked behind the compaction
+        # is delivered at once and its accepted turn clears the notice within milliseconds, and the row then carried
+        # no trace of the end. `romp compact --wait` judges the record precisely because the notice is erased that way,
+        # so on a restart it printed done over an outcome nobody recorded, or from a zero baseline ran to its timeout.
+        # The load now ends the compaction it finds still running as a loud end of this kernel's record too: the count
+        # at one, the notice's words as the end's, a stamp, which the delivery does not erase. The row is the snapshot
+        # a latch and a send parked behind it leave on disk, written by hand here.
+        be, fake, tmp, sid = self._turned()
+        reg = be._reg_path()
+        rows = json.loads(reg.read_text())
+        rows[sid]["compacting"] = True
+        rows[sid]["queue"] = [{"id": "q-11111111222233334444555555555555", "text": "parked behind the compaction"}]
+        reg.write_text(json.dumps(rows))
+        logs = []
+        before = time.time()
+        be2 = cb.CodexBackend(tmp, client_factory=lambda: fake, log=logs.append)   # the kernel restart, re-arm and all
+        self.assertTrue(until(lambda: not be2.busy(sid) and not be2.pending_queued(sid)),
+                        "the boot re-armed the queued session: the parked message's turn ran")
+        self.assertTrue(_lock_free(be2, sid))
+        self.assertIn("parked behind the compaction", Path(be2.transcript_path(sid)).read_text(), "delivered")
+        self.assertIsNone(be2.launch_error(sid), "the delivered message cleared the notice, as any message does")
+        rec = be2.compact_end(sid)
+        self.assertEqual((rec["ends"], rec["kind"]), (1, "loud"), "the restart's end is the record's first, and loud")
+        for word in ("restarted", "compacting", "unknown"):
+            self.assertIn(word, rec["text"], "the end's words are the notice's")
+        self.assertIsNotNone(rec["at"])
+        self.assertGreaterEqual(rec["at"], before, "stamped at the restart")
+        self.assertEqual([l for l in logs if l.startswith("compaction of")],
+                         ["compaction of web ended: %s" % rec["text"]], "logged once, in the shape of every loud end")
+        self.assertIs(be2.compacting(sid), False, "no bracket is restored: nothing would ever end it")
+        rows2 = json.loads(reg.read_text())
+        self.assertEqual((rows2[sid]["compacting"], rows2[sid]["launchError"], registry_queue_texts(rows2, sid)),
+                         (False, None, []), "on disk: a second restart restores neither the bracket, the notice nor the message")
+        self.assertTrue(be2.send(sid, "after the restart"))
+        self.assertTrue(until(lambda: not be2.busy(sid) and not be2.pending_queued(sid)))
+        self.assertEqual(be2.compact_end(sid), rec, "a turn erases the notice, never the record")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
