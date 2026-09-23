@@ -40,7 +40,7 @@ from pathlib import Path
 # #1735: the gc-freeze ended-session note. Rather than GUESS at the pop whether an ended session is cyclic (three
 # review rounds each guessed from a state flag and each missed a path), every session-end pop REGISTERS the session
 # with the controller, which judges it by observation at the idle tick: a weakref that died means it was acyclic and
-# is gone; one still alive with its worker thread finished is a surviving cycle to reclaim. The kernel injects the
+# is gone; one still alive with its worker thread finished is a surviving cycle to reclaim (or a ref a live root keeps, which reads the same, costs one reclaim and is counted a survivor). The kernel injects the
 # controller's note_ended here. A no-op until injected (a bare backend in a unit test needs no wiring).
 _ENDED_NOTE = [None]
 
@@ -51,7 +51,7 @@ def set_ended_note(fn):
 
 def _note_ended(session):
     """Register an ended session (and its worker thread) with the gc-freeze controller, which decides at the idle
-    tick whether it was a surviving cycle. The three session-end pops call this; the controller measures, so no
+    tick whether it was a surviving cycle (or a ref a live root keeps, which reads the same, costs one reclaim and is counted a survivor). The three session-end pops call this; the controller measures, so no
     per-path cyclicity guess is made here."""
     fn = _ENDED_NOTE[0]
     if fn is not None:

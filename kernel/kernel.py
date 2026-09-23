@@ -1232,8 +1232,8 @@ _PERF_STATS = _PerfStats()
 # decoded heap out of the cycle collector's walk (a warm full collection over 5.6M loaded objects fell from
 # 2.83 s to 0.1 ms once frozen; plans/gc-full-collection-pause.md); it reconciles at the idle boundary. A LOAD
 # fold-in keys on the record cache's insert counter; a RELEASE reclaim is owed when an ended session, registered
-# by weakref at its pop, is observed still alive with its worker thread finished (a surviving cycle), or by a
-# bounded fold-in backstop. The reconcile's pause is paid with no browser waiting. Default on; ROMP_GC_FREEZE=off.
+# by weakref at its pop, is observed still alive with its worker thread finished (a surviving cycle, or a ref a live root keeps,
+# which reads the same, costs one reclaim and is counted a survivor), or by a bounded fold-in backstop. The reconcile's pause is paid with no browser waiting. Default on; ROMP_GC_FREEZE=off.
 _GC_FREEZE_ERRORS = [0]
 _GC_FREEZE_SAID = [False]
 _GC_FREEZE_LOAD_TREES, _gc_freeze_bad_knob = gcf.load_trees_from_env()   # parsed with a fallback, never a bare int() at import (#1735 high)
@@ -1261,10 +1261,16 @@ def _gc_freeze_tick(idle, first):
             except Exception:
                 pass
     kind = gcf.pusher_tick(_GC_FREEZE, idle, first, em.record_cache_stats, on_error)
-    if kind == "release":    # #1735: a release means a session ended with a surviving cycle and a full-heap pause; name it (one line per release, none per load tick)
+    if kind == "release":    # #1735: a release means a session ended and the collector took (or was owed) a full-heap pause; name it (one per release, none per load)
         try:
-            sys.stderr.write("gc-freeze: a release reclaimed a surviving cycle for ended session(s) %s in %.1f ms\n"
-                             % (",".join(_GC_FREEZE.last_release_sids) or "?", _GC_FREEZE.last_ms))
+            survivors = getattr(_GC_FREEZE, "last_release_survivors", 0)
+            if survivors:    # nothing was freed: a LIVE ROOT keeps the ref (not a cycle); name it kept, never "reclaimed"
+                sys.stderr.write("gc-freeze: a release walked the frozen heap for ended session(s) %s in %.1f ms and freed nothing "
+                                 "(kept alive by a live root, one wasted reclaim)\n"
+                                 % (",".join(getattr(_GC_FREEZE, "last_kept_sids", [])) or "?", _GC_FREEZE.last_ms))
+            else:            # the reclaim freed the released cycle
+                sys.stderr.write("gc-freeze: a release reclaimed a surviving cycle for ended session(s) %s in %.1f ms\n"
+                                 % (",".join(_GC_FREEZE.last_release_sids) or "?", _GC_FREEZE.last_ms))
         except Exception:
             pass
 
