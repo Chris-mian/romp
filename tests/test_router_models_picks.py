@@ -378,7 +378,9 @@ class SeedInflight(_OnThenOff):
     def test_a_seed_the_listing_may_still_vouch_is_held_while_the_fetch_is_in_flight(self):
         # the verify round's find: a create right after boot reset a valid remembered gateway model to default before
         # the gateway's listing had landed. The store is kept and the create door launches that row on the default.
+        _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")   # the seed undeclared: a declared one is held on its own account
         self._seed("gw-7-nova")
+        km.jd.STATE.joinpath(km.ROUTER_MODELS_FILE).write_text(json.dumps({"enabled": True, "gt": 1}))   # a mark exists only under an on switch
         km._ROUTER_FETCH_GEN[0] = km._ROUTER_GEN[0]          # a listing for the current generation in flight
         self.assertEqual(km._reset_unvouched_seed(), "hold")
         self.assertEqual(self._read(), "gw-7-nova", "left as it is")
@@ -390,7 +392,9 @@ class SeedInflight(_OnThenOff):
     def test_a_seed_is_held_when_the_current_generations_listing_failed(self):
         # the second reviewer's note: a listing that failed at the current generation is not a removal (nothing retries it until the next
         # flip or restart): the store is kept, the line names the cause established, the row starts on the default
+        _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")   # the seed undeclared: a declared one is held on its own account
         self._seed("gw-7-nova")
+        km.jd.STATE.joinpath(km.ROUTER_MODELS_FILE).write_text(json.dumps({"enabled": True, "gt": 1}))   # a mark exists only under an on switch
         km._ROUTER_FETCH_FAILED_GEN[0] = km._ROUTER_GEN[0]
         self.assertEqual(km._reset_unvouched_seed(), "hold")
         self.assertEqual(self._read(), "gw-7-nova")
@@ -559,6 +563,7 @@ class SeedInflight(_OnThenOff):
         # the hold path, with the marks flipped right after the snapshot returns: a second read would see no mark
         self.err.truncate(0); self.err.seek(0)
         self._seed("gw-7-nova")
+        km.jd.STATE.joinpath(km.ROUTER_MODELS_FILE).write_text(json.dumps({"enabled": True, "gt": 1}))   # a mark exists only under an on switch
         km._ROUTER_FETCH_GEN[0] = km._ROUTER_GEN[0]
         real = km._router_listing_state
 
@@ -683,6 +688,33 @@ class SeedInflight(_OnThenOff):
         self.assertIn("(the extra models switch is off)", self.err.getvalue())
         self.assertNotIn("not offered yet", self.err.getvalue())
 
+    def test_an_off_flip_in_the_window_resets_even_while_the_listing_is_in_flight_or_failed(self):
+        # review round thirteen: the in-flight and failed holds fired after an off flip too, keeping a just-removed id
+        # as "not offered yet"; the switch is re-read before ANY hold
+        for mark in ("in_flight", "failed"):
+            self._seed("gw-7-nova")
+            km._set_router_models(True, gt=1700000000010 + (0 if mark == "in_flight" else 2))
+            if mark == "in_flight":
+                km._ROUTER_FETCH_GEN[0] = km._ROUTER_GEN[0]
+            else:
+                km._ROUTER_FETCH_FAILED_GEN[0] = km._ROUTER_GEN[0]
+            real_state = km._router_listing_state
+            flipped = []
+
+            def state_then_off():
+                snap = real_state()
+                if not flipped:
+                    flipped.append(1)
+                    km._set_router_models(False, gt=1700000000011 + (0 if mark == "in_flight" else 2))
+                return snap
+            with mock.patch.object(km, "_router_listing_state", state_then_off):
+                self.assertIsNone(km._reset_unvouched_seed(), mark + ": an off flip is a removal, hold or no hold")
+            self.assertEqual(self._read(), "default", mark)
+            self.assertIn("(the extra models switch is off)", self.err.getvalue(), mark)
+            self.assertNotIn("not offered yet", self.err.getvalue(), mark)
+            self.err.truncate(0); self.err.seek(0)
+            km._ROUTER_FETCH_GEN[0] = None; km._ROUTER_FETCH_FAILED_GEN[0] = None
+
     def test_a_create_racing_the_flips_bump_waits_for_the_mark(self):
         # review round twelve: the bump and the mark were two holds, so a create in the gap read the new generation
         # with no mark and reset the pick. The flip holds the settings lock across its store write, bump and mark; the
@@ -692,24 +724,25 @@ class SeedInflight(_OnThenOff):
         _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")
         _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
         inside, go, listing_gate = threading.Event(), threading.Event(), threading.Event()
-        real_allowed = km._router_fetch_allowed
+        real_write = km._atomic_write
 
-        def allowed_then_pause():
-            r = real_allowed()
-            if not inside.is_set():
+        def write_then_pause(path, text, *a, **k):
+            r = real_write(path, text, *a, **k)
+            if str(path).endswith(km.ROUTER_MODELS_FILE) and not inside.is_set():
                 inside.set()
-                go.wait(5)                  # the flip parks here, inside its settings hold, before the bump
-            return r
+                go.wait(5)                  # the flip parks here: the store is written ON, the bump and the mark not yet, all
+            return r                        # inside its settings hold (review round thirteen: parked before the store write
+        #                                     the test pinned nothing about the snapshot's settings lock)
 
         def listing(url, timeout=4):
             listing_gate.wait(5)
             return ["gw-7-nova"]
         verdict = {}
-        with mock.patch.object(km, "_router_fetch_allowed", allowed_then_pause), \
+        with mock.patch.object(km, "_atomic_write", write_then_pause), \
                 mock.patch.object(km, "_fetch_router_models", listing), mock.patch.object(km, "_models_changed", lambda: None):
             flip = threading.Thread(target=lambda: km._set_router_models(True, gt=1700000000010))
             flip.start()
-            self.assertTrue(inside.wait(5), "the flip reached the knob read")
+            self.assertTrue(inside.wait(5), "the flip wrote the store and parked before its bump")
             create = threading.Thread(target=lambda: verdict.__setitem__("v", km._reset_unvouched_seed()))
             create.start()
             create.join(0.3)
@@ -728,29 +761,30 @@ class SeedInflight(_OnThenOff):
         _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")
         _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
         park, listing_gate = threading.Event(), threading.Event()
-        probes = []
-        real_probe = km._router_gateway_configured
+        notes = []
+        real_note = km._router_set_note
 
-        def probe_then_park():
-            probes.append(1)
-            if len(probes) == 1:
-                park.wait(5)                # the FIRST flip's apply parks here, after its bump and mark
-            return real_probe()
+        def note_then_park(gen, text):
+            ok = real_note(gen, text)
+            notes.append(ok)
+            if len(notes) == 1 and ok:
+                park.wait(5)                # the FIRST flip's apply parks here, AFTER its note write landed (review round
+            return ok                       # thirteen: parked in the probe it never reached the guarded mark write)
 
         def listing(url, timeout=4):
             listing_gate.wait(5)
             return ["gw-7-nova"]
-        with mock.patch.object(km, "_router_gateway_configured", probe_then_park), \
+        with mock.patch.object(km, "_router_set_note", note_then_park), \
                 mock.patch.object(km, "_fetch_router_models", listing), mock.patch.object(km, "_models_changed", lambda: None):
             first = threading.Thread(target=lambda: km._set_router_models(True, gt=1700000000010))
             first.start()
-            self._wait(lambda: probes, "the first apply to park")
+            self._wait(lambda: notes, "the first apply to park past its note write")
             km._set_router_models(False, gt=1700000000011)
             km._set_router_models(True, gt=1700000000012)   # the second on: its mark is the current one
             gen2 = km._ROUTER_GEN[0]
             self.assertEqual(km._ROUTER_FETCH_GEN[0], gen2)
-            park.set(); first.join(5)                       # the first apply resumes: stale, no thread, no overwrite
-            self.assertEqual(km._ROUTER_FETCH_GEN[0], gen2, "the later flip's mark stands")
+            park.set(); first.join(5)                       # the first apply resumes and reaches the guarded mark write, stale
+            self.assertEqual(km._ROUTER_FETCH_GEN[0], gen2, "the later flip's mark stands (an unguarded write put gen1 here)")
             self.assertTrue(km._router_listing_inflight())
             listing_gate.set()
             self._wait(lambda: not self._fetch_threads(), "the listings to land")
@@ -873,6 +907,7 @@ class Seed(_OnThenOff):
     def test_a_held_seed_launches_the_row_on_the_default_and_keeps_the_store(self):
         # the create door's half of the hold: the reg's copied model is cleared between the spawn and the connect
         sb.write_sdk_default(km.jd.STATE, model="gw-7-nova")
+        km.jd.STATE.joinpath(km.ROUTER_MODELS_FILE).write_text(json.dumps({"enabled": True, "gt": 1}))   # a mark exists only under an on switch
         km._ROUTER_FETCH_GEN[0] = km._ROUTER_GEN[0]          # a listing for the current generation in flight
         self.addCleanup(lambda: km._ROUTER_FETCH_GEN.__setitem__(0, None))
         sid, extra = km._create_sdk_session_inner("api", self.cwd)

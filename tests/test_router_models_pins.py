@@ -249,7 +249,8 @@ def vendor_keys(source):
 
 
 ROUTER_FUNCTIONS = (km._parse_router_models, km._router_label, km._apply_router_families, km._remove_router_families,
-                    km._router_apply_declared, km._set_router_models, km._router_models_boot, km._fetch_router_models,
+                    km._router_apply_declared, km._router_apply_declared_inner, km._set_router_models, km._router_models_boot,
+                    km._fetch_router_models,
                     km._router_first_party, km._router_tell_backend, km._router_live_on, km._router_gateway_configured,
                     km._router_declared_effective, km._router_tiers_on, km._router_fetch_allowed, km._router_status,
                     sb.pretty_model, sb.model_label, sb._alias_label, sb._router_declared, sb.set_router_ids,
@@ -270,6 +271,31 @@ class GenerationBumpsUnderTheLock(unittest.TestCase):
                             and isinstance(inner.target.value, ast.Name) and inner.target.value.id == "_ROUTER_GEN":
                         return True
         return False
+
+    def test_the_flip_publishes_the_mark_in_the_bumps_own_catalog_hold(self):
+        # review round thirteen: the bump-and-mark-in-one-hold claim had no test; pinned on the AST: in _set_router_models
+        # the mark store sits in the same `with _catalog_lock:` body as the bump
+        tree = ast.parse(textwrap.dedent(inspect.getsource(km._set_router_models)))
+        holds = [w for w in ast.walk(tree) if isinstance(w, ast.With)
+                 and any(isinstance(i.context_expr, ast.Name) and i.context_expr.id == "_catalog_lock" for i in w.items)]
+        together = [w for w in holds
+                    if any(isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Subscript)
+                           and isinstance(n.target.value, ast.Name) and n.target.value.id == "_ROUTER_GEN" for n in ast.walk(w))
+                    and any(isinstance(n, ast.Assign) and any(isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name)
+                                                              and t.value.id == "_ROUTER_FETCH_GEN" for t in n.targets)
+                            for n in ast.walk(w))]
+        self.assertEqual(len(together), 1, "one catalog hold carries both the bump and the mark")
+
+    def test_the_snapshot_takes_the_settings_lock_then_the_catalog_lock(self):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(km._router_listing_state)))
+        outer = [w for w in ast.walk(tree) if isinstance(w, ast.With)
+                 and any(isinstance(i.context_expr, ast.Name) and i.context_expr.id == "_SETTINGS_LOCK" for i in w.items)]
+        self.assertEqual(len(outer), 1)
+        inner = [w for w in ast.walk(outer[0]) if isinstance(w, ast.With)
+                 and any(isinstance(i.context_expr, ast.Name) and i.context_expr.id == "_catalog_lock" for i in w.items)]
+        self.assertEqual(len(inner), 1, "the catalog hold sits inside the settings hold")
+        reads = [n for n in ast.walk(inner[0]) if isinstance(n, ast.Name) and n.id in ("_ROUTER_GEN", "_ROUTER_FETCH_GEN", "_ROUTER_FETCH_FAILED_GEN")]
+        self.assertTrue(reads, "the marks are read inside both holds")
 
     def test_the_setter_and_the_boot_bump_the_generation_under_the_settings_lock(self):
         self.assertTrue(self._bump_is_locked(km._set_router_models))

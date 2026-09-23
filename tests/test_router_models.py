@@ -897,7 +897,8 @@ class SdkBadge(unittest.TestCase):
         # the CODE, docstrings aside (a docstring may name a vendor's id as its example shape)
         self.assertNotIn('startswith("gpt', inspect.getsource(sb))
         for fn in (km._parse_router_models, km._router_label, km._apply_router_families, km._remove_router_families,
-                   km._router_apply_declared, km._set_router_models, km._router_models_boot, km._fetch_router_models,
+                   km._router_apply_declared, km._router_apply_declared_inner, km._set_router_models, km._router_models_boot,
+                   km._fetch_router_models,
                    km._router_first_party, km._router_tell_backend, km._router_live_on, km._router_gateway_configured,
                    km._router_declared_effective, km._router_tiers_on, km._router_fetch_allowed,
                    sb.pretty_model, sb.model_label, sb._alias_label, sb._router_declared, sb.set_router_ids):

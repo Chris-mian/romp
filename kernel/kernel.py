@@ -17487,12 +17487,15 @@ def _reset_unvouched_seed():
     #                                                        that moment; review round ten)
     if _vouched_model(seed):
         return
-    on_now = on
+    with _SETTINGS_LOCK:
+        with _catalog_lock:
+            moved = _ROUTER_GEN[0] != gen
+            on_now = _router_models_on()   # the switch as it reads NOW, read before ANY hold: an off flip in the window is a
+    #                                        removal whatever the listing was doing (review round thirteen), so every hold
+    #                                        below is conditioned on the switch reading on
+    if not on_now:
+        in_flight = failed = False         # the holds are for a switch that is on; off falls through to the cause read
     if not _router_first_party(seed) and not (in_flight or failed):
-        with _SETTINGS_LOCK:
-            with _catalog_lock:
-                moved = _ROUTER_GEN[0] != gen
-                on_now = _router_models_on()   # the switch as it reads NOW: a flip in the window is what moved the generation
         moved_on = moved and on_now
         if moved_on:
             # an ON flip landed between the snapshot and the vouch: its listing may yet vouch the seed, and the cause
