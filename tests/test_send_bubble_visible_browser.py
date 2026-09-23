@@ -271,7 +271,7 @@ if (on("G")) {
   await page.waitForTimeout(400);
   const text = fresh("land");
   await send(text);
-  if (cfg.pauseBeforeCapture) await page.waitForTimeout(300);   // red-first (SB_PAUSE_BEFORE_CAPTURE): a chatTail landing in this window is counted; nAtSend from a fresh read AFTER the Enter would then exclude it and the wait would time out, but nAtSend from lastSeen (the send's own pre-Enter snapshot) is immune
+  if (cfg.pauseBeforeCapture) await page.waitForTimeout(300);   // the pause runs by DEFAULT (300 ms on a ~19 s run) so this red-first runs unattended in CI: a chatTail landing in this window is counted; nAtSend from a fresh read AFTER the Enter would exclude it and the wait would time out, but nAtSend from lastSeen (the send's pre-Enter snapshot) is immune. SB_PAUSE_BEFORE_CAPTURE=0 opts OUT for a by-hand natural-timing run.
   const nAtSend = lastSeen;   // the snapshot the send took at its start (snap() before the Enter), NOT a fresh read after it: a chatTail arriving between the Enter and a fresh read would be counted and then excluded from the wait at fr.n > nAtSend (a latent flake, the reviewer 2026-09-23). waitFrames below re-snaps lastSeen, so capture it here.
   await waitFrames(1, 4000); await painted();
   // variant-G race (the reviewer, 2026-09-23): the listener's window.__last tracks SESSION frames only, but the page's
@@ -491,7 +491,7 @@ class ServedSendBubbleVisible(unittest.TestCase):
         with open(cfg, "w") as f:
             json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token),
                        "transcript": self.transcript, "sid": SID, "t0": self.t0, "parent": "a3", "rounds": ROUNDS,
-                       "consoleLog": console_log, "variants": None, "remote": None, "pauseBeforeCapture": os.environ.get("SB_PAUSE_BEFORE_CAPTURE") == "1", "out": os.path.join(self.lab, "result.json")}, f)
+                       "consoleLog": console_log, "variants": None, "remote": None, "pauseBeforeCapture": os.environ.get("SB_PAUSE_BEFORE_CAPTURE") != "0", "out": os.path.join(self.lab, "result.json")}, f)
         driver = os.path.join(self.lab, "driver.mjs")
         with open(driver, "w") as f:
             f.write(DRIVER)
