@@ -11,6 +11,7 @@ logs) instead of clobbering. The store is an append-only event log, so two write
 events never really conflicted: the right answer is both sets. All fixtures SYNTHETIC.
 """
 import contextlib
+import copy
 import errno
 import json
 import os
@@ -444,12 +445,14 @@ class StoreCas(unittest.TestCase):
             jd.save_goals(SID, holder)
         self.assertNotEqual(json.loads(path.read_text())["nodes"][g1].get("blockWhy"), "a why written by hand", "a diary-owned key is not carried (the log is its source)")
 
-    def test_a_base_that_rolled_out_of_the_raw_history_carries_nothing_and_says_so(self):
-        """The history keeps the last few versions per path; a holder that outlived them (more publishes meanwhile than it keeps) rebases as
-        before the rule, carrying no plain field, and the goals counters count the miss."""
+    def test_a_holder_without_its_reference_whose_base_rolled_out_of_the_caches_carries_nothing_and_says_so(self):
+        """The memo and its histories are a cache of the last few versions per path; a holder WITHOUT its own reference to its base's bytes
+        (a store rebuilt from JSON carries none: the reference serializes as an empty object) that outlived them rebases as before the rule,
+        carrying no plain field, and the goals counters count the miss. A holder with its reference never gets here (the pin below)."""
         self._seed()
         g1 = self._nid(1)
-        holder = jd.load_goals(SID)
+        holder = json.loads(json.dumps(jd.load_goals(SID)))   # rebuilt from JSON: the identity stays (as a list), the reference is gone
+        self.assertNotIsInstance(holder.get("_baseSrc"), getattr(jd, "_BaseRef", ()), "premise: no reference on a store rebuilt from JSON")
         for i in range(jd._RAW_HISTORY_KEEP + 2):    # loop-ok: bounded by the history's depth
             w = jd.load_goals(SID); w["nodes"][g1]["parentId"] = "V%d" % i; jd.save_goals(SID, w)
         before = dict(jd._GOAL_IO) if hasattr(jd, "_GOAL_IO") else None
@@ -458,6 +461,53 @@ class StoreCas(unittest.TestCase):
         self.assertIsNone(after.get("parentId"), "the base rolled out: nothing carried, the holder's field stands (as before the rule)")
         if before is not None:
             self.assertEqual(jd._GOAL_IO.get("carryNoBase", 0) - before.get("carryNoBase", 0), 1, "and the counter says the base was gone")
+
+    def test_a_holders_own_reference_keeps_its_base_however_many_versions_others_publish(self):
+        """The post-merge review of PR 2108: four read versions in the shared history are a typical count, not a bound; a holder that saved
+        after five or six of another writer's load-then-publish cycles found no base and published over the other's field (five resolves in
+        one pass suffice). The load stamps the holder's store with its own reference to the memo's pickle for the version it read, moved by
+        every rebase and publish, so the base is the holder's however far the caches move on: six cycles, and the field is carried."""
+        self._seed()
+        g1 = self._nid(1)
+        holder = jd.load_goals(SID)
+        for i in range(6):                           # loop-ok: the six cycles the review executed, past the shared history's depth
+            w = jd.load_goals(SID); w["nodes"][g1]["parentId"] = "V%d" % (i + 1); jd.save_goals(SID, w)
+        self.assertGreater(6, jd._RAW_HISTORY_KEEP, "premise: more cycles than the shared history keeps")
+        before = dict(jd._GOAL_IO)
+        jd.record_verdict(holder, holder["nodes"][g1], "unblocker", "note", T0 + 40, why="ours"); jd.save_goals(SID, holder)
+        after = json.loads((jd.GOALDIR / (SID + ".json")).read_text())["nodes"][g1]
+        self.assertEqual(after.get("parentId"), "V6", "the other writer's last move is carried after six cycles (before: the base rolled out of the history, nothing carried, the holder's copy published over it)")
+        self.assertEqual((jd._GOAL_IO["carryBase"] - before["carryBase"], jd._GOAL_IO["carryNoBase"] - before["carryNoBase"]), (1, 0), "the base was the holder's own")
+        # the mechanism, after the behaviour: the load stamps the reference (a pickle), a publish moves it to the text written, never serialized
+        self.assertIsInstance(holder.get("_baseSrc"), jd._BaseRef, "the holder carries its reference"); self.assertEqual(holder["_baseSrc"].kind, "text", "after its publish the holder's reference is the text it wrote")
+        self.assertEqual(jd.load_goals(SID)["_baseSrc"].kind, "pickle", "a fresh load's reference is the memo's pickle")
+        self.assertNotIn("_baseSrc", json.loads((jd.GOALDIR / (SID + ".json")).read_text()), "transient, never serialized")
+
+    def test_a_deep_copy_of_the_shared_view_saved_carries_the_other_writers_field_from_the_views_own_nodes(self):
+        """The shared read-only view's parse is not the raw-parse memo's, so a copy taken from it and saved found a field base only when a
+        writer load or publish in this process had put the same version in the memo or its histories. Here nothing in this process reads
+        or publishes the version the view is built from (another process writes it), so the memo has nothing for it; the view stamps its
+        own frozen nodes as its base reference, a deep copy carries it, and its save after the other process's next edit carries that
+        edit's field."""
+        self._seed()
+        g1 = self._nid(1)
+        path = jd.GOALDIR / (SID + ".json")
+
+        def edit_from_another_process(key, value):
+            subprocess.run([sys.executable, "-c",
+                            "import json, sys\np = sys.argv[1]; d = json.loads(open(p).read())\n"
+                            "d['nodes'][sys.argv[2]][sys.argv[3]] = sys.argv[4]; d['rev'] += 1\nopen(p, 'w').write(json.dumps(d))",
+                            str(path), g1, key, value], check=True, timeout=60)
+        edit_from_another_process("label", "V1 written by another process")   # the version the view will be built from: no read or publish of it in this process
+        view = jd.load_goals_shared(SID)
+        c = copy.deepcopy(view)
+        edit_from_another_process("parentId", "theirs")   # the other writer's move after the copy was taken
+        before = dict(jd._GOAL_IO)
+        jd.record_verdict(c, c["nodes"][g1], "unblocker", "note", T0 + 40, why="ours"); jd.save_goals(SID, c)
+        after = json.loads(path.read_text())["nodes"][g1]
+        self.assertEqual((after.get("parentId"), jd._GOAL_IO["carryBase"] - before["carryBase"]), ("theirs", 1), "carried from the view's own nodes (before: no base for a version this process never read through the writer's loader, nothing carried)")
+        self.assertEqual(after.get("label"), "V1 written by another process", "the earlier edit stands too")
+        self.assertEqual(getattr(view.get("_baseSrc"), "kind", None), "nodes", "the mechanism: the view's reference is its own nodes")
 
     def test_an_in_place_editor_that_changes_a_field_is_carried_too(self):
         """The box lab's own shape: the file rewritten in place with rev and seq bumped, a brief changed WITH its family stamped (briefedMt, as
@@ -499,8 +549,8 @@ class StoreCas(unittest.TestCase):
         """The round-three verifier of PR 2101: the publish's text entries took the readers' history slots, so a concurrent in-process holder
         whose base was version V lost V's entry a cycle sooner than before the texts were kept (a judge pass runs about four publish-then-load
         cycles), found no base at its save, carried nothing and published its copy over the other writer's edit, the loss this rule exists to
-        prevent, in a narrower window. The published texts live in a deque of their own: one holder, three publish-then-load cycles by another
-        writer in the same process, and the holder's save still finds its base and carries the other writer's field."""
+        prevent, in a narrower window. The published texts live in a deque of their own: one holder, a pass's worth of publish-then-load cycles
+        (four) by another writer in the same process, and the holder's save still finds its base and carries the other writer's field."""
         self._seed()
         g1 = self._nid(1)
         holder = jd.load_goals(SID)                  # stands on V0

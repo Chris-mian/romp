@@ -4691,9 +4691,13 @@ class GuardedNode(dict):
 # readers' slots) the text a publish in this process wrote (the writer's own next base; only a read fills the memo, and none may parse
 # that version before the writer's next save). Nothing is
 # digested or copied at a load or a save, and the base is parsed only when a rebase happens (the round-one verifier of the field carry:
-# a digest per field at every load and save cost a 5000-node store 121 ms a load against 15 and 6 MB more retained). A base whose bytes
-# have rolled out of the history (more versions published meanwhile than it keeps) carries nothing, as before the rule, and the goals
-# counters say so (carryNoBase). The diary-owned keys (PROTECTED) are
+# a digest per field at every load and save cost a 5000-node store 121 ms a load against 15 and 6 MB more retained). The memo and its
+# histories are the CACHE for the common case; the GUARANTEE is the holder's own transient reference to its base's bytes (`_baseSrc`: the
+# memo's pickle for the version the load read, moved to the version each rebase read and to the text each publish wrote), which no
+# eviction reaches, so a holder's save always finds its base however many versions others published meanwhile (the post-merge review of
+# PR 2108: a bounded history lost it after five). Only a holder without its reference (a store rebuilt from JSON carries none) falls back
+# to the caches, and one whose version rolled out of them carries nothing, as before the rule, the goals counters saying so
+# (carryNoBase). The diary-owned keys (PROTECTED) are
 # re-derived from the merged log, and every FAMILY-managed key (the distill families' stamps and fields, _DISTILL_FAMILIES) is left
 # to the family merge, which adopts a family as a unit when the other side's stamp is newer: an in-place edit of a family field
 # therefore stamps its family (briefedMt for a brief), as every kernel writer of a brief does, or the family merge keeps the holder's.
@@ -4809,9 +4813,12 @@ def _quarantine_store(path, reason, st):
 _RAW_STORE = {}                                  # store path → ((st_ino, st_mtime_ns, st_size), text, pickled parse)
 _RAW_STORE_LOCK = threading.Lock()
 _RAW_STORE_STATS = {"hit": 0, "miss": 0, "compare_miss": 0, "evict": 0}
-_RAW_HISTORY_KEEP = 4                            # a judge pass runs about four publish-then-load cycles by another writer between a holder's load and its
-#                                                  save, and each cycle rolls the memo past one version, so four read versions cover a pass; three lost the
-#                                                  base on the fourth (the round-four verifier of PR 2101), one read parse more per path, bounded and gauged
+_RAW_HISTORY_KEEP = 4                            # a judge pass TYPICALLY runs about four publish-then-load cycles by another writer between a holder's load
+#                                                  and its save, each rolling the memo past one version, so four read versions serve the common case from
+#                                                  the shared memo; it is a cache depth, not a correctness bound (the post-merge review of PR 2108: five
+#                                                  resolves in one pass, or a peer's death converting five waits to blocks, run past it): the holder's own
+#                                                  reference to its base (`_baseSrc`, stamped by load_goals and moved by every rebase and publish) is the
+#                                                  guarantee, bounded by the live holders, one base each
 _RAW_HISTORY = {}                                # store path → the last few versions a READ rolled the memo past, as (identity, pickled parse): a
 #                                                  reference to the memo's own pickle, no copy. The field carry's base for a holder still standing on one
 #                                                  of them; a deque of _RAW_HISTORY_KEEP per path, dropped with the path's memo entry (_raw_store_forget,
@@ -4848,9 +4855,26 @@ def _raw_history_drop(hist, path_s, ident):
         hist.pop(path_s, None)
 
 
-def _base_nodes(path_s, ident):
-    """The nodes as the file held them at `ident`, from the raw-parse memo, the readers' history (a parse) or the published texts, else
-    None (the version rolled out)."""
+class _BaseRef(dict):
+    """A loaded store's own reference to its field base's bytes (`_baseSrc`): `kind` "pickle" (the memo's pickled parse of the version a
+    read returned, shared, not copied), "text" (the text this holder's publish wrote) or "nodes" (the shared read-only view's frozen
+    nodes, the view's own parse). A dict subclass with the payload in attributes, so json.dumps of a loaded store still serializes
+    (as an empty object) and a store rebuilt from JSON simply carries no reference, falling back to the memo and its histories."""
+    __slots__ = ("kind", "payload")
+
+    def __init__(self, kind, payload):
+        super().__init__()
+        self.kind, self.payload = kind, payload
+
+    def __repr__(self):
+        return "_BaseRef(%s, %d bytes)" % (self.kind, len(self.payload) if isinstance(self.payload, (bytes, str)) else len(self.payload or ()))
+
+
+def _base_nodes(path_s, ident, src=None):
+    """The nodes as the file held them at `ident`: from the raw-parse memo, the readers' history (a parse) or the published texts, the
+    shared caches for the common case; else from `src`, the holder's own reference to the version's bytes (`_baseSrc`, a _BaseRef: the
+    memo's pickle from a read, the text of its own publish, or the shared view's frozen nodes), the guarantee no eviction reaches; else
+    None (a holder without its reference, a store rebuilt from JSON, whose version rolled out of the caches)."""
     blob = text = None
     with _RAW_STORE_LOCK:
         ent = _RAW_STORE.get(path_s)
@@ -4864,6 +4888,13 @@ def _base_nodes(path_s, ident):
                 for old_ident, old_text in reversed(_RAW_PUBLISHED.get(path_s) or ()):
                     if old_ident == ident:
                         text = old_text; break
+    if blob is None and text is None and isinstance(src, _BaseRef):
+        if src.kind == "pickle" and isinstance(src.payload, (bytes, bytearray)):
+            blob = src.payload
+        elif src.kind == "text" and isinstance(src.payload, str):
+            text = src.payload
+        elif src.kind == "nodes" and isinstance(src.payload, dict):
+            return src.payload                       # the shared view's own parse: read, never written (the carry reads bnd.get)
     if blob is None and text is None:
         return None
     try:
@@ -4935,7 +4966,7 @@ def raw_store_stats():
     return out
 
 
-def _read_store_json(path, *, quarantine=False, _tries=3, ident_out=None):
+def _read_store_json(path, *, quarantine=False, _tries=3, ident_out=None, blob_out=None):
     """The parsed JSON object at `path`, or None when the file is ABSENT (a session with no store yet).
 
     Every other failure is a fact about the file the caller must not paper over: a read FAULT (EIO,
@@ -4957,6 +4988,8 @@ def _read_store_json(path, *, quarantine=False, _tries=3, ident_out=None):
     The parse is memoized per file version (the _RAW_STORE note above): a read whose identity and text match
     the entry answers a fresh copy of the earlier parse; any other outcome drops the path's entry.
 
+    `blob_out`, a list, receives the memo's pickled parse of the version this call returns (the entry's own bytes, a reference): the
+    holder's guarantee of its field base (load_goals stamps it as `_baseSrc`), which no eviction of the memo or its history reaches.
     `ident_out`, a list, receives the identity (inode, mtime_ns, size) of the file whose bytes this call returns,
     for load_goals' CAS base (save_goals compares it beside the revision: an in-place rewrite that left `rev`
     alone is a publication too; the CI red of 2026-09-23 on the box lab, whose driver
@@ -4982,6 +5015,8 @@ def _read_store_json(path, *, quarantine=False, _tries=3, ident_out=None):
         if ent is not None and ent[0] == ident:
             if ent[1] == raw:
                 _raw_bump("hit")
+                if blob_out is not None:
+                    blob_out.append(ent[2])
                 return pickle.loads(ent[2])          # a fresh object: the caller may mutate it
             _raw_bump("compare_miss")
         else:
@@ -4997,7 +5032,10 @@ def _read_store_json(path, *, quarantine=False, _tries=3, ident_out=None):
                     if prev is not None and prev[0] != ident:   # the version the memo rolls past: kept for the holders that loaded it (the field carry's base)
                         _raw_history_push(_RAW_HISTORY, path_s, prev[0], prev[2], _RAW_HISTORY_KEEP)
                         _raw_history_drop(_RAW_PUBLISHED, path_s, prev[0])   # its parse stands now: the text this process published for it goes
-                    _RAW_STORE[path_s] = (ident, raw, pickle.dumps(value, pickle.HIGHEST_PROTOCOL))
+                    blob = pickle.dumps(value, pickle.HIGHEST_PROTOCOL)
+                    _RAW_STORE[path_s] = (ident, raw, blob)
+                    if blob_out is not None:
+                        blob_out.append(blob)
                     _raw_history_drop(_RAW_PUBLISHED, path_s, ident)   # and the version the memo just took needs no published text either: the
                     #                                                    memo's own text and parse stand for it (the round-four verifier of PR 2101: a
                     #                                                    duplicate text per current version, the store's size again)
@@ -5009,7 +5047,7 @@ def _read_store_json(path, *, quarantine=False, _tries=3, ident_out=None):
         raise bad
     if _quarantine_store(path, reason, st) is not None or _tries <= 1:
         return None                                  # the bad bytes are preserved aside: a fresh store is legitimate
-    return _read_store_json(path, quarantine=True, _tries=_tries - 1, ident_out=ident_out)   # declined: the file changed under us; the
+    return _read_store_json(path, quarantine=True, _tries=_tries - 1, ident_out=ident_out, blob_out=blob_out)   # declined: the file changed under us; the
     #                                                                                          retry appends ITS file's identity, and the caller
     #                                                                                          takes the last (the round-one verifier of PR 2064:
     #                                                                                          the unparseable file's identity stood as the base)
@@ -5065,22 +5103,27 @@ def load_goals(fsid):
     """The WRITER's loader: a private, mutable store the caller may mutate and hand to save_goals. Read-only
     callers on the pusher thread take load_goals_shared instead (one parse per file version, shared).
 
-    The session's goal store: the file parsed, the override journal replayed onto it, and three TRANSIENT
+    The session's goal store: the file parsed, the override journal replayed onto it, and four TRANSIENT
     keys that are never serialized (save_goals pops them; _store_content keeps them out of the content hash):
     `_baseRev`, the revision read, for save_goals' CAS; `_baseIdent`, the identity of the file it was read
-    from, for the CAS and as the name of the rebase's field base (_base_nodes); and `_unread` ("journal"),
-    set by _replay_overrides when the journal exists and could not be read. A store file that cannot be read RAISES, never an empty
+    from, for the CAS and as the name of the rebase's field base (_base_nodes); `_baseSrc`, the holder's own
+    reference to that version's bytes (a _BaseRef over the memo's pickle, shared, not copied; an empty object to
+    json.dumps, so a store rebuilt from JSON carries none), the field base's guarantee when the memo and its
+    histories have moved on; and `_unread` ("journal"), set by _replay_overrides when the
+    journal exists and could not be read. A store file that cannot be read RAISES, never an empty
     store (load_goals_or_fault is the per-session boundary that catches it); an unparseable one is moved
     aside by _read_store_json and the fresh store is the legitimate answer; an ABSENT file is the fresh
     store, unmarked (empty IS its content)."""
     _goal_io_bump("loads")
-    ident = []
-    raw = _read_store_json(GOALDIR / (fsid + ".json"), quarantine=True, ident_out=ident)
+    ident, blob = [], []
+    raw = _read_store_json(GOALDIR / (fsid + ".json"), quarantine=True, ident_out=ident, blob_out=blob)
     if raw is None:
         return _fresh_store(fsid)                    # _baseRev 0 and no _baseIdent: a file that appears before the save is a publication
     store = _finish_load(fsid, _guard_nodes(raw))
     store["_baseIdent"] = ident[-1] if ident else None   # the file the base was read from (transient, popped by save_goals); it also names the
     #                                                  bytes the rebase's field carry compares against (_base_nodes), so nothing is copied here
+    store["_baseSrc"] = _BaseRef("pickle", blob[-1]) if blob else None   # and the holder's own reference to those bytes, the memo's pickle (shared, not copied):
+    #                                                  the base's guarantee once the memo and its histories have moved on (transient, popped by save_goals)
     return store
 
 
@@ -5225,13 +5268,13 @@ def _rebase_onto_disk(fsid, store):
 
     Verdict identity is (ev_t, src, kind) — the same triple _replay_overrides dedups a re-recorded block
     on — so a replayed/duplicated event folds instead of doubling."""
-    read_ident = []
-    raw = _read_store_json(GOALDIR / (fsid + ".json"), ident_out=read_ident)
+    read_ident, read_blob = [], []
+    raw = _read_store_json(GOALDIR / (fsid + ".json"), ident_out=read_ident, blob_out=read_blob)
     if raw is None:
         return                                       # no published store to rebase onto → publish as-is
     bident = store.get("_baseIdent")                 # the version this holder stands on: the field carry's base (the bytes the load read)
-    base_nodes = _base_nodes(str(GOALDIR / (fsid + ".json")), tuple(bident)) if bident else None
-    _goal_io_bump("carryBase" if base_nodes is not None else "carryNoBase")   # a base that rolled out of the raw history carries nothing
+    base_nodes = _base_nodes(str(GOALDIR / (fsid + ".json")), tuple(bident), store.get("_baseSrc")) if bident else None   # the caches, else the holder's own reference
+    _goal_io_bump("carryBase" if base_nodes is not None else "carryNoBase")   # a holder without its reference whose base rolled out of the caches carries nothing
     disk = _guard_nodes(raw)                         # (a fault or unparseable file raises: never rebase
     d_nodes, m_nodes = disk.get("nodes") or {}, store.get("nodes") or {}    #  past what we could not read)
     # MERGE TOMBSTONES (2026-08-13): presence-in-a-snapshot is not truth — a stale pre-merge writer
@@ -5414,6 +5457,7 @@ def _rebase_onto_disk(fsid, store):
     store["nodes"] = m_nodes
     if read_ident:
         store["_baseIdent"] = tuple(read_ident[-1])  # this holder now stands on the version it rebased onto: the next iteration's CAS and field base
+        store["_baseSrc"] = _BaseRef("pickle", read_blob[-1]) if read_blob else None   # and holds that version's bytes itself (the memo's pickle): the guarantee moves with the base
     pl = dict(disk.get("placements") or {}); pl.update(store.get("placements") or {})
     for k, v in list(pl.items()):                    # a tombstoned target re-points to its survivor —
         if v in tomb:                                # mirrors _merge_nodes' own rewiring; a dangling
@@ -5750,7 +5794,7 @@ def _replay_overrides(fsid, store, lines=None):
     return applied
 
 
-_NONCONTENT_KEYS = ("rev", "_baseRev", "_baseIdent", "_unread", "_relayPending")   # the revision counter + the transient CAS base,
+_NONCONTENT_KEYS = ("rev", "_baseRev", "_baseIdent", "_baseSrc", "_unread", "_relayPending")   # the revision counter + the transient CAS base,
 #                                                      unread-journal mark (_replay_overrides) and the relay entries
 #                                                      awaiting this holder's publish (_relay_enqueue): not store CONTENT
 
@@ -6353,9 +6397,9 @@ def load_goals_shared(fsid):
     store = _finish_load(fsid, store, lines=lines)   # a malformed row raises, as in load_goals
     store["_baseIdent"] = skey                       # the identity of the bytes this view was built from, as load_goals stamps its own: the two views agree by
     #                                                  construction, and a copy taken from this view and saved passes the same CAS (the round-one lane red of
-    #                                                  PR 2064: the writer's view carried the key and the shared view did not). Its field base is another
-    #                                                  matter: this cache's parse is not the raw-parse memo's, so the copy's rebase finds one only when a writer
-    #                                                  load in this process read the same version
+    #                                                  PR 2064: the writer's view carried the key and the shared view did not)
+    store["_baseSrc"] = _BaseRef("nodes", store.get("nodes") or {})   # and its field base is this view's own frozen nodes (read, never written by the
+    #                                                  carry), so a copy taken from it and saved finds its base whatever the raw-parse memo holds
     if store.get("_unread"):
         # the replay marked the store (its journal did not read): not the files' content, so not shared.
         # Unreachable while the journal's rows arrive as `lines` (the only marker left is the lines-is-None
@@ -6392,8 +6436,10 @@ def save_goals(fsid, store):
     identity (_baseIdent) in the raw-parse memo or its history of the last few versions per path, parsed only when a rebase happens:
     the bytes the load read, or the text this holder's own publish wrote (kept under the published identity, since no read in this
     process may parse that version before the next save), and moved to the version each iteration rebased onto (a second iteration
-    compares against the first's disk, never the load's); a base that rolled out of the history carries nothing, said in the goals
-    counters. The diary-owned keys are re-derived from
+    compares against the first's disk, never the load's). The memo and its histories are a cache; the holder's own reference to its
+    base's bytes (_baseSrc, stamped by the load, moved by every rebase and publish) is the guarantee, so a holder's save always finds
+    its base however many versions others published meanwhile; only a holder without the reference falls back to the caches, and one
+    whose version rolled out of them carries nothing, said in the goals counters. The diary-owned keys are re-derived from
     the merged log; the keys with a merge of their own (the log, the relay records) keep it; and every family-managed key (the
     distill families' stamps and fields, _DISTILL_FAMILIES) is left to the family merge, which adopts a family as a unit when the
     other side's stamp is newer, so an in-place edit of a family field stamps its family (briefedMt for a brief), as every kernel
@@ -6459,6 +6505,8 @@ def save_goals(fsid, store):
     ident0 = tuple(ident0) if ident0 is not None else None   # a store that went through a JSON round trip holds it as a list, and a list never equals a
     #                                                          tuple: compared as lists, every save from such a store would rebase forever (the round-one lane red)
     store["_baseIdent"] = ident0
+    src0 = store.get("_baseSrc")                     # the holder's own reference to the base's bytes: travels with the identity through the loop (the rebase
+    #                                                  reads it as the field base's guarantee and moves it) and is popped before the write
     unread = store.pop("_unread", None)              # likewise transient (_replay_overrides' unread-journal mark)
     pending = store.pop("_relayPending", None)       # likewise: the relay entries this publish carries (_relay_enqueue)
     rebased = published = False
@@ -6475,7 +6523,7 @@ def save_goals(fsid, store):
                 #                                      2026-09-23: a judge pass's save erased the node the lab had just written)
                 _rebase_onto_disk(fsid, store)       # fold their events in, then re-check
                 rebased = True
-                base, ident0 = disk, store.get("_baseIdent")   # the rebase moved the identity to the version it rebased onto: the next
+                base, ident0, src0 = disk, store.get("_baseIdent"), store.get("_baseSrc")   # the rebase moved the identity (and the reference) to the version it rebased onto: the next
                 #                                                iteration's CAS and field base stand on that state, not the load's (the
                 #                                                round-one verifier of the field carry: a second iteration published the
                 #                                                first's carried values over a newer third writer's)
@@ -6483,7 +6531,7 @@ def save_goals(fsid, store):
         else:
             store["rev"] = int(store.get("rev") or 0) + 1
         _goal_io_bump("writes")
-        store.pop("_baseIdent", None)                # transient, never serialized; the finally re-stamps it
+        store.pop("_baseIdent", None); store.pop("_baseSrc", None)   # transient, never serialized; the finally re-stamps both
         tmp = _publish_tmp(GOALDIR, fsid)
         text = json.dumps(store)
         tmp.write_text(text)
@@ -6513,6 +6561,8 @@ def save_goals(fsid, store):
             # that plus the disk events a rebase folded in, and `base` is the revision either state stands
             # on, so the retry stays CAS-protected instead of stomping (review find, 2026-09-08)
             store["_baseRev"] = store["rev"] if published else base
+            store["_baseSrc"] = _BaseRef("text", text) if published else store.pop("_baseSrc", src0)   # the holder's own copy of its base's bytes: the text it wrote, or the
+            #                                                  version the loop last rebased onto (never the load's; a raise before the write leaves the loop's)
             store["_baseIdent"] = written if published else store.pop("_baseIdent", ident0)   # and the file that revision lives in; not published: the version
             #                                                  the loop last rebased onto (never the load's, whose fields the holder no longer stands on)
         if not published and unread is not None:
