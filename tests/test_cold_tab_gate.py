@@ -268,21 +268,25 @@ class ColdTabGate(unittest.TestCase):
         # chat socket before its listeners exist stays deduped for _DEDUP_REPOST_S unless the ready reset clears it. Guard
         # that the reset's list keeps pace: every ("KEY", ...) slot sent to a chat client from _push or _ask_poll must be
         # on the reset's list or carry a stated reason here. A new slot on either road, added without that decision, reds.
+        # The scan reads the INLINE _send_client sends in _push and _ask_poll (below); a slot a HELPER sends is named by
+        # hand, today only _push_subagents's ("subagent", ...), which cannot fire before ready (a subagent viewer opens
+        # only after the page is up), so it needs no clearing.
         import re, inspect
         RESET = {"chat", "status", "taborder", "activeChat", "comments", "glossary", "working", "globalRetryPaused", "asklive"}
         m = re.search(r"k\[0\] in \(([^)]*)\)", inspect.getsource(km._client_reset_chat_base))
         self.assertIsNotNone(m, "the reset's slot-clear tuple is present")
-        listed = set(re.findall(r'"([a-zA-Z]+)"', m.group(1)))
-        self.assertEqual(listed, RESET, "the ready reset clears exactly the pre-ready chat slots the census expects (symmetric diff: %r)" % (listed ^ RESET))
+        listed = set(re.findall(r'"([A-Za-z0-9_]+)"', m.group(1)))
+        self.assertEqual(listed, RESET, "the ready reset clears exactly the pre-ready chat slots the census expects (this FIRST leg is a spelling pin on the reset's tuple; symmetric diff: %r)" % (listed ^ RESET))
         # slots sent to a chat client from _push/_ask_poll that are NOT on the reset list, each with why it is safe:
         EXEMPT = {"timeline": "the ('timeline',) frame goes to timeline-app clients (for c in tl_clients), never a chat client"}
-        sent = set(re.findall(r'_send_client\(c(?:lient)?, \("([a-zA-Z]+)"', inspect.getsource(km._push) + inspect.getsource(km._ask_poll)))
+        # scan INLINE _send_client sends in either function: any client identifier, a key with digits or underscores, across a line break
+        sent = set(re.findall(r'_send_client\(\s*\w+\s*,\s*\(\s*"([A-Za-z0-9_]+)"', inspect.getsource(km._push) + inspect.getsource(km._ask_poll), re.S))
         for k in sorted(sent):
             self.assertTrue(k in RESET or k in EXEMPT,
                             "slot %r is sent from _push/_ask_poll but is neither on the ready reset's list nor exempt with a stated reason" % k)
-        # NOTE the feed page's feed/timeline/data/bars slots ride _send_slot_delta (not _send_client), which pops and reads
-        # the client's `sent` map for its own rebase dedup, so the reset must NOT clear the whole map; those are out of this
-        # census by that path, not by omission.
+        # NOTE only the feed page's ("feed",) and ("timelinebars",) slots ride _send_slot_delta (its _DELTA_SLOTS), which
+        # pops and reads the client's `sent` map for its own rebase dedup, so the reset must NOT clear the whole map; the
+        # ("timeline",) data frames go through plain _send_client sends to timeline-app clients (exempt above), not chat.
 
     def test_09a_an_api_error_tail_reads_blocked_provisionally_as_it_would_built(self):
         _api_error_tail(self.paths[S3])                      # S3's transcript ends in an api error; its row is idle

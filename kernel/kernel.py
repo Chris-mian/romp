@@ -17217,8 +17217,8 @@ def _seed_fork_stores(parent_sid, sid, path, cut_uuid):
 # (judge seeds first, names/ last: the fork() ordering contract). The thread REGISTRY lives in
 # comments/<parent sid>.json (anchor, thread sid, status); the CONVERSATION lives in the thread's
 # own transcript — the authoritative store — projected into the {type:"comments"} frame per push.
-# DELIVERY of that frame: the pusher cycle (_push, 57360) on a per-sid dedup slot, re-served to a just-connected page by
-# the ready reset (_client_reset_chat_base, 51893); the client joins it with the anchored turn to draw the mark (render.ts applyCommentMarks).
+# DELIVERY of that frame: the pusher cycle (_push's comment-threads loop) on a per-sid ('comments', sid) dedup slot,
+# re-served to a just-connected page by the ready reset (_client_reset_chat_base); the client joins it with the anchored turn to draw the mark (render.ts applyCommentMarks).
 
 _comments_lock = threading.Lock()          # store read-modify-writes from WS handler threads
 _thread_msgs_cache = {}                    # thread sid -> (path, mtime, cut_uuid, msgs)
@@ -17908,8 +17908,8 @@ def _comments_frame(sid, live_map=None):
     Neither is a client-side latch or a timer: an intermediate record of a multi-record turn flips
     nothing; the end_turn record flips both in the same frame the popover can show the reply.
 
-    DELIVERY: this frame rides the full pusher cycle (_push's comment-threads loop, 57360) on its OWN per-sid dedup slot;
-    a page that connected before its listeners existed is re-served it by the ready reset (_client_reset_chat_base, 51893,
+    DELIVERY: this frame rides the full pusher cycle (_push's comment-threads loop) on its OWN per-sid ('comments', sid)
+    slot; a page that connected before its listeners existed is re-served it by the ready reset (_client_reset_chat_base,
     which clears that slot). The client joins it with the anchored turn to draw the mark (render.ts applyCommentMarks)."""
     p = _comments_path(sid)
     if not p.exists():
@@ -51951,8 +51951,9 @@ def _client_reset_chat_base(client):
         # has a glossary, plus the listed single-slot frames, per ready, and ONLY when the accept-time cycle reached the
         # socket before the listeners. The census test (test_cold_tab_gate) pins that every chat-client slot _push or the
         # ask poll sends is on this list or carries a stated reason. The ("timeline",) slot is NOT here: it goes to
-        # timeline-app clients, not chat. The feed page's feed/timeline/data/bars slots ride _send_slot_delta, which
-        # pops and reads `sent` for its rebase dedup, so clearing the whole map would break that; they are left as they are.
+        # timeline-app clients, not chat. Only the feed page's ("feed",) and ("timelinebars",) slots ride _send_slot_delta
+        # (its _DELTA_SLOTS), which pops and reads `sent` for its rebase dedup, so clearing the whole map would break that;
+        # the ("timeline",) data frames are plain sends to timeline-app clients. Those are left as they are.
         for k in [k for k in snt if isinstance(k, tuple) and k and k[0] in ("chat", "status", "taborder", "activeChat", "comments", "glossary", "working", "globalRetryPaused", "asklive")]:
             snt.pop(k, None)
 
