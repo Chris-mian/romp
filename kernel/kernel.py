@@ -51845,7 +51845,13 @@ def _client_reset_chat_base(client):
         # slot remembers that frame, so the ready arm's re-send would be deduped for _DEDUP_REPOST_S and the
         # section would read "no session is focused" until the next tab click. A renderer that just
         # evaluated holds nothing: the slot goes with the others.
-        for k in [k for k in snt if isinstance(k, tuple) and k and k[0] in ("chat", "status", "taborder", "activeChat")]:
+        # …and the ("comments", sid) and ("glossary", sid) slots (2026-09-23, the PR 2074 post-merge measurement):
+        # the pusher fires from ACCEPT, so under a CPU quota it delivered the comments frame (1.9-2.1s after navigation)
+        # BEFORE the bundle registered its message listeners (2.6-2.8s); the page never acted on it, and with the slot
+        # kept the ready arm's connect push re-sent an IDENTICAL comments frame that deduped for _DEDUP_REPOST_S, so a
+        # comment's mark attached only at the 60s repost. The glossary frame rides its own per-sid slot the same way.
+        # A renderer that just evaluated holds neither, so both go with the others (one duplicate frame per ready).
+        for k in [k for k in snt if isinstance(k, tuple) and k and k[0] in ("chat", "status", "taborder", "activeChat", "comments", "glossary")]:
             snt.pop(k, None)
 
 
