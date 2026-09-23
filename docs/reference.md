@@ -3517,6 +3517,27 @@ frames it received is measured in the panes themselves, by
   session, the `reason` (the `chatFullWhy` label under `/perf`), the change index,
   the list's length, and which base edges the list still held; a first send files
   nothing.
+- Every chat frame and delta carries `wm`, what its build READ: the transcript the
+  build parsed (`leaf`), the parse's fileset key (`tx`, one `[mtime, size]` row per
+  file the parse read, taken before the read) and the live tail's revision
+  (`live`, an integer; a backend without a counter, the Codex backend, carries no
+  `live` component, `null`, and its frames order on the `tx` rows alone, so no
+  event text rides the watermark). Two builders read the transcript in either order (the pusher cycle
+  and the targeted push at the SDK queue pop), and a build from an older parse
+  under a newer live tail once reached a page after the frame that had landed a
+  just-sent message, taking the landed row off the page until a reload. The
+  senders refuse a build older than the one a client holds (the same leaf, every
+  parse row at or behind with one behind, or the same rows and a smaller live
+  revision), say so once per session on stderr, and file one `chatStale` row
+  (surface `kernel`) per refusal with the client, the session and both readings.
+  A client holding no base takes any build; another leaf (a fork, a rewind), a key
+  of another shape or a mixed reading is never older. The page applies the same
+  rule on its side: a frame or delta whose `wm` is older than the session's is
+  ignored and filed as `frame-stale` (surface `chat`, the wire and both
+  watermarks), and a frame that removes a landed human turn the page held files
+  `frame-drops-landed` whatever its watermark said (the wire, the count, the
+  uuids' tails, whether the frame carried a watermark, and the expected cause when
+  a rebased fork or a rewind the page asked for removed the row on purpose).
 - The kernel rotates `client-diag.jsonl` once it reaches 8 MB: the file
   becomes `client-diag.jsonl.1` (replacing the previous one) and a new file
   starts, so at most two files, about 16 MB, are kept. A minute row is about

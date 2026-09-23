@@ -13,6 +13,7 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { workedFooterPlan } from "./worked-footer";
 import { indexOfUuid, keyOf } from "./chat-window";   // the uuid-anchored arm's real helpers (a proto-2 delta names its anchor by key)
+import { frameOlder, droppedLandedHuman, dropsLandedRow } from "./frame-guard";   // the frame watermark guard (2026-09-22): chatTail reads it
 
 const requireCjs = createRequire(__filename);
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
@@ -29,7 +30,8 @@ function liftBetween(startAnchor: string, endAnchor: string): string {
 
 type TailHooks = { fulls: string[]; strips: number; rewinds: [string, number | undefined][]; optRecs: number;
                    tabRenders: number; appends: number; bgRenders: number; prebuilds: number;
-                   indexOfUuid?: typeof indexOfUuid; keyOf?: typeof keyOf };
+                   indexOfUuid?: typeof indexOfUuid; keyOf?: typeof keyOf; skeleton?: string[]; rows?: { what: string; data: unknown }[];
+                   frameOlder?: typeof frameOlder; droppedLandedHuman?: typeof droppedLandedHuman; dropsLandedRow?: typeof dropsLandedRow };
 type TailApi = { chatTail: (msg: any) => void; set: (p: { sessions?: Map<string, any>; views?: Map<string, any>; activeId?: string | null }) => void };
 
 function liftChatTail(): (hooks: TailHooks) => TailApi {
@@ -56,6 +58,9 @@ function liftChatTail(): (hooks: TailHooks) => TailApi {
     const regionsAbsorbTail = () => true;                // the tail run's regions follow the events (T386 stage 2); returns whether it could (a short store refuses); this slice holds no regions, so always true
     const clearRefusedLatch = () => {};                  // a delta applied clears the full-frame refusal latch (round two); no latch in this slice
     const indexOfUuid = HOOKS.indexOfUuid, keyOf = HOOKS.keyOf;   // the proto-2 arm (afterUuid): chat-window's real helpers, handed in by the world
+    const frameOlder = HOOKS.frameOlder, droppedLandedHuman = HOOKS.droppedLandedHuman, dropsLandedRow = HOOKS.dropsLandedRow;   // the watermark guard's real rules (frame-guard.ts)
+    const pendingRewind = new Map();
+    const chatDiagRow = (what, data) => { (H.rows || (H.rows = [])).push({ what, data }); };   // the guard's rows, recorded
   `;
   const epilogue = `
     return { chatTail, set: (p) => { if (p.sessions) sessions = p.sessions; if (p.views) views = p.views; if ("activeId" in p) activeId = p.activeId; } };
@@ -65,7 +70,7 @@ function liftChatTail(): (hooks: TailHooks) => TailApi {
 
 const kernelEvents = (n: number) => Array.from({ length: n }, (_, i) => ({ kind: i % 2 ? "assistant" : "user", uuid: "e" + i }));
 function tailWorld(opts: { rendered: number; winEnd: number; unitTotal: number; active: boolean; headFrom?: number; opt?: boolean }) {
-  const H: TailHooks = { fulls: [], strips: 0, rewinds: [], optRecs: 0, tabRenders: 0, appends: 0, bgRenders: 0, prebuilds: 0, indexOfUuid, keyOf };
+  const H: TailHooks = { fulls: [], strips: 0, rewinds: [], optRecs: 0, tabRenders: 0, appends: 0, bgRenders: 0, prebuilds: 0, indexOfUuid, keyOf, frameOlder, droppedLandedHuman, dropsLandedRow };
   const api = liftChatTail()(H);
   const events: any[] = kernelEvents(10);
   if (opts.opt) events.splice(6, 0, { kind: "user", uuid: "opt-1", opt: true });   // a bubble at its send slot, mid-array
