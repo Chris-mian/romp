@@ -54,6 +54,19 @@ class StoreCas(unittest.TestCase):
         st = os.stat(path)
         return (st.st_ino, st.st_mtime_ns, st.st_size)
 
+    @staticmethod
+    def _rewrite_in_place_keeping_identity(path, nid, key, value):
+        """Another writer's move that leaves the file's IDENTITY (inode, size, mtime) as it was: the value replaces one of the same length, the
+        revision bumps within its digit count, the bytes go in place and the mtime is put back. The store's memo then refills with these bytes
+        under the holder's identity on its next read (a compare miss), so only the holder's own reference still holds the bytes it read."""
+        st = os.stat(path); d = json.loads(path.read_text())
+        old = d["nodes"][nid].get(key); assert isinstance(old, str) and len(old) == len(value), "premise: an equal-length replacement"
+        d["nodes"][nid][key] = value; d["rev"] = d["rev"] + 1; assert len(str(d["rev"])) == len(str(d["rev"] - 1)), "premise: the revision keeps its digits"
+        text = json.dumps(d); assert len(text.encode()) == st.st_size, "premise: the same byte count"
+        with open(path, "r+b") as f: f.seek(0); f.write(text.encode()); f.truncate()
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+        st2 = os.stat(path); assert (st2.st_ino, st2.st_mtime_ns, st2.st_size) == (st.st_ino, st.st_mtime_ns, st.st_size), "premise: the identity stands"
+
     def _seed(self):
         """One working top goal, published."""
         s = {"rompUuid": SID, "seq": 0, "placementsV": jd.PLACEMENTS_V, "nodes": {},
@@ -310,10 +323,36 @@ class StoreCas(unittest.TestCase):
             s = jd.load_goals(SID)
         st = path.stat()
         self.assertEqual(tuple(s["_baseIdent"]), (st.st_ino, st.st_mtime_ns, st.st_size), "the base is the good file's identity, not the torn file's (before: the torn file's, a size of 6)")
+        # and the holder's reference to the base's bytes came through the retry too (the contributor's review of PR 2115: the retry handing
+        # on the identity list but not the blob list left an identity with no reference, and a save after six of another writer's cycles
+        # published over that writer's field)
+        self.assertIsInstance(s.get("_baseSrc"), getattr(jd, "_BaseRef", ()), "the retry hands the reference on as it hands the identity on")
+        self.assertEqual(pickle.loads(s["_baseSrc"].payload)["nodes"][self._nid(1)]["text"], json.loads(good)["nodes"][self._nid(1)]["text"], "and its bytes are the good file's")
         jd.record_verdict(s, s["nodes"][self._nid(1)], "unblocker", "note", T0 + 40, why="after the decline")
         with mock.patch.object(jd, "_rebase_onto_disk", side_effect=AssertionError("no rebase owed")) as rb:
             jd.save_goals(SID, s)
         self.assertEqual(rb.call_count, 0, "and the save after it rebases nothing")
+
+    def test_a_holder_loaded_through_a_quarantine_decline_keeps_its_base_through_six_cycles(self):
+        """The six-cycle form of the pin above (the contributor's review of PR 2115): a holder whose load came through the quarantine's
+        decline retry carries the other writer's field after six of its load-then-publish cycles, past every cache depth, so the reference
+        the retry hands on is the one that carries (with the hand-on dropped: no reference, nothing carried, the field lost)."""
+        self._seed()
+        g1 = self._nid(1)
+        path = jd.GOALDIR / (SID + ".json")
+        good = path.read_bytes(); path.write_bytes(b"{ torn")
+
+        def declining(p, reason, st):
+            path.write_bytes(good)
+            return None
+        with mock.patch.object(jd, "_quarantine_store", declining):
+            holder = jd.load_goals(SID)
+        for i in range(6):                           # loop-ok: six cycles, past every cache depth
+            w = jd.load_goals(SID); w["nodes"][g1]["parentId"] = "V%d" % (i + 1); jd.save_goals(SID, w)
+        before = dict(jd._GOAL_IO)
+        jd.record_verdict(holder, holder["nodes"][g1], "unblocker", "note", T0 + 40, why="ours"); jd.save_goals(SID, holder)
+        after = json.loads(path.read_text())["nodes"][g1]
+        self.assertEqual((after.get("parentId"), jd._GOAL_IO["carryBase"] - before["carryBase"]), ("V6", 1), "the field carried from the reference the retry handed on (before: none, the field lost)")
 
     def test_a_file_created_after_a_fresh_load_is_a_publication_too(self):
         """No file at the load (a fresh store, base 0, no identity); an editor creates one without a revision before the first save. On the
@@ -464,6 +503,51 @@ class StoreCas(unittest.TestCase):
         if before is not None:
             self.assertEqual(jd._GOAL_IO.get("carryNoBase", 0) - before.get("carryNoBase", 0), 1, "and the counter says the base was gone")
 
+    def test_a_store_rebuilt_from_json_saving_within_the_caches_depth_carries_from_them(self):
+        """A holder without its reference (rebuilt from JSON: the reference serializes as an empty object) is served from the shared caches
+        by identity within their depth: two of another writer's load-then-publish cycles, and its save carries the second move (the roll-out
+        pin covers the depth exceeded)."""
+        self._seed()
+        g1 = self._nid(1)
+        holder = json.loads(json.dumps(jd.load_goals(SID)))
+        for i in range(2):                           # loop-ok: within the readers' history's depth
+            w = jd.load_goals(SID); w["nodes"][g1]["parentId"] = "V%d" % (i + 1); jd.save_goals(SID, w)
+        before = dict(jd._GOAL_IO)
+        jd.record_verdict(holder, holder["nodes"][g1], "unblocker", "note", T0 + 40, why="ours"); jd.save_goals(SID, holder)
+        after = json.loads((jd.GOALDIR / (SID + ".json")).read_text())["nodes"][g1]
+        self.assertEqual((after.get("parentId"), jd._GOAL_IO["carryBase"] - before["carryBase"]), ("V2", 1), "carried from the readers' history")
+
+    def test_the_holders_reference_is_read_before_the_caches_so_an_identity_keeping_rewrite_cannot_pose_as_its_base(self):
+        """The contributor's review of PR 2115: the caches were read before the holder's reference, and an in-place rewrite of the same length
+        that keeps the file's inode, size and mtime refills the memo with the other writer's bytes under the holder's identity on the holder's
+        own rebase read, so the caches handed those back as the base: nothing carried, the holder's stale field published over the other's, the
+        counter up. The reference is read first: the other writer's field is carried and the holder's own edit stands, with and without another
+        writer's load of the rewritten version in between, and on a text reference's second save."""
+        self._seed()
+        g1 = self._nid(1)
+        path = jd.GOALDIR / (SID + ".json")
+        for with_load in (False, True):
+            w0 = jd.load_goals(SID); w0["nodes"][g1]["label"] = "label-0000"; w0["nodes"][g1]["summaryQuote"] = "q-0"; jd.save_goals(SID, w0)   # equal-length fields to move
+            holder = jd.load_goals(SID)              # stands on this version's bytes
+            self._rewrite_in_place_keeping_identity(path, g1, "label", "label-%04d" % (1 if not with_load else 2))
+            if with_load:
+                jd.load_goals(SID)                   # another writer's read of the rewritten version: the memo refills under the same identity
+            holder["nodes"][g1]["summaryQuote"] = "q-1"   # the holder's own edit
+            before = dict(jd._GOAL_IO)
+            jd.record_verdict(holder, holder["nodes"][g1], "unblocker", "note", T0 + 40 + int(with_load), why="ours %d" % with_load); jd.save_goals(SID, holder)
+            after = json.loads(path.read_text())["nodes"][g1]
+            self.assertEqual((after.get("label"), after.get("summaryQuote"), jd._GOAL_IO["carryBase"] - before["carryBase"]), ("label-%04d" % (1 if not with_load else 2), "q-1", 1),
+                             "with_load=%r: the other writer's in-place move is carried and the holder's own edit stands (before: the rewritten bytes posed as the base, nothing carried, the holder's stale label published over the other's)" % with_load)
+        # a text reference's second save: the holder's own publish is its base; an identity-keeping rewrite after it must not pose as those bytes
+        holder = jd.load_goals(SID)
+        holder["nodes"][g1]["label"] = "label-7777"; jd.save_goals(SID, holder)   # the publish: a text reference under the written identity
+        self._rewrite_in_place_keeping_identity(path, g1, "label", "label-8888")
+        holder["nodes"][g1]["summaryQuote"] = "q-2"
+        before = dict(jd._GOAL_IO)
+        jd.record_verdict(holder, holder["nodes"][g1], "unblocker", "note", T0 + 50, why="ours again"); jd.save_goals(SID, holder)
+        after = json.loads(path.read_text())["nodes"][g1]
+        self.assertEqual((after.get("label"), after.get("summaryQuote"), jd._GOAL_IO["carryBase"] - before["carryBase"]), ("label-8888", "q-2", 1), "on the second save the text reference is the base, not the rewritten bytes under its identity")
+
     def test_a_holders_own_reference_keeps_its_base_however_many_versions_others_publish(self):
         """The post-merge review of PR 2108: four read versions in the shared history are a typical count, not a bound; a holder that saved
         after five or six of another writer's load-then-publish cycles found no base and published over the other's field (five resolves in
@@ -571,11 +655,14 @@ class StoreCas(unittest.TestCase):
         disk-content memo, while only a read fills the raw-parse memo, so unless some load in this process parsed the published version
         first the next save found no base (carryNoBase) and an editor's move after the publish was published over, as at main. The
         publish keeps the text it wrote in the history under the written identity; the editor here is ANOTHER process writing the file
-        in place, so nothing in this process reads the version between the publish and the save."""
+        in place, so nothing in this process reads the version between the publish and the save. The holder's own reference is POPPED after
+        the publish (the contributor's review of PR 2115: with it the pin passed whatever the caches held), so this pin tests the published
+        texts: a holder without its reference, a store rebuilt from JSON, is served from them."""
         self._seed()
         g1 = self._nid(1)
         a = jd.load_goals(SID)
         jd.record_verdict(a, a["nodes"][g1], "unblocker", "note", T0 + 40, why="our first move"); jd.save_goals(SID, a)   # our own publish
+        a.pop("_baseSrc", None)                      # the caches alone from here (the publish re-stamped a text reference)
         path = jd.GOALDIR / (SID + ".json")
         subprocess.run([sys.executable, "-c",
                         "import json, sys\np = sys.argv[1]; d = json.loads(open(p).read())\n"
@@ -593,10 +680,13 @@ class StoreCas(unittest.TestCase):
         whose base was version V lost V's entry a cycle sooner than before the texts were kept (a judge pass runs about four publish-then-load
         cycles), found no base at its save, carried nothing and published its copy over the other writer's edit, the loss this rule exists to
         prevent, in a narrower window. The published texts live in a deque of their own: one holder, a pass's worth of publish-then-load cycles
-        (four) by another writer in the same process, and the holder's save still finds its base and carries the other writer's field."""
+        (four) by another writer in the same process, and the holder's save still finds its base and carries the other writer's field. The
+        holder's own reference is POPPED after the load (the contributor's review of PR 2115: with it the pin passed whatever the caches held),
+        so this pin tests the readers' history: a holder without its reference is served from it within its depth."""
         self._seed()
         g1 = self._nid(1)
         holder = jd.load_goals(SID)                  # stands on V0
+        holder.pop("_baseSrc", None)                 # the caches alone from here
         n = 4                                        # a judge pass's cycles (the round-four verifier: three kept versions lost the base on the fourth)
         for i in range(n):                           # loop-ok: a pass's worth of cycles
             w = jd.load_goals(SID); w["nodes"][g1]["parentId"] = "V%d" % (i + 1); jd.save_goals(SID, w)   # a load (the memo rolls), then a publish (a text kept)

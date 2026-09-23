@@ -108,7 +108,7 @@ class SharedStoreCache(unittest.TestCase):
                          "shallow copy handed to save_goals still meets the CAS")
         plain = lambda st: {k: v for k, v in st.items() if k not in jd._NONCONTENT_KEYS}   # the writer alone carries its transient base reference
         self.assertEqual(json.dumps(plain(shared)), json.dumps(plain(writer)), "json.dumps sees a plain store, the same content")
-        self.assertEqual(json.dumps(writer)[:1], "{", "and a loaded writer store still serializes whole (its reference as an empty object)")
+        self.assertEqual(json.loads(json.dumps(writer)).get("_baseSrc"), {}, "and a loaded writer store still serializes whole, its reference as exactly an empty object (the round-two verifier of PR 2115: a first-character check was tautological)")
         nid = self._nid(1)
         self.assertIsInstance(shared, dict)
         self.assertIsInstance(shared["nodes"][nid], jd.GuardedNode)
