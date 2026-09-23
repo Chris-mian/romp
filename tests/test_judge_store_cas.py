@@ -527,18 +527,27 @@ class StoreCas(unittest.TestCase):
         g1 = self._nid(1)
         path = jd.GOALDIR / (SID + ".json")
         for with_load in (False, True):
-            w0 = jd.load_goals(SID); w0["nodes"][g1]["label"] = "label-0000"; w0["nodes"][g1]["text"] = "the goal as first written"; jd.save_goals(SID, w0)   # an equal-length field to move, a plain field for the holder
-            holder = jd.load_goals(SID)              # stands on this version's bytes
-            self._rewrite_in_place_keeping_identity(path, g1, "label", "label-%04d" % (1 if not with_load else 2))
-            if with_load:
-                jd.load_goals(SID)                   # another writer's read of the rewritten version: the memo refills under the same identity
-            holder["nodes"][g1]["text"] = "the holder's own edit %d" % with_load   # the holder's own edit, a PLAIN field the carry reads (a family key would pass whatever the base is)
-            before = dict(jd._GOAL_IO)
-            jd.record_verdict(holder, holder["nodes"][g1], "unblocker", "note", T0 + 40 + int(with_load), why="ours %d" % with_load); jd.save_goals(SID, holder)
-            after = json.loads(path.read_text())["nodes"][g1]
-            self.assertEqual((after.get("label"), after.get("text"), jd._GOAL_IO["carryBase"] - before["carryBase"]), ("label-%04d" % (1 if not with_load else 2), "the holder's own edit %d" % with_load, 1),
-                             "with_load=%r: the other writer's in-place move is carried and the holder's own edit stands (before: the rewritten bytes posed as the base, nothing carried, the holder's stale label published over the other's)" % with_load)
-        # a text reference's second save: the holder's own publish is its base; an identity-keeping rewrite after it must not pose as those bytes
+            with self.subTest(with_load=with_load):   # each leg its own verdict: at the base every leg reds, not the first alone (the round-one verifier of PR 2119)
+                w0 = jd.load_goals(SID); w0["nodes"][g1]["label"] = "label-0000"; w0["nodes"][g1]["text"] = "the goal as first written"; jd.save_goals(SID, w0)   # an equal-length field to move, a plain field for the holder
+                holder = jd.load_goals(SID)          # stands on this version's bytes
+                self._rewrite_in_place_keeping_identity(path, g1, "label", "label-%04d" % (1 if not with_load else 2))
+                if with_load:
+                    jd.load_goals(SID)               # another writer's read of the rewritten version: the memo refills under the same identity
+                holder["nodes"][g1]["text"] = "the holder's own edit %d" % with_load   # the holder's own edit, a PLAIN field the carry reads (a family key would pass whatever the base is)
+                before = dict(jd._GOAL_IO)
+                jd.record_verdict(holder, holder["nodes"][g1], "unblocker", "note", T0 + 40 + int(with_load), why="ours %d" % with_load); jd.save_goals(SID, holder)
+                after = json.loads(path.read_text())["nodes"][g1]
+                self.assertEqual((after.get("label"), after.get("text"), jd._GOAL_IO["carryBase"] - before["carryBase"]), ("label-%04d" % (1 if not with_load else 2), "the holder's own edit %d" % with_load, 1),
+                                 "with_load=%r: the other writer's in-place move is carried and the holder's own edit stands (before: the rewritten bytes posed as the base, nothing carried, the holder's stale label published over the other's)" % with_load)
+
+    def test_a_text_references_second_save_is_not_posed_by_an_identity_keeping_rewrite(self):
+        """The text-reference leg of the pin above, its own method (the round-one verifier of PR 2119): the holder's own publish is its base, a
+        text reference under the written identity; an equal-length rewrite that keeps that identity must not pose as those bytes on the holder's
+        second save."""
+        self._seed()
+        g1 = self._nid(1)
+        path = jd.GOALDIR / (SID + ".json")
+        w0 = jd.load_goals(SID); w0["nodes"][g1]["label"] = "label-0000"; jd.save_goals(SID, w0)
         holder = jd.load_goals(SID)
         holder["nodes"][g1]["label"] = "label-7777"; jd.save_goals(SID, holder)   # the publish: a text reference under the written identity
         self._rewrite_in_place_keeping_identity(path, g1, "label", "label-8888")
