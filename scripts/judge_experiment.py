@@ -668,6 +668,25 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
     return manifest
 
 
+def annotate_seed_start(corpus):
+    """Fill `seedStart` on a manifest built BEFORE the field existed, by build_corpus's own rule: seedStart = the ending's
+    startT (a turn with an opener). An OPENER-LESS ending (startT None) is LEFT null, so the run refuses it loudly rather than
+    guessing a boundary from a manifest that no longer holds the previous turn's cut. For today's corpus every ending has
+    startT, so all are filled and seedStart equals startT. Only fills an ending that has no seedStart yet (a re-run is a
+    no-op). Returns the count filled with a non-null value."""
+    corpus = Path(corpus)
+    mf = corpus / "manifest.json"
+    m = json.loads(mf.read_text())
+    n = 0
+    for e in m["endings"]:
+        if "seedStart" not in e:
+            e["seedStart"] = e.get("startT")
+            if e["seedStart"] is not None:
+                n += 1
+    mf.write_text(json.dumps(m))
+    return n
+
+
 # ── the arms ────────────────────────────────────────────────────────────────────────────────────
 def load_judge(state_root, claude_root, claude_bin):
     """Load the event model and the judge module against the arm's roots: the module binds its roots from the environment
@@ -970,7 +989,7 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
     prompts = json.loads(Path(prompts_file).read_text()) if prompts_file else {}
     now = int(time.time()) if now is None else int(now)
     results = {"arm": arm, "prompts": sorted(prompts), "endings": {}, "stopped": None, "failures": 0, "closerNone": 0,
-               "endingsUnplanned": [],       # endings whose arm run made ZERO planner calls: any marks the arm not comparable (per-ending precondition, 2026-09-23)
+               "endingsUnplanned": [], "endingsCrashed": [],   # endings that planned nothing / crashed a pass: either marks the arm not comparable, both named (2026-09-23)
                "buildsPerCard": builds}     # stamp the per-card build count so a reader knows a card's column is the majority of N (the 2026-09-22 PR 2022 review, MED 1)
     results["preflightProbe"] = preflight_auth(jd, jd.TRIAGE_MODEL)   # refuse before the first ending if the arm
     #                            cannot authenticate; the probe's own cost is noted here, outside the arm's judge ledger
@@ -999,10 +1018,18 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
             path = next(iter((corpus / "claude" / "projects").glob("*/%s.jsonl" % eid)), None)
             if path is None:
                 continue
-            lo0 = e.get("seedStart", e.get("startT"))         # the seed's own cut: the ending's turn start, else the previous turn's end for an
-            #                                                   OPENER-LESS continuation. An older manifest carries no seedStart; its startT is the
-            #                                                   same value. When NEITHER is present it is derived from the store below, never cutT
-            #                                                   (which would seal the ending's own turn), else the ending is refused loudly.
+            lo = e.get("seedStart")                           # the seed's own cut: the ending's turn start, or the previous turn's end for an
+            if lo is None:                                     # OPENER-LESS continuation, as build_corpus recorded it. An older manifest carries
+                lo = e.get("startT")                           # no seedStart; run `annotate` to fill it, or its startT is the same value here. NO
+            #                                                   third derivation: the boundary is seedStart, else startT, else the loud refusal below
+            #                                                   (never cutT, which would seal the ending's own turn).
+            if lo is None:                                     # neither present (a degenerate opener-less ending): refuse LOUDLY, count against
+                jd._log_judge_error("planner", eid, "no-seed-cut", note="opener-less ending with no seedStart or startT; annotate the corpus")
+                results["failures"] += 1                       # comparability, and NAME it so it is never silently sealed on its own turn
+                results["endingsUnplanned"].append(eid)
+                results["endings"][eid] = {"class": e["class"], "builds": []}
+                flush()
+                continue
             seed_path = corpus / "state" / "romp" / "goals" / (eid + ".json")
             seed = seed_path.read_text() if seed_path.is_file() else None
             builds_out = []
@@ -1019,15 +1046,6 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
                     session = jd.parsed_session(eid, [str(path)], now)
                     turns = session.get("turns") or []
                     store = jd.load_goals(eid)
-                    lo = lo0
-                    if lo is None:                               # neither seedStart nor startT: derive the seed cut from the store, the previous
-                        ct = [jd.id_epoch(t) or 0 for t in (store.get("closedTurns") or [])]   # turn's end (the rule build_corpus applies)
-                        lo = max(ct) if ct else None
-                    if lo is None:                               # no previous turn: refuse LOUDLY, counting against comparability, never seal on cutT
-                        jd._log_judge_error("planner", eid, "no-seed-cut", note="opener-less ending with no previous turn's end to seal on")
-                        results["failures"] += error_rows() - errs0
-                        builds_out.append({})
-                        continue
                     seal_pre_cut_adopt(jd, eid, session, store, lo)   # every ending (opener-less included): plan its own turn, independent of the seed's placementsV (2026-09-23)
                     closed = jd._session_settled(eid, str(path), session, store, now=now)   # the settled gate over the ending's own transcript
                     jd.rollup_status(store, closed, now=now)                            # the flags from the seed's diary, before the first menu
@@ -1065,6 +1083,7 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
             except Exception as ex:                       # one ending's build must not abort the arm: file it, keep the rest
                 jd._log_judge_error("planner", eid, "pass-crash", note=repr(ex)[:200])
                 results["failures"] += 1
+                results["endingsCrashed"].append(eid)     # NAME a crashed ending so it shows in the cell beside pass-crash (never dropped silently)
                 results["endings"][eid] = {"class": e["class"], "builds": builds_out, "crashed": repr(ex)[:200]}
                 flush()
                 continue
@@ -1345,6 +1364,7 @@ def measure(manifest, results, live_state, labels=None, labels_state="absent"):
     no_record = calls_by_j is None                                          # an old/withdrawn results record: no per-judge record, cannot be read comparable
     silent_judges = [j for j in MEASURED_JUDGES if not calls_by_j.get(j)] if not no_record else []   # a measured judge with ZERO calls: not comparable
     unplanned = list(results.get("endingsUnplanned") or [])                 # endings whose arm run made zero planner calls: any one marks the arm not comparable
+    crashed = list(results.get("endingsCrashed") or [])                     # endings that crashed a pass (already counted in failures): named, never dropped silently
     return {"arm": results["arm"], "endings": len(results["endings"]), "leaks": leaks, "falseInterrupts": false_interrupts,
             "answeredThenCleared": answered_then_cleared, "flaps": flaps, "gesturedEndings": gestured,
             "untouchedEndings": untouched, "unplacedEndings": unplaced, "unresolvedEndings": unresolved,
@@ -1352,7 +1372,7 @@ def measure(manifest, results, live_state, labels=None, labels_state="absent"):
             "stopped": results.get("stopped"), "failures": failures, "nonArmFailures": int(results.get("nonArmFailures") or 0),
             "comparable": failures == 0 and not silent_judges and not no_record and not unplanned, "buildsPerCard": builds_n,
             "callsByJudge": calls_by_j or {}, "silentJudges": silent_judges, "noPerJudgeRecord": no_record,
-            "endingsUnplanned": unplanned,
+            "endingsUnplanned": unplanned, "endingsCrashed": crashed,
             "retry": results.get("retry") or {}, "failuresByKind": results.get("failuresByKind") or {},
             "leaksByClass": leaks_by_class, "falseInterruptsByClass": fi_by_class,
             "leaksByLabellerClass": leaks_by_labeller, "falseInterruptsByLabellerClass": fi_by_labeller,
@@ -1395,6 +1415,8 @@ def report(corpus, run_root, live_state, figure=None):
                 parts.append("no per-judge record")            # an old/withdrawn results record has no callsByJudge: cannot be read comparable
             if r.get("endingsUnplanned"):
                 parts.append("%d ending(s) unplanned" % len(r["endingsUnplanned"]))   # an ending that planned nothing (a sealed-whole seed): never silent
+            if r.get("endingsCrashed"):
+                parts.append("%d ending(s) crashed" % len(r["endingsCrashed"]))   # a crashed pass named beside pass-crash, never dropped silently
             cell = "%s, not comparable" % ("; ".join(parts) or ("%d" % r["failures"]))
         if r.get("nonArmFailures"):
             cell += " (%d non-arm)" % r["nonArmFailures"]       # an excluded failure is surfaced, never invisible (review 2026-09-22 PR 2022)
@@ -1672,11 +1694,14 @@ def main(argv=None):
     rp.add_argument("--live-state", required=True); rp.add_argument("--figure", default=None)
     lb = sub.add_parser("label"); lb.add_argument("--corpus", required=True); lb.add_argument("--run-root", required=True)
     lb.add_argument("--live-state", required=True); lb.add_argument("--claude-bin", required=True); lb.add_argument("--model", default="fable")
+    an = sub.add_parser("annotate"); an.add_argument("--corpus", required=True)   # fill seedStart on a manifest built before the field existed
     a = ap.parse_args(argv)
     if a.cmd == "build-corpus":
         m = build_corpus(a.state_root, a.claude_root, a.dest, per_class=a.per_class)
         counts = {c: sum(1 for e in m["endings"] if e["class"] == c) for c in CLASSES}
         print(json.dumps({"endings": len(m["endings"]), "byClass": counts}))
+    elif a.cmd == "annotate":
+        print(json.dumps({"seedStartFilled": annotate_seed_start(a.corpus)}))
     elif a.cmd == "run":
         for spec in a.arm:
             name, _, prompts = spec.partition("=")
