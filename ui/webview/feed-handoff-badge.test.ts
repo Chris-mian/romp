@@ -34,5 +34,5 @@ test("the badge mirrors ↪ from: identity rendering, recipient click, stacking 
   assert.match(BLK, /peer\.replaceChildren\(\.\.\.hostPartsNodes\(it\.handoffTo\.peerHost, it\.handoffTo\.peer\)\);/);
   assert.match(BLK, /peer\.style\.color = it\.handoffTo\.color\.bg;/);
   // the click opens the RECIPIENT session — symmetric with the origin badge's click
-  assert.match(BLK, /const sid = it\.handoffTo\.peerSid; og\.onclick = \(ev: Event\) => \{ ev\.stopPropagation\(\); env\.openSession\(sid\); \};/);
+  assert.match(BLK, /og\.dataset\.act = "sec-open-session"; og\.dataset\.sid = it\.handoffTo\.peerSid;/);   // delegated through data-act (round three of the box content PR: rebuilt nodes carry no handler of their own; sectionActs routes the act)
 });

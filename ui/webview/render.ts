@@ -1,11 +1,11 @@
 import { marked } from "marked";
 import { GEAR_GLYPH, ICON_FORK } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
 import { sanitizeMd, userContentTarget } from "./md-sanitize";
-import { noticeBodyNodes, noticeAttachmentNodes, type NoticeAttachment } from "./notice-face";
-import { applySections, registerSectionHost, unregisterSectionHost, stateBadges, buildSectionElements, cardSpin, applySpin, applyDistillLanding, configureSectionSync,
+import { noticeBodyNodes, noticeAttachmentNodes, type NoticeAttachment } from "./notice-face";   // the notice face the feed card shows, for the approval box   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
+import { applySections, registerSectionHost, unregisterSectionHost, stateBadges, buildSectionElements, cardSpin, applySpin, applyDistillLanding, configureSectionSync, sectionActs,
          type SectionEnv, type SectionItem, type BadgeItem, type SpinFields, type AskTreeNode } from "./card-sections";   // the card's sections, badges, swirl and landings: one builder with the feed card (plans/needs-you.md, the row carries what the card carries)
 import { applyDistillLine } from "./distiller-line";
-import { relAge, refreshAges } from "./feed-age";   // the age words and the live pass over the row's stamped ages   // the notice face the feed card shows, for the approval box   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
+import { relAge, refreshAges } from "./feed-age";   // the age words and the live pass over the row's stamped ages
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
 import python from "highlight.js/lib/languages/python";
@@ -15144,8 +15144,8 @@ const noticeSectionEnv: SectionEnv = {
   collapsed: () => false,
   wireNode: (_it, node, _mark, txt, wire) => {
     if (!wire || !node.anchorUuid) return;
-    const u = node.anchorUuid; txt.classList.add("nav"); txt.title = "jump to where this was worked on";
-    txt.onclick = (ev: Event) => { ev.stopPropagation(); scrollToAnchor(u); };
+    txt.classList.add("nav"); txt.title = "jump to where this was worked on";
+    txt.dataset.act = "sec-landing"; txt.dataset.uuid = node.anchorUuid;   // delegated on #notices (sectionActs → landing → scrollToAnchor)
   },
   repoOf: () => null,
   durNodes: (since) => { if (!since || since <= 0) return []; const sp = el("span", "ntc-age fask-dur"); stampAgeOnRow(sp, since); return [" · ", sp]; },
@@ -15157,7 +15157,23 @@ const noticeSectionEnv: SectionEnv = {
     try { window.parent?.postMessage({ romp: "notify", kind: "locate", text: "Couldn't jump to this summary: no anchor was recorded for this card", sid: it.sid, itemId: it.itemId }, "*"); } catch { /* no shell */ }
   },
   openWarns: () => { /* no warn-detail overlay on the chat page: the chip's hover carries the evidence */ },
+  // after a re-apply from a pick or the channel (card-sections.ts reapplyHosts), what the apply alone leaves stale on this page: the items-level
+  // face and the More pass (round three of the box content PR: a pick left More standing over a hidden line, or missing over a clipped one)
+  afterApply: (a) => { noticeRowLevelFace(a); noticeMoreButton(a, noticeLineOf(a)); },
 };
+// THE ITEMS LEVEL SHOWS THE CARD'S LINE, whatever section is picked (the manager's ruling on a contributor's review of PR 2124, round three):
+// the pick governs the full context only. Applied after every section apply on this page (a frame, a pick from either document, a level
+// change) without writing the choice: below level 2 the distill line shows, clamped by the stylesheet with More past it, and the other bodies
+// hide (the background paragraph, the stall note, the checklist and the task list alike, so an awaiting-on-tasks item's default open list
+// stays for the full context); at level 2 the pick's own apply stands. A row whose card has no line shows nothing there.
+function noticeRowLevelFace(row: HTMLElement): void {
+  const rowAny = row as any; if (!rowAny._distill) return;
+  const host = document.getElementById("notices"); if (host && host.classList.contains("ntc-l2")) return;
+  const line = !!rowAny._distillShown;
+  (rowAny._distill as HTMLElement).style.display = line ? "" : "none";
+  for (const k of ["_bgBody", "_stallBody", "_checklist"]) (rowAny[k] as HTMLElement).style.display = "none";
+  (rowAny._secs as HTMLElement).style.display = line ? "" : "none";
+}
 function stampAgeOnRow(sp: HTMLElement, since: number): void { sp.dataset.ageT = String(since); sp.dataset.ageFmt = "dur"; sp.dataset.ageTint = ""; sp.textContent = ""; refreshAges([sp], noticeNowSec(), relAge, () => ""); }
 configureSectionSync({ role: "follower" });   // the chat page FOLLOWS the feed's section choice (card-sections.ts): it says hello and takes the map
 function updateNoticeRow(row: NoticeRowEl, n: ChatNotice, sid: string): void {
@@ -15179,6 +15195,7 @@ function updateNoticeRow(row: NoticeRowEl, n: ChatNotice, sid: string): void {
     applyDistillLanding(rowAny, it, shown, dCompleted, dBlocked, noticeSectionEnv);   // the paragraphs with their stamps and landings, the stale note, the line's link
     const spin = cardSpin(it, dCompleted, dBlocked, noticeSectionEnv); applySpin(rowAny, it, spin, noticeSectionEnv);   // the card's swirl caption ("Analyzing…" on a re-judging card)
     applySections(rowAny, it, !!shown, noticeSectionEnv);
+    noticeRowLevelFace(row);   // below the full context the line stands whatever the pick (the level class is set before the rows are updated)
     if (body) body.style.display = "none";   // the brief rides the distill line now
     if (badgesEl) { badgesEl.replaceChildren(...stateBadges(it, noticeSectionEnv, spin.caption)); badgesEl.style.display = badgesEl.childNodes.length ? "" : "none"; }
   }
@@ -15199,7 +15216,8 @@ function noticeMoreButton(row: HTMLElement, body: HTMLElement | null): void {
   // a zero measure is no information (the post-merge review of PR 1967): a display:none pane lays nothing out, and so does the box below
   // level 2, where the stylesheet hides the body itself (#notices:not(.ntc-l2) .ntc-body), so the pass would remove a closed row's button
   // or leave a fresh row without one until the next repaint; the row stands as it is, and the pane's return re-runs the pass
-  // (renderNoticeDisclosures, from the chat visibility watcher), as the header's click to the full context re-renders the box
+  // (renderNoticeDisclosures, from the chat visibility watcher), as the header's click to either level re-renders the box, and as a section
+  // pick from either document does through the builder's afterApply hook (round three of the box content PR: the apply alone left More stale)
   if (body && body.style.display !== "none" && body.clientHeight === 0 && body.scrollHeight === 0) return;
   let b = row.querySelector<HTMLButtonElement>(".ntc-more");
   const overflows = !!body && body.style.display !== "none" && body.scrollHeight > body.clientHeight + 1;
@@ -21453,6 +21471,7 @@ setupSettings();
     "ntc-cont": (el) => { const p = item(el); if (!p || !activeId) return; vscodeApi?.postMessage({ type: "askFollowUp", itemId: p[1].itemId, sid: activeId, cont: true }); latch(p[0], el as HTMLButtonElement); },
     "ntc-clear": (el) => { const p = item(el); if (!p || !activeId) return; vscodeApi?.postMessage({ type: "askClear", itemId: p[1].itemId, sid: activeId }); latch(p[0], el as HTMLButtonElement); },
     "ntc-fix": () => openSettingsOn("general"),   // the Billing block sits at the top of the General tab; the row stays until the judges' next call succeeds and the card leaves the column
+    ...sectionActs(noticeSectionEnv, (el) => el.closest(".ntc-row") as HTMLElement | null),   // the shared builder's clicks (the badges, the line and its paragraphs, the awaited peers, the sub-goal triangles and texts), delegated here: the rows' nodes are rebuilt on every frame
   });
 })();
 // Background-task rows toggle open/closed — delegated to the stable #bg-tasks container (installed once),

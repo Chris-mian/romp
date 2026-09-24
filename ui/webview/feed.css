@@ -674,8 +674,6 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    REVERSE-spins like the shared loader (rotate(-360deg)); the awaiting "why" rides beside it, dimmed. */
 /* The caption WRAPS to up to two lines (the user 2026-07-04) instead of truncating with "…", so the full
    message reads — e.g. "Awaiting background agents" no longer clips to "Awaiting background …". */
-@keyframes fask-swirl-spin { to { transform: rotate(-360deg); } }
-@media (prefers-reduced-motion: reduce) { .fask-awaiting-swirl { animation: none; } }
 /* The at-rest floor (the user 2026-08-14): a working-column card with nothing in motion (session quiet
    between turns, or a machine reporting nothing) still shows the glyph as its state anchor — STILLED,
    because spin reads as in-flight — with the line dimmed to match its at-rest weight. */

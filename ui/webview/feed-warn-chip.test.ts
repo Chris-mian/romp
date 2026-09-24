@@ -22,9 +22,9 @@ test("the warning chip is a button built once, riding the wrapping chip row", ()
 test("the click reads the card's CURRENT warns and opens the detail overlay (click-safe)", () => {
   // the handler is wired ONCE in build and reads _warnsData off the card element at click time, so the
   // incremental re-render (updateAskCard mutates in place) can never orphan the action mid-press.
-  assert.match(FEED, /chip\.onclick = \(ev: Event\) => \{ ev\.stopPropagation\(\); env\.openWarns\(it as BadgeItem & SectionItem, it\.text \|\| ""\); \};/, "the click hands the page the item it was built from, the freshest payload (the badges are rebuilt on every update)");
+  assert.match(FEED, /chip\.dataset\.act = "sec-open-warns";/, "delegated: the act routes to the page's openWarns with the host's freshest item (the badges are rebuilt on every update)"); assert.match(FEED, /"sec-open-warns": \(el, ev\) => \{ ev\.stopImmediatePropagation\(\); const p = item\(el\); if \(p\) env\.openWarns\(p\.it, p\.it\.text \|\| ""\); \},/);
   assert.match(FEED, /openWarns: \(it, title\) => \{ if \(it\.warns && it\.warns\.length\) feedWarnModal\(title, it\.warns, \{ itemId: it\.itemId, sid: it\.sid \}, it\.failLog\); \},/);
-  assert.match(FEED, /chip\.onclick = \(ev: Event\) => \{ ev\.stopPropagation\(\);/,
+  assert.match(FEED, /delegate\(card, sectionActs\(sectionEnv, \(\) => card\)\);/,
     "stopPropagation so the chip click never also opens the card modal");
 });
 

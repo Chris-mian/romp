@@ -29,7 +29,7 @@ test("the primary names its recipients with the board's own live dot, STACKING a
     "identity rendering matches every other session name (quiet host: prefix included)");
   assert.match(SRC, /workDot: \(peer, name\) => setWorkDot\(peer, dotFor\(name\)\),/, "the feed hands the builder its live dot"); assert.match(BLK, /env\.workDot\?\.\(peer, d\.name\);/,
     "the recipient's LIVE state rides the card — the dot language the board already speaks");
-  assert.match(BLK, /const sid = d\.sid; peer\.onclick = \(ev: Event\) => \{ ev\.stopPropagation\(\); env\.openSession\(sid\); \};/, "each recipient span opens ITS session — ↪ from keeps its own click");
+  assert.match(BLK, /peer\.dataset\.act = "sec-open-session"; peer\.dataset\.sid = d\.sid;/, "each recipient span opens ITS session — ↪ from keeps its own click (delegated)");
 });
 
 test("both keys are additive on the type — an untracked payload renders exactly as before", () => {

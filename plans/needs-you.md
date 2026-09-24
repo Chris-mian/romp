@@ -217,8 +217,9 @@ takes (**Show the items**, **Show the full context**, **Hide the full context**,
 line); and in the shell and VS Code the header's bar carries the box's own gear, which opens the settings at that section.
 
 The row carries what the card carries (the user 2026-09-23, from a screenshot of a row at the items level that showed its title and
-two buttons alone). At the items level a row shows the card at a glance: the title, the content of the card's default-open section
-under it (the distill line, the decision brief or the takeaway, as the card shows it), the state badges the card wears on its name row
+two buttons alone). At the items level a row shows the card at a glance: the title, the card's distill line under it (the decision brief or
+the takeaway, clamped to four lines with More past it) whatever section is picked, since the pick governs the full-context level only
+(the manager's ruling on a contributor's review, 2026-09-24), the state badges the card wears on its name row
 (re-judging, done confirming, follow-up failed, interrupting or interrupted, the warning chip with its evidence, awaiting a peer, a delegation's origin or handoff), then Reply and Clear. At the full-context level
 the row shows the card's whole disclosure: the same section toggles in the same order (Background, Summary, Stalled, the sub-goals,
 Awaiting task, each present when the card has it), the same one-open rule with the same default, driving the same section bodies (the

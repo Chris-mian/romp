@@ -19,7 +19,7 @@ test("the feed box's peer chips are the standard session chip — click opens th
   const box = FEED.slice(FEED.indexOf("const awPeers ="), FEED.indexOf("a._awaitSpin.title"));
   assert.match(box, /hostPartsNodes\(p\.host, p\.name\)/, "quiet host: prefix, the ↪ from treatment");
   assert.match(box, /nm\.style\.color = p\.color\.bg/, "identity colour");
-  assert.match(box, /const sid = p\.sid; nm\.onclick = \(ev: Event\) => \{ ev\.stopPropagation\(\); env\.openSession\(sid\); \};/, "the handoffTo click idiom, through the page\'s environment (card-sections.ts applySpin)");
+  assert.match(box, /nm\.dataset\.act = "sec-open-session"; nm\.dataset\.sid = p\.sid;/, "the handoffTo click idiom, delegated (card-sections.ts applySpin, sectionActs)");
   assert.match(box, /nm\.style\.cursor = "pointer"/);
 });
 

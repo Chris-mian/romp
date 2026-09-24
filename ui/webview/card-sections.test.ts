@@ -7,7 +7,8 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { buildSectionElements, stateBadges, cardSpin, BADGE_WORDS } from "./card-sections";
+import * as mod from "./card-sections";
+const { buildSectionElements, stateBadges, cardSpin, BADGE_WORDS } = mod;
 
 // ── a DOM stand-in: elements and text nodes with the members the builder touches ────────────────────────────
 class T { nodeType = 3; parentNode: E | null = null; constructor(public textContent: string) {} }
@@ -96,7 +97,7 @@ test("stateBadges: the warning chip, a focusable button, its label by the warns'
   const one = badges({ text: "wire the fixtures", warns: [{ kind: "brief-failed", t: 1, msg: "the brief could not be written", detail: "" }] });
   assert.deepEqual(one.map((b) => [b.tagName, b.className, b.textContent]), [["BUTTON", "fask-warnchip", "distill failed"]], "every warn the distiller's own → 'distill failed'");
   assert.equal(one[0].title, "the brief could not be written\n— click for what happened and why");
-  one[0].onclick!({ stopPropagation() {} }); assert.deepEqual(warnsOpened, ["wire the fixtures"], "the click hands the page the item's title");
+  assert.equal(one[0].dataset.act, "sec-open-warns", "delegated: the act, routed by sectionActs with the host's freshest item");
   const two = badges({ warns: [{ kind: "brief-failed", t: 1, msg: "a", detail: "" }, { kind: "cite-miss", t: 2, msg: "the cite missed", detail: "" }] });
   assert.equal(two[0].textContent, "warning ×2", "a mixed family counts as warnings");
   const logged = badges({ warns: [{ kind: "summary-failed", t: 1, msg: "m", detail: "" }], failLog: [{ t: 5, line: "", model: "opus", note: "529" }] });
@@ -112,7 +113,7 @@ test("stateBadges: the peer wait, the origin, the handoff and the tracked delega
   assert.equal(badges({ waitingOn: { name: "api" } })[0].textContent, "Awaiting api");
   const o = badges({ origin: { peer: "api", peerSid: "s-api", live: false } });
   assert.deepEqual(o.map((b) => [b.tagName, b.className, b.textContent]), [["A", "fask-origin fask-origin-absorbed", "↪ from api"]], "absorbed: the same badge, dimmed, never removed");
-  o[0].onclick!({ stopPropagation() {} }); assert.deepEqual(opened, ["s-api"], "the click opens the sender");
+  assert.deepEqual([o[0].dataset.act, o[0].dataset.sid], ["sec-open-session", "s-api"], "delegated: the act names the sender");
   assert.equal(badges({ origin: { peer: "api", peerSid: "s-api", live: true } })[0].className, "fask-origin");
   assert.equal(badges({ handoffTo: { peer: "tests", peerSid: "s-t" } })[0].textContent, "↪ delegated to tests");
   const d = badges({ delegTracked: [{ sid: "s1", name: "web" }, { sid: "s2", name: "api" }] });
@@ -171,8 +172,32 @@ test("every write to the section choice goes through the module's setters, which
 
 test("the row's landings are the chat page's own: the line and a paragraph scroll to the turn, a sub-goal row's text jumps to its work anchor, no anchor says so in the landing toast", () => {
   assert.match(RENDER, /landing: \(_it, target\) => \{ scrollToAnchor\(target\.anchorUuid\); \},/);
-  assert.match(RENDER, /const u = node\.anchorUuid; txt\.classList\.add\("nav"\); txt\.title = "jump to where this was worked on";\s*\n\s*txt\.onclick = \(ev: Event\) => \{ ev\.stopPropagation\(\); scrollToAnchor\(u\); \};/);
+  assert.match(RENDER, /txt\.classList\.add\("nav"\); txt\.title = "jump to where this was worked on";\s*\n\s*txt\.dataset\.act = "sec-landing"; txt\.dataset\.uuid = node\.anchorUuid;/, "a sub-goal's text: the landing act, delegated on #notices");
+  assert.match(RENDER, /\.\.\.sectionActs\(noticeSectionEnv, \(el\) => el\.closest\("\.ntc-row"\) as HTMLElement \| null\),/, "the builder's acts installed on the box's stable root");
+  assert.match(FEED, /delegate\(card, sectionActs\(sectionEnv, \(\) => card\)\);\s*\n[^\n]*\n\s*let pending: number \| undefined;\s*\n\s*card\.addEventListener\("click", \(\) => \{/, "and on each card, before the card's own open-modal click");
+  assert.match(RENDER, /afterApply: \(a\) => \{ noticeRowLevelFace\(a\); noticeMoreButton\(a, noticeLineOf\(a\)\); \},/, "the chat page's after-apply: the items-level face and the More pass");
+  assert.match(MOD, /\(h\._sectionEnv as SectionEnv\)\.afterApply\?\.\(c\);   \/\/ last/, "called last in every re-apply");
   assert.match(RENDER, /landToast\("couldn't locate this in the transcript — no anchor was recorded for this card"\);/);
   assert.match(RENDER, /refreshAges\(document\.querySelectorAll<HTMLElement>\("#notices \[data-age-t\]"\), noticeNowSec\(\), relAge, \(\) => ""\);/, "the row's stamped ages repainted by the page's own pass");
   assert.match(MOD, /else age\.textContent = env\.relAge\(0\);/, "a part with no event time: the static '<1m ago' (the medium of round two: the row printed an epoch-sized age)");
+});
+
+test("sectionActs: one delegated map for both pages, each act stopping the click at its root and reading the host's remembered item", () => {
+  const { sectionActs, cardTreeExpanded } = mod as any;
+  const calls: unknown[] = [];
+  const env2 = { ...env, openSession: (sid: string) => calls.push(["open", sid]), openWarns: (it: any, title: string) => calls.push(["warns", it.itemId, title]),
+                 landing: (it: any, t: any) => calls.push(["land", it.itemId, t.anchorUuid, t.quote]), noAnchor: (it: any) => calls.push(["none", it.itemId]) };
+  const host = new E("DIV") as any; host._it = { itemId: "i1", sid: "s1", text: "wire the fixtures" };
+  const acts = sectionActs(env2, () => host);
+  let stopped = 0; const ev = { stopImmediatePropagation() { stopped++; } };
+  const at = (act: string, data: Record<string, string>) => { const e = new E("SPAN"); Object.assign(e.dataset, { act, ...data }); return e; };
+  acts["sec-open-session"](at("sec-open-session", { sid: "s-api" }), ev);
+  acts["sec-open-warns"](at("sec-open-warns", {}), ev);
+  acts["sec-landing"](at("sec-landing", { uuid: "u5", quote: "the fixtures" }), ev);
+  acts["sec-no-anchor"](at("sec-no-anchor", {}), ev);
+  assert.deepEqual(calls, [["open", "s-api"], ["warns", "i1", "wire the fixtures"], ["land", "i1", "u5", "the fixtures"], ["none", "i1"]]);
+  assert.equal(stopped, 4, "every act stops the click before the card's own open-modal handler");
+  cardTreeExpanded.delete("i1:g2");
+  acts["sec-tree"](at("sec-tree", { key: "i1:g2" }), ev);
+  assert.ok(cardTreeExpanded.has("i1:g2"), "the tree act flips the branch"); acts["sec-tree"](at("sec-tree", { key: "i1:g2" }), ev); assert.ok(!cardTreeExpanded.has("i1:g2"));
 });

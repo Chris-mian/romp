@@ -157,7 +157,10 @@ class ChatNotices(unittest.TestCase):
         CARD_FIELDS = ("summary", "blockSummary", "briefParts", "summaryParts", "distillState", "summaryStale", "relayNote", "background",
                "stalled", "tree", "awaiting", "recheck", "rejudging", "nudgeFailed", "nudged", "interrupting", "interrupted", "waitingOn", "origin", "handoffTo",
                "warns", "failLog", "summaryAnchorUuid", "summaryAnchorQuote", "summaryAnchorsPara", "doneConfirming", "blocked", "column", "judging", "working", "sessState", "delegTracked")
-        card_fields = lambda a: {f: a.get(f) for f in CARD_FIELDS}
+        TREE_FIELDS = ("id", "kind", "text", "status", "children", "parked", "cleared", "reviewedEarlier", "auth", "qderived", "t",
+               "anchorUuid", "summary", "blockSummary", "summaryAnchorUuid", "summaryAnchorQuote")   # the tree node fields the builder reads: the row carries that projection, never the tint (round three of the box content PR)
+        tree_of = lambda tr: None if tr is None else [{k: r[k] for k in TREE_FIELDS if k in r} for r in tr]
+        card_fields = lambda a: {f: (tree_of(a.get("tree")) if f == "tree" else a.get(f)) for f in CARD_FIELDS}
         self.assertEqual(rows[SID], [
             {"itemId": g1, "kind": "goal", "title": "which database does the suite target?", "body": "Postgres or SQLite: the fixtures differ", "cont": True, "t": 100, **card_fields(frame["asks"][0])},
             {"itemId": g4, "kind": "goal", "title": "a dead session's question", "body": "", "cont": False, "t": 105, **card_fields(frame["asks"][5])},
@@ -165,6 +168,7 @@ class ChatNotices(unittest.TestCase):
             "the judge's questions in the frame's order: a working card, a live-block card, the placeholder and the notice card stay out; "
             "no brief yet reads as an empty line; Continue only on a live session; the judges' credential refusal is a row whose action is the fix")
         self.assertEqual(km._NEEDS_ROW_CARD_FIELDS, CARD_FIELDS, "the kernel's list of the card's fields on the row, the one the chat signature keys")
+        self.assertEqual(km._NEEDS_ROW_TREE_FIELDS, TREE_FIELDS, "the kernel's projection of a tree node onto the builder's fields")
         self.assertTrue(km._hard_stop_card(frame["asks"][2]) and not km._hard_stop_card(frame["asks"][0]), "a hard stop is a card with a live-block object")
         self.assertFalse(km._hard_stop_card(frame["asks"][7]), "the judges' credential refusal is NOT a hard stop (plans/needs-you.md, the sixth floor): the session runs")
         km._feed_needs_rows[0] = rows
@@ -192,9 +196,11 @@ class ChatNotices(unittest.TestCase):
         brief = km.jd.STATE / "brief-on-disk.txt"; brief.write_text("which database does the suite target?")
         gid = SID + ":g1"
 
+        card = {"background": None}   # a card field beside the brief: the fourth build moves it alone (round three of the box content PR)
+
         def feed(now, live_map):
             return {"type": "feed", "asks": [{"itemId": gid, "sid": SID, "name": "web", "text": "pick the suite's database", "column": "needs_input",
-                                             "category": "needs_input", "blockSummary": brief.read_text(), "blocked": None, "live": True,
+                                             "category": "needs_input", "blockSummary": brief.read_text(), "blocked": None, "live": True, "background": card["background"],
                                              "tree": [{"id": gid, "kind": "ask", "text": "pick the suite's database", "status": "open", "children": []}]}],
                     "items": [], "working": [], "awaiting": [], "stateUnknown": [], "sessions": [{"sid": SID, "name": "web"}]}
         saved = list(km._built_feed)
@@ -210,6 +216,9 @@ class ChatNotices(unittest.TestCase):
                 km._pusher_wake.clear(); km._build_feed_locked(102, {}, "s3")
                 self.assertTrue(km._pusher_wake.is_set(), "a row's line moved with the set unchanged: the pusher wakes, so the box follows the card by one build (before, pinned by source text alone)")
                 self.assertEqual(km._feed_needs_rows[0][SID][0]["body"], "which database does the suite target, and which loader?")
+                card["background"] = "the suite has two databases"   # one card field alone, the brief and the set unchanged
+                km._pusher_wake.clear(); km._build_feed_locked(103, {}, "s4")
+                self.assertTrue(km._pusher_wake.is_set(), "a card field the row carries moved alone: the face reads it, the pusher wakes (a face cut to the six old fields passes the third build and fails here)")
         finally:
             km._built_feed[:] = saved; km._pusher_wake.clear()
             brief.unlink(missing_ok=True)

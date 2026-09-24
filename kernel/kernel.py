@@ -58213,7 +58213,7 @@ def _needs_you_rows(feed):
                                              "summary": a.get("summary"), "blockSummary": a.get("blockSummary"), "briefParts": a.get("briefParts"),
                                              "summaryParts": a.get("summaryParts"), "distillState": a.get("distillState"), "summaryStale": a.get("summaryStale"),
                                              "relayNote": a.get("relayNote"), "background": a.get("background"), "stalled": a.get("stalled"),
-                                             "tree": a.get("tree"), "awaiting": a.get("awaiting"),
+                                             "tree": _row_tree(a.get("tree")), "awaiting": a.get("awaiting"),
                                              # and the state badges of the card's name row
                                              "recheck": a.get("recheck"), "rejudging": a.get("rejudging"), "nudgeFailed": a.get("nudgeFailed"),
                                              "nudged": a.get("nudged"), "interrupting": a.get("interrupting"), "interrupted": a.get("interrupted"),
@@ -58231,6 +58231,22 @@ def _needs_you_rows(feed):
 # section bodies (the distill line with its stamps, the background paragraph, the stall note, the sub-goal tree, the awaited rows) and
 # the state badges (re-judging, follow-up failed, interrupted, awaiting a peer, a delegation's origin or handoff). Every one is keyed in
 # _chat_build_sig (the row signature test reads the two lists against each other).
+# the tree node fields the shared builder reads (ui/webview/card-sections.ts applySections and the row's landing): the row carries a
+# PROJECTION of each node, never the tree the cards share and never a field the builder does not read. Above all not the clock-derived
+# tint (trgb, re-stamped on every 5 s build) nor the modal's own fields (last, whoWorking, log): with the tree copied whole the row's face,
+# the chat signature and the page's row key moved with time alone (a contributor's runs on PR 2124: 590 to 1397 face moves per 96 h for one
+# goal, each a chat rebuild and a status frame to every chat client).
+_NEEDS_ROW_TREE_FIELDS = ("id", "kind", "text", "status", "children", "parked", "cleared", "reviewedEarlier", "auth", "qderived", "t",
+                          "anchorUuid", "summary", "blockSummary", "summaryAnchorUuid", "summaryAnchorQuote")
+
+
+def _row_tree(tree):
+    """The row's copy of a card's tree: new dicts holding the builder's fields alone (None stays None; a list stays a list)."""
+    if tree is None:
+        return None
+    return [{k: r[k] for k in _NEEDS_ROW_TREE_FIELDS if k in r} for r in tree]
+
+
 _NEEDS_ROW_CARD_FIELDS = ("summary", "blockSummary", "briefParts", "summaryParts", "distillState", "summaryStale", "relayNote", "background",
                           "stalled", "tree", "awaiting", "recheck", "rejudging", "nudgeFailed", "nudged", "interrupting", "interrupted",
                           "waitingOn", "origin", "handoffTo",

@@ -87,7 +87,7 @@ test("the MODAL always shows BOTH sections, labeled background / summary", () =>
 
 test("background shows only alongside a produced takeaway, and the takeaway keeps its deep-link", () => {
   assert.match(FEED, /const bg = distillShown && it\.background \? it\.background : null;/);
-  assert.match(FEED, /if \(!sectionHosts\(id\)\.length\) applySections\(a, it, distillShown, env\);/);   // the re-apply inside pick() for a host outside the registry; the setter re-applies the registered ones
+  assert.match(FEED, /if \(!sectionHosts\(id\)\.length\) \{ applySections\(a, it, distillShown, env\); env\.afterApply\?\.\(a\); \}/);   // the re-apply inside pick() for a host outside the registry; the setter re-applies the registered ones
   assert.match(FEED, /dle\.classList\.add\("fask-distill-link"\)/);
   // the background body stays typographically identical to the summary
   assert.match(CSS, /\.fask-bg-body, \.fask-stall-body \{[^}]*font-size: 0\.86em/);

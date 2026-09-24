@@ -26,7 +26,7 @@ test("the span rides the payload only while it was located IN the landing atom",
   assert.match(KERNEL, /u, q = _summary_text_anchor\(seg_turn\.get\(sk\), line, memo_key=\(fsid, nid, sk\)\)/,
     "the only writer of the quote inside it is the tier that located the span in the atom it returns");
   assert.match(FEED, /summaryAnchorQuote\?: string \| null;/);
-  assert.match(FEED, /const u = it\.summaryAnchorUuid, q = it\.summaryAnchorQuote \|\| undefined;\s*\n\s*dle\.onclick = \(ev: Event\) => \{ ev\.stopPropagation\(\); env\.landing\(it, \{ anchorUuid: u, quote: q, anchor: "work" \}\); \};/,
+  assert.match(FEED, /dle\.dataset\.act = "sec-landing"; dle\.dataset\.uuid = it\.summaryAnchorUuid;[^\n]*\n\s*if \(it\.summaryAnchorQuote\) dle\.dataset\.quote = it\.summaryAnchorQuote; else delete dle\.dataset\.quote;/,
     "the click carries the span");
   assert.match(KERNEL, /f\["anchorQuote"\] = str\(msg\["quote"\]\)\[:300\]/, "the focus frame passes it through");
 });
@@ -63,7 +63,7 @@ test("per-paragraph landings (T220): the user's ruling, wired end to end with ho
   assert.match(FEED, /const cited = anchOk \? pAnchors!\[i\] : null;/);
   assert.match(FEED, /const anchOk = !!\(pAnchors && paras\.length === pAnchors\.length\);/,
     "a re-split that disagrees with the stored alignment drops the anchors — never a mis-mapped click");
-  assert.match(FEED, /anchorUuid: u, quote: aq/, "the paragraph's click carries ITS span — the T218 landing highlights it");
+  assert.match(FEED, /para\.dataset\.act = "sec-landing"; para\.dataset\.uuid = u; if \(aq\) para\.dataset\.quote = aq;/, "the paragraph's click carries ITS span — the T218 landing highlights it (delegated through sectionActs, which hands the act's quote to the page's landing)");
   // the hover affordance: exactly the hovered paragraph highlights
   const FEEDCSS = fs.readFileSync(path.join(UI, "feed.css"), "utf8") + fs.readFileSync(path.join(UI, "card-sections.css"), "utf8");   // the paragraph rules moved to the sheet both pages import (plans/needs-you.md)
   assert.match(FEEDCSS, /\.fask-para-link:hover \{ background: rgba\(255, 255, 255, 0\.07\);/);

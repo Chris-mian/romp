@@ -87,6 +87,8 @@ export interface SectionEnv {
   noAnchor(it: SectionItem): void;
   openWarns(it: BadgeItem & SectionItem, title: string): void;
   workDot?(peer: HTMLElement, name: string): void;   // the feed's live working/awaiting dot before a tracked recipient's name; a page without one leaves the name bare
+  afterApply?(a: HTMLElement): void;   // called LAST after a host is re-applied from a pick or the channel (round three of the box content PR): the chat page runs
+  //                                       its items-level face and its More pass there, which the apply alone left stale
 }
 export type SecChoice = "bg" | "summary" | "subgoals" | "tasks" | "stall" | "none";
 const SEC_CHOICES: readonly string[] = ["bg", "summary", "subgoals", "tasks", "stall", "none"];
@@ -128,7 +130,31 @@ let syncRole: "owner" | "follower" = "follower";
 let onChoiceChange: (() => void) | null = null;
 function postSync(m: SectionSyncMsg): void { try { sectionChannel?.postMessage(m); } catch { /* a closed channel */ } }
 function reapplyHosts(id: string): void {
-  for (const c of sectionHosts(id)) { const h = c as any; if (h._it && h._sectionEnv) applySections(h, h._it, !!h._distillShown, h._sectionEnv); }
+  for (const c of sectionHosts(id)) {
+    const h = c as any; if (!h._it || !h._sectionEnv) continue;
+    applySections(h, h._it, !!h._distillShown, h._sectionEnv);
+    (h._sectionEnv as SectionEnv).afterApply?.(c);   // last: the page's own pass over what the apply changed
+  }
+}
+/** A tree branch's disclosure (the triangle, or the reviewed-earlier row) flipped for an item, every host of the item re-applied. */
+export function toggleTreeBranch(key: string, itemId: string): void {
+  if (cardTreeExpanded.has(key)) cardTreeExpanded.delete(key); else cardTreeExpanded.add(key);
+  reapplyHosts(itemId);
+}
+/** THE BUILDER'S CLICKS, DELEGATED (ui/CLAUDE.md, click-safe controls; round three of the box content PR): the badges, the line and its
+ *  paragraphs, the awaited peers, the sub-goal triangles and a sub-goal's text are rebuilt on every apply, so a repaint between mousedown and
+ *  mouseup would drop a handler set on the node itself. They carry data-act instead, and each page installs this map on a stable root through
+ *  actions.ts delegate: the feed on each card (installed before the card's own open-modal click, so the act's stopImmediatePropagation keeps
+ *  the modal shut), the chat page on #notices. `hostOf` finds the host element (the card or the row) whose remembered item the act reads. */
+export function sectionActs(env: SectionEnv, hostOf: (el: HTMLElement) => HTMLElement | null): Record<string, (el: HTMLElement, ev: Event) => void> {
+  const item = (el: HTMLElement) => { const h = hostOf(el) as any; return h && h._it ? { host: h as HTMLElement, it: h._it as SectionItem & BadgeItem } : null; };
+  return {
+    "sec-open-session": (el, ev) => { ev.stopImmediatePropagation(); if (el.dataset.sid) env.openSession(el.dataset.sid); },
+    "sec-open-warns": (el, ev) => { ev.stopImmediatePropagation(); const p = item(el); if (p) env.openWarns(p.it, p.it.text || ""); },
+    "sec-landing": (el, ev) => { ev.stopImmediatePropagation(); const p = item(el); if (p && el.dataset.uuid) env.landing(p.it, { anchorUuid: el.dataset.uuid, quote: el.dataset.quote, anchor: "work" }); },
+    "sec-no-anchor": (el, ev) => { ev.stopImmediatePropagation(); const p = item(el); if (p) env.noAnchor(p.it); },
+    "sec-tree": (el, ev) => { ev.stopImmediatePropagation(); const p = item(el); if (p && el.dataset.key) toggleTreeBranch(el.dataset.key, p.it.itemId); },
+  };
 }
 function reapplyAllHosts(): void { for (const id of Array.from(hosts.keys())) reapplyHosts(id); }
 /** The page's role in the sync and what it does when the choice changes by any road (the feed persists its view state). Called once at load,
@@ -278,7 +304,7 @@ export function applySections(a: any, it: SectionItem, distillShown: boolean, en
     // disclosure is the CARD's, so the board's element and the focused section's copy show the same section after a pick on either) and
     // the Needs you row in the chat page, another document (the box content round), through the channel
     setSectionChoice(id, choice === want ? "none" : want);
-    if (!sectionHosts(id).length) applySections(a, it, distillShown, env);   // a host outside the registry (a test's bare element) re-applies itself
+    if (!sectionHosts(id).length) { applySections(a, it, distillShown, env); env.afterApply?.(a); }   // a host outside the registry (a test's bare element) re-applies itself
   };
   // Background toggle — visible only when there IS background; pressed (.on) when its body is showing
   a._bgBtn.style.display = bg ? "" : "none";
@@ -404,7 +430,7 @@ export function applySections(a: any, it: SectionItem, distillShown: boolean, en
             const sid = p.sid;
             txt.title = "waiting on " + p.name + " — click opens the session";
             txt.style.cursor = "pointer";
-            txt.onclick = (ev: Event) => { ev.stopPropagation(); env.openSession(sid); };
+            txt.dataset.act = "sec-open-session"; txt.dataset.sid = sid;   // delegated (sectionActs)
           }
         } else txt.textContent = r.label || r.kind;
         const deeper = sub ? waitsNote(r) : "";
@@ -461,15 +487,10 @@ export function applySections(a: any, it: SectionItem, distillShown: boolean, en
       // marks stay aligned. Only the triangle toggles (stopPropagation so the row click still opens the modal).
       const tri = el("span", "fcheck-tri" + (expandable ? " nav" : " empty"));
       tri.textContent = expandable ? (collapsed ? "▶" : "▼") : "";
-      if (expandable) tri.onclick = (ev: Event) => {
-        ev.stopPropagation();
-        const k = id + ":" + s.id;
-        if (cardTreeExpanded.has(k)) cardTreeExpanded.delete(k); else cardTreeExpanded.add(k);
-        renderTree();
-      };
+      if (expandable) { tri.dataset.act = "sec-tree"; tri.dataset.key = id + ":" + s.id; }   // delegated (sectionActs → toggleTreeBranch re-applies every host)
       const mark = el("span", "fcheck-mark");
       // ✓ blue disc (done) / ⏸ red pause (question = blocked) / empty ring (not done) — the SAME notation as the
-      // ledger checklist + Fleet (the user 2026-06-24). The OPEN mark is an empty element the CSS draws as a
+      // ledger checklist + the Sessions pane (the user 2026-06-24). The OPEN mark is an empty element the CSS draws as a
       // 13px hollow circle matching the done disc's size (the user 2026-07-08: the ○ glyph read too small);
       // AUTHORITATIVE keeps the glyph, .auth-* only rings it. Blocked ROLLS UP (kernel flatten, the user
       // 2026-07-11): an ancestor of a blocked sub wears the ⏸ too, so the block is visible even while the
@@ -498,12 +519,7 @@ export function applySections(a: any, it: SectionItem, distillShown: boolean, en
       const txt = el("span", "fcheck-text");
       txt.textContent = revKids.length + " reviewed earlier";
       row.title = "sub-goals you reviewed before your follow-up — the update above doesn't re-present them";
-      row.onclick = (ev: Event) => {
-        ev.stopPropagation();
-        const k = id + ":reviewed";
-        if (cardTreeExpanded.has(k)) cardTreeExpanded.delete(k); else cardTreeExpanded.add(k);
-        renderTree();
-      };
+      row.dataset.act = "sec-tree"; row.dataset.key = id + ":reviewed";   // delegated (sectionActs → toggleTreeBranch)
       row.append(tri, mark, txt);
       cl.appendChild(row);
     }
@@ -595,7 +611,7 @@ export function applySpin(a: { _awaitSpin: HTMLElement; _awaitWhy: HTMLElement }
         // the standard session-chip gesture (the handoffTo idiom): click opens the session
         nm.title = "waiting on " + p.name + " — click opens the session";
         nm.style.cursor = "pointer";
-        const sid = p.sid; nm.onclick = (ev: Event) => { ev.stopPropagation(); env.openSession(sid); };
+        nm.dataset.act = "sec-open-session"; nm.dataset.sid = p.sid;   // delegated (sectionActs)
       }
       a._awaitWhy.appendChild(nm);
     });
@@ -658,7 +674,7 @@ export function applyDistillLanding(a: { _distill: HTMLElement }, it: SectionIte
           const u = au;
           para.classList.add("fask-para-link");
           para.title = "jump to where this piece resolved";
-          para.onclick = (ev: Event) => { ev.stopPropagation(); env.landing(it, { anchorUuid: u, quote: aq, anchor: "work" }); };
+          para.dataset.act = "sec-landing"; para.dataset.uuid = u; if (aq) para.dataset.quote = aq;   // delegated (sectionActs → env.landing)
         }
         dle.append(para);
       });
@@ -675,15 +691,15 @@ export function applyDistillLanding(a: { _distill: HTMLElement }, it: SectionIte
   if (distillShown && it.summaryAnchorUuid) {
     dle.classList.add("fask-distill-link");
     dle.title = "jump to where this was written";
-    const u = it.summaryAnchorUuid, q = it.summaryAnchorQuote || undefined;
-    dle.onclick = (ev: Event) => { ev.stopPropagation(); env.landing(it, { anchorUuid: u, quote: q, anchor: "work" }); };
+    dle.dataset.act = "sec-landing"; dle.dataset.uuid = it.summaryAnchorUuid;   // delegated (sectionActs → env.landing)
+    if (it.summaryAnchorQuote) dle.dataset.quote = it.summaryAnchorQuote; else delete dle.dataset.quote;
   } else if (distillShown) {
     dle.classList.add("fask-distill-link");
     dle.title = "no anchor recorded for this card";
-    dle.onclick = (ev: Event) => { ev.stopPropagation(); env.noAnchor(it); };
+    dle.dataset.act = "sec-no-anchor"; delete dle.dataset.uuid; delete dle.dataset.quote;   // delegated (sectionActs → env.noAnchor)
   } else {
     dle.classList.remove("fask-distill-link");
-    dle.onclick = null;
+    delete dle.dataset.act; delete dle.dataset.uuid; delete dle.dataset.quote;
     dle.removeAttribute("title");
   }
 }
@@ -729,7 +745,7 @@ export function stateBadges(it: BadgeItem, env: Pick<SectionEnv, "durNodes" | "o
     const peer = el("span", "fask-origin-peer"); peer.replaceChildren(...hostPartsNodes(it.origin.peerHost, it.origin.peer)); if (it.origin.color) peer.style.color = it.origin.color.bg;
     og.append(pre, peer);
     og.title = (it.origin.live === false ? "delegated by " + it.origin.peer + "; their linked entry closed with this card" : "delegated by " + it.origin.peer + " — clearing this card also clears their linked entry") + " · click opens the session";
-    const sid = it.origin.peerSid; og.onclick = (ev: Event) => { ev.stopPropagation(); env.openSession(sid); };
+    og.dataset.act = "sec-open-session"; og.dataset.sid = it.origin.peerSid;   // delegated (sectionActs)
     out.push(og);
   }
   if (it.recheck && spinCaption !== "Analyzing…") out.push(badge("fask-followedup", BADGE_WORDS.rejudging.text, BADGE_WORDS.rejudging.title));
@@ -749,7 +765,7 @@ export function stateBadges(it: BadgeItem, env: Pick<SectionEnv, "durNodes" | "o
     const chip = el("button", "fask-warnchip"); chip.textContent = it.warns.length > 1 ? `${lbl} ×${it.warns.length}` : lbl;
     // hover = the attempt history when one exists (the user 2026-08-18: "tried opus — 529" ×3 says what the prose can't)
     chip.title = (it.failLog && it.failLog.length ? it.failLog.map((f) => `${env.clockHM(f.t)} tried ${f.model} — ${f.note}`).join("\n") : it.warns[it.warns.length - 1].msg) + "\n— click for what happened and why";
-    chip.onclick = (ev: Event) => { ev.stopPropagation(); env.openWarns(it as BadgeItem & SectionItem, it.text || ""); };
+    chip.dataset.act = "sec-open-warns";   // delegated (sectionActs → env.openWarns with the host's freshest item)
     out.push(chip);
   }
   const wo = it.waitingOn;
@@ -770,7 +786,7 @@ export function stateBadges(it: BadgeItem, env: Pick<SectionEnv, "durNodes" | "o
     const pre = el("span", "fask-origin-pre"); pre.textContent = "↪ delegated to ";
     const peer = el("span", "fask-origin-peer"); peer.replaceChildren(...hostPartsNodes(it.handoffTo.peerHost, it.handoffTo.peer)); if (it.handoffTo.color && it.handoffTo.color.bg) peer.style.color = it.handoffTo.color.bg;
     og.append(pre, peer); og.title = "delegated to " + it.handoffTo.peer + "; their result checks this card off · click opens the session";
-    const sid = it.handoffTo.peerSid; og.onclick = (ev: Event) => { ev.stopPropagation(); env.openSession(sid); };
+    og.dataset.act = "sec-open-session"; og.dataset.sid = it.handoffTo.peerSid;   // delegated (sectionActs)
     out.push(og);
   }
   if (it.delegTracked && it.delegTracked.length) {
@@ -789,7 +805,7 @@ export function stateBadges(it: BadgeItem, env: Pick<SectionEnv, "durNodes" | "o
       env.workDot?.(peer, d.name);
       peer.title = "a tracked handoff: the work runs with " + d.name + " and reports back to this card · click opens the session";
       peer.style.cursor = "pointer";
-      const sid = d.sid; peer.onclick = (ev: Event) => { ev.stopPropagation(); env.openSession(sid); };
+      peer.dataset.act = "sec-open-session"; peer.dataset.sid = d.sid;   // delegated (sectionActs)
       og.append(peer);
     });
     out.push(og);

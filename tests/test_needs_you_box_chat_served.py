@@ -443,8 +443,8 @@ if (fr) {
 // 6c. THE ROW CARRIES WHAT THE CARD CARRIES (the user 2026-09-23, from a screenshot: a row at the items level showed its title and two buttons alone;
 // plans/needs-you.md): the feed pane shown beside the chat pane, the fresh question's card and its row read at each level and compared. The store gives
 // the card its other faces first: a background paragraph (the distiller's, its family stamped) and a sub-goal for two more toggles, a delegation's
-// origin for a badge on its name row. At the items level the row shows the title, the card's default-open section (the distill line, clamped) and the
-// card's badges, then Reply and Clear, and no session name, age or toggle; at the full context the card's toggles in the card's order with the card's
+// origin for a badge on its name row. At the items level the row shows the title, the card's distill line (clamped, whatever section is picked:
+// the pick governs the full context only) and the card's badges, then Reply and Clear, and no session name, age or toggle; at the full context the card's toggles in the card's order with the card's
 // labels and pressed states, and the same bodies. A press on the row's Background reaches the card and a press on the card's Summary reaches the row:
 // the choice crosses the two documents (card-sections.ts, one builder for both).
 out.content = { frame: !!fr };
@@ -487,6 +487,22 @@ if (fr) {
     out.content.cardAfterRowPress = await readCard(); out.content.rowAfterRowPress = await readRow();
     out.content.cardPressSummary = await pressCard("Summary"); out.content.rowFollowed = await rowPressed("Summary");
     out.content.cardAfterCardPress = await readCard(); out.content.rowAfterCardPress = await readRow();
+    // 6f. A PICK RE-RUNS THE ROW'S MORE PASS, AND THE ITEMS LEVEL SHOWS THE CLAMPED LINE WHATEVER THE PICK (round three of the box content PR, a
+    // contributor's review): no store write between a press and its read (a write repaints the row and would hide the defect). Background pressed on
+    // the row hides its line and takes its More with it; Summary pressed back brings the clipped line and its More; at the items level a Background
+    // pressed on the card leaves the row's clamped line with its More and shows no paragraph
+    const moreOf = () => fr.evaluate((s) => { const r = document.querySelector(s); const m = r && r.querySelector(".ntc-more"); const d = r && r.querySelector(".ntc-secs > .fask-distill"); const bg = r && r.querySelector(".fask-bg-body");
+      const vis = (x) => !!x && getComputedStyle(x).display !== "none" && x.getBoundingClientRect().height > 0;
+      return { more: !!m && vis(m), moreLabel: m ? m.textContent : null, line: vis(d), clamp: d ? getComputedStyle(d).webkitLineClamp : null, clipped: !!d && d.scrollHeight > d.clientHeight + 1, bg: vis(bg) }; }, rowSel(cfg.g6));
+    out.content.pick = { before: await moreOf() };
+    out.content.pick.pressedBg = await pressRow("Background"); out.content.pick.rowBg = await rowPressed("Background"); out.content.pick.afterBg = await moreOf();
+    out.content.pick.pressedSummary = await pressRow("Summary"); out.content.pick.rowSummary = await rowPressed("Summary"); out.content.pick.afterSummary = await moreOf();
+    await openNeedsBox(fr, 1);
+    out.content.pick.itemsBefore = await moreOf();
+    out.content.pick.cardBg = await pressCard("Background"); out.content.pick.rowFollowedBg = await rowPressed("Background");   // the card's pick reaches the row's toggles (hidden at the items) over the channel
+    out.content.pick.itemsAfterCardBg = await moreOf();
+    await pressCard("Summary"); await rowPressed("Summary");
+    await openNeedsBox(fr, 2);
     // 6d. THE STAMPS AND THE LANDINGS (round two of the box content PR): the brief becomes two paragraphs with two parts, the second part
     // without an event time, so the row's second stamp must read the card's static "<1m ago" and never an age counted from the epoch; the
     // row's line is a link like the card's and its click lands the way this chat page lands: at the turn the kernel's anchor names, or, when
@@ -533,7 +549,7 @@ await browser.close();
 """
 
 
-# the driver's budget. Its bounded waits sum to about 2500 s serially (every helper counted PER CALL, the round-one verifier of PR 2105: the
+# the driver's budget. Its bounded waits sum to about 2600 s serially (every helper counted PER CALL, the round-one verifier of PR 2105: the
 # kernel's four 90 s deadlines, the 60 s row, card and credential-row waits, the 30 s and 15 s waits of the brief helpers per call, the fold
 # helper's three 5 s waits per call, the shorter button, dialog, level, settings-card and frame waits, the frame loops), more than any per-test ceiling the runner gives (CI's served-page step runs pytest with --timeout=600, thread method), so
 # the cap cannot be the sum: it is the ceiling less the SETUP the same per-test timer wraps (pytest-timeout's thread method times the first
@@ -1024,6 +1040,27 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertEqual(c["rowAfterCardPress"]["toggles"], c["cardAfterCardPress"]["toggles"])
         self.assertEqual([t["pressed"] for t in c["rowAfterCardPress"]["toggles"]], ["false", "true", "false"])
         self.assertEqual(c["rowAfterCardPress"]["bodies"], {"bg": False, "distill": True, "stall": False, "tree": False}); self.assertEqual(c["cardAfterCardPress"]["bodies"], c["rowAfterCardPress"]["bodies"])
+
+    def test_a_section_pick_re_runs_the_rows_more_pass(self):
+        """Round three of the box content PR (a contributor's review): a pick re-applied the sections and left the row's More stale, standing with
+        nothing to open once the line was hidden and missing once the line came back clipped. The chat page's afterApply hook (card-sections.ts
+        SectionEnv, called last in every re-apply) runs the More pass. No store write between a press and its read."""
+        c = self._content(); pk = c.get("pick") or {}
+        self.assertTrue(pk.get("pressedBg") and pk.get("rowBg"), "Background pressed on the row: %r" % {k: v for k, v in pk.items() if not isinstance(v, dict)})
+        self.assertTrue((pk.get("before") or {}).get("more"), "the premise: the long brief's line is clipped and More stands: %r" % pk.get("before"))
+        self.assertEqual(((pk.get("afterBg") or {}).get("line"), (pk.get("afterBg") or {}).get("more")), (False, False), "Background open: the line hidden and its More gone with it (before: More stood and opened nothing): %r" % pk.get("afterBg"))
+        self.assertTrue(pk.get("pressedSummary") and pk.get("rowSummary"), "Summary pressed back: %r" % {k: v for k, v in pk.items() if not isinstance(v, dict)})
+        self.assertEqual(((pk.get("afterSummary") or {}).get("line"), (pk.get("afterSummary") or {}).get("clipped"), (pk.get("afterSummary") or {}).get("more")), (True, True, True), "the clipped line back with its More (before: no More until a repaint): %r" % pk.get("afterSummary"))
+
+    def test_the_items_level_shows_the_clamped_line_whatever_the_pick(self):
+        """The manager's ruling on the contributor's review (round three): the items level always shows the card's distill line, clamped with More,
+        whatever section is picked; the pick governs the full context only. The row re-applies per level without writing the choice."""
+        c = self._content(); pk = c.get("pick") or {}
+        ib = pk.get("itemsBefore") or {}
+        self.assertEqual((ib.get("line"), ib.get("clamp"), ib.get("more"), ib.get("bg")), (True, "4", True, False), "the items level: the clamped line with More, no paragraph: %r" % ib)
+        self.assertTrue(pk.get("cardBg") and pk.get("rowFollowedBg"), "Background picked on the card while the row stands at the items: %r" % {k: v for k, v in pk.items() if not isinstance(v, dict)})
+        ia = pk.get("itemsAfterCardBg") or {}
+        self.assertEqual((ia.get("line"), ia.get("clamp"), ia.get("more"), ia.get("bg")), (True, "4", True, False), "still the clamped line with More and no paragraph (before: the row showed the whole paragraph unclamped with no More): %r" % ia)
 
     def test_the_rows_paragraph_stamps_read_the_cards_and_a_part_without_a_time_reads_under_a_minute(self):
         """Round two of the box content PR (the verifier): the row stamped a part with no event time with an age counted from the epoch,

@@ -17,11 +17,11 @@ test("the CARD's distiller line links to it.summaryAnchorUuid (work anchor), onl
   assert.match(FEED, /const distillShown = it\.notice \? \(\(\(a\._distill as HTMLElement\)\.style\.display = "none"\), ""\)[^\n]*\n\s*: applyDistillLine\(a\._distill as HTMLElement, dCompleted, dBlocked, it\.summary, it\.blockSummary\);/);
   assert.match(FEED, /if \(distillShown && it\.summaryAnchorUuid\) \{/);
   assert.match(FEED, /dle\.classList\.add\("fask-distill-link"\)/);
-  assert.match(FEED, /env\.landing\(it, \{ anchorUuid: u, quote: q, anchor: "work" \}\)/, "the line\'s click lands through the page (card-sections.ts applyDistillLanding)"); assert.match(FEED, /type: "showOnTimeline", itemId: it\.itemId, sid: it\.sid, t: it\.t, anchor: target\.anchor, anchorUuid: target\.anchorUuid, quote: target\.quote/, "which the feed posts to the timeline");
+  assert.match(FEED, /"sec-landing": \(el, ev\) => \{ ev\.stopImmediatePropagation\(\); const p = item\(el\); if \(p && el\.dataset\.uuid\) env\.landing\(p\.it, \{ anchorUuid: el\.dataset\.uuid, quote: el\.dataset\.quote, anchor: "work" \}\); \},/, "the line\'s click lands through the page (card-sections.ts sectionActs, the delegated landing act)"); assert.match(FEED, /type: "showOnTimeline", itemId: it\.itemId, sid: it\.sid, t: it\.t, anchor: target\.anchor, anchorUuid: target\.anchorUuid, quote: target\.quote/, "which the feed posts to the timeline");
   // stopPropagation so the link doesn't ALSO open the modal (the card-body click)
-  assert.match(FEED, /dle\.onclick = \(ev: Event\) => \{ ev\.stopPropagation\(\); env\.landing\(it, /);
+  assert.match(FEED, /dle\.dataset\.act = "sec-landing"; dle\.dataset\.uuid = it\.summaryAnchorUuid;/);   // delegated through data-act (round three of the box content PR: rebuilt nodes carry no handler of their own; sectionActs routes the act)
   // and it's cleared (non-clickable) when there's nothing to link to
-  assert.match(FEED, /dle\.classList\.remove\("fask-distill-link"\);\s*\n\s*dle\.onclick = null;/);
+  assert.match(FEED, /dle\.classList\.remove\("fask-distill-link"\);\s*\n\s*delete dle\.dataset\.act; delete dle\.dataset\.uuid; delete dle\.dataset\.quote;/);
 });
 
 test("the MODAL node summary is also a link (parity), to the node's work anchor via goWork", () => {

@@ -44,7 +44,7 @@ test("each expandable node carries the outline's disclosure triangle (▶/▼); 
   assert.match(FEED, /const collapsed = expandable && !cardTreeExpanded\.has\(id \+ ":" \+ n\.id\);/);
   assert.match(FEED, /el\("span", "fcheck-tri" \+ \(expandable \? " nav" : " empty"\)\)/);
   assert.match(FEED, /tri\.textContent = expandable \? \(collapsed \? "▶" : "▼"\) : "";/);
-  assert.match(FEED, /if \(cardTreeExpanded\.has\(k\)\) cardTreeExpanded\.delete\(k\); else cardTreeExpanded\.add\(k\);/);
+  assert.match(FEED, /if \(cardTreeExpanded\.has\(key\)\) cardTreeExpanded\.delete\(key\); else cardTreeExpanded\.add\(key\);/);
   assert.match(FEED, /renderTree\(\);/, "a triangle toggle re-renders the tree in place");
   assert.match(FEED, /row\.append\(tri, mark, txt\)/);        // triangle leads the row, then mark + text
   // styled like the modal's .ftree-tri

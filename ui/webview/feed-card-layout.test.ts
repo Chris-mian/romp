@@ -69,7 +69,7 @@ test("courier handoff: the '↪ from <sender>' origin marker is wired and styled
   // same treatment as remote session names everywhere else (the user 2026-07-26)
   assert.match(FEED, /peer\.replaceChildren\(\.\.\.hostPartsNodes\(it\.origin\.peerHost, it\.origin\.peer\)\)/);
   assert.match(FEED, /if \(it\.origin\.color\) peer\.style\.color = it\.origin\.color\.bg/);
-  assert.match(FEED, /const sid = it\.origin\.peerSid; og\.onclick = \(ev: Event\) => \{ ev\.stopPropagation\(\); env\.openSession\(sid\); \};/, "clicking the marker opens the sender (through the page\'s environment)");
+  assert.match(FEED, /og\.dataset\.act = "sec-open-session"; og\.dataset\.sid = it\.origin\.peerSid;/, "clicking the marker opens the sender (delegated through sectionActs)");
   assert.match(CSS, /\.fask-origin-pre \{[^}]*var\(--dim\)/);     // "↪ from" dim gray
   assert.match(CSS, /\.fask-origin-peer \{[^}]*font-weight: 600/); // peer bold like other session names
 });
