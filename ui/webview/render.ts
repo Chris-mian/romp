@@ -15122,16 +15122,19 @@ function buildNoticeBar(): HTMLElement {
   // opaque ground, its rule and its dense padding, and the rows anchor to it. The header keeps focus after a mouse click as a button does
   // (Enter then advances the level; printable keys still reach the composer): one rule for the header, More and Clear, kept on purpose
   const bar = document.createElement("div"); bar.className = "ntc-bar";
+  bar.dataset.act = "ntc-fold";    // the bar too is the fold control: every strip of it toggles the level (the box arc's round three, the second contributor's review of
+  //                                  PR 2120: with the padding on the bar and the action on the header alone, the bar's edges and the strip beside the gear went dead); the
+  //                                  gear inside resolves to its own action first (the delegate takes the closest), and the focus ring stays the header's
   const head = document.createElement("div"); head.className = "ntc-head";
   head.dataset.act = "ntc-fold";   // the header line is the box's fold control (the user 2026-09-23): a click advances the level, on the box's delegate
   // THE KEYBOARD ROUTE (the second contributor's post-merge review of PR 2093): level 0 hides every row, so a header the keyboard could not
   // reach left Tab and Shift+Tab nothing to stop on inside the box, where before the levels they reached every row's buttons. A button role
   // and a tab stop, as the tab group head has; Enter or Space press the header through its click, the delegate's path, with focus kept on it
-  // (a key on the gear below is the gear's own); the expanded state moves with the level (applyNoticeBoxLevel), which also puts the next step
+  // (the gear is the header's sibling in the bar, so no key on it reaches the header); the expanded state moves with the level (applyNoticeBoxLevel), which also puts the next step
   // in the header's title, never an aria-label, which would drop "Needs you · N" from the name; the caret is decoration
   head.setAttribute("role", "button"); head.tabIndex = 0;
-  head.addEventListener("keydown", (e) => { if (e.target !== head) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); head.click(); } });   // the target
-  //                                          guard: a key on a descendant is not the header's (none is focusable now; kept for a future one)
+  head.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); head.click(); } });   // no target guard: the header has no
+  //                                          focusable descendant (the gear is its sibling), so every key here is the header's own
   const caret = el("span", "ntc-caret"); caret.setAttribute("aria-hidden", "true"); head.appendChild(caret);
   head.appendChild(el("span", "ntc-dot"));
   const label = el("span", "ntc-label"); label.id = "ntc-label"; head.appendChild(label);

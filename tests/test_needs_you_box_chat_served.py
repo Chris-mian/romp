@@ -104,6 +104,15 @@ for (const t of ["dark", "light"]) {
   await foldTo(2); out.levels[t + "2"] = await readBox();
 }
 await setTheme("dark");
+// 0a. THE CLICK TARGET (the second contributor's review of PR 2120: with the padding on the bar and the fold action on the header alone, the bar's
+// edges went dead): at level 0 a click at the bar's top-left corner (left + 3, top + 2), inside the header's padding, opens the items
+await foldTo(0);
+{
+  const b = await page.evaluate(() => { const el = document.querySelector("#notices .ntc-bar") || document.querySelector("#notices .ntc-head"); const r = el.getBoundingClientRect(); return { left: r.left, top: r.top, right: r.right, bottom: r.bottom }; });   // the bar, or the bare header on a page without it (the base)
+  await page.mouse.click(b.left + 3, b.top + 2);
+  out.edgeClick = { opened: await page.waitForFunction(() => document.getElementById("notices").classList.contains("ntc-l1"), null, { timeout: 5000 }).then(() => true).catch((e) => { if (e.name !== "TimeoutError") throw e; return false; }), bar: b };
+  out.edgeClick.cursor = await page.evaluate(() => { const el = document.querySelector("#notices .ntc-bar"); return el ? getComputedStyle(el).cursor : null; });   // null on a page without the bar (the base)
+}
 // 0b. THE KEYBOARD ROUTE (the second contributor's post-merge review of PR 2093: level 0 hid every row and the header was a plain div, so Tab and
 // Shift+Tab never stopped inside the box). By ORDER, not press count: Shift+Tab from the composer until focus enters #notices, the header;
 // Enter opens the items and the expanded state says so; Tab lands on the first row's Reply
@@ -151,6 +160,7 @@ out.floor.after = await readBox();
 fs.unlinkSync(cfg.judgeAuth); fs.utimesSync(cfg.order, new Date(), new Date());
 out.floor.released = await page.waitForSelector('#notices .ntc-row button[data-act="ntc-fix"]', { state: "detached", timeout: 60000 }).then(() => true).catch(() => false);
 out.floor.afterRelease = await readBox();
+out.floor.reusedRow = await page.evaluate(() => { const r = document.querySelector("#notices .ntc-row"); const b = r && r.querySelector(".ntc-body"); return r ? { fault: r.classList.contains("ntc-fault"), bodyLaid: !!b && b.getBoundingClientRect().height > 0, hasBody: !!b && (b.textContent || "").trim().length > 0 } : null; });   // the same row, reused: the fault class gone and its body hidden again at the items
 out.floor.web = await switchTo(cfg.sid, 4);
 await foldTo(2);   // the rest of the scenes read the bodies and their disclosures: the full context open
 mark();
@@ -247,24 +257,27 @@ fs.chmodSync(cfg.ledger, 0o644);
 // alone): the session's liveness flips (its sdk record's alive bit), so the kernel's next frame changes the rows' Continue flag and nothing the
 // rows show; the composer's placeholder is the frame's visible mark. The refused row's line and its re-armed buttons must survive that frame
 // (with the flag in the signature the row was rebuilt: the line wiped, a latched Clear re-enabled)
-// the frame is the session's latest status frame with every row's Continue flag flipped and nothing else, posted to the page the way the
-// kernel's socket frames arrive (a window message; the background lab drives its box the same way); the wait is on the page HANDLING it (the
-// injected-frame count), never a delay
+// 2a'. THE SIGNATURE WITHOUT THE CONTINUE FLAG, executed (the box arc's round three): the session's latest kernel status frame, with every
+// row's Continue flag flipped and nothing else, is posted to the page the way the kernel's socket frames arrive (a window message; the
+// background lab drives its box the same way); no liveness changes and nothing is read in the composer; the wait is on the page HANDLING the
+// posted frame (the injected-frame count), never a delay. The refused row's line and its re-armed buttons must survive that frame. The flip
+// back posts the kernel's latest status UNMODIFIED (the round-two review: reposting the flipped copy left the later scenes on flipped flags)
 const errRow = () => page.evaluate((s) => { const r = document.querySelector(s); const e = r && r.querySelector(".ntc-err"); return { err: e && e.style.display !== "none" ? e.textContent : null, buttons: r ? Array.from(r.querySelectorAll(".ntc-actions button")).map((b) => [b.textContent, b.disabled]) : null, injected: window.__injN, haveStatus: !!window.__lastStatus, cont: window.__lastStatus ? (window.__lastStatus.status.notices || []).map((n) => !!n.cont) : null }; }, rowSel(cfg.g3));
-const postFlipped = async () => {
+const postStatus = async (flip) => {   // the kernel's latest status with the rows, the Continue flags flipped when `flip`, else as the kernel sent them
   const n0 = await page.evaluate(() => window.__injN);
-  const posted = await page.evaluate(() => { const st = window.__lastStatus; if (!st) return false;   // the latest frame with the rows, so the posted one differs in the flag alone
+  const posted = await page.evaluate((flip) => { const st = window.__lastStatus; if (!st) return false;
     const shown = Array.from(document.querySelectorAll("#notices .ntc-row")).map((r) => r.dataset.item); const ids = (st.status.notices || []).map((n) => n.itemId);
     if (shown.length !== ids.length || shown.some((id) => !ids.includes(id))) return "stale:" + JSON.stringify({ shown, ids });   // the frame must list the rows the box shows
-    const copy = JSON.parse(JSON.stringify(st)); copy.status.notices = copy.status.notices.map((n) => ({ ...n, cont: !n.cont })); window.postMessage(copy, "*"); return true; });
+    const copy = JSON.parse(JSON.stringify(st)); if (flip) copy.status.notices = copy.status.notices.map((n) => ({ ...n, cont: !n.cont })); window.__lastInjected = copy; window.postMessage(copy, "*"); return true; }, flip);
   if (posted !== true) return { posted, handled: false };
-  const handled = posted && await page.waitForFunction((n) => window.__injN > n, n0, { timeout: 15000 }).then(() => true).catch(() => false);
+  const handled = await page.waitForFunction((n) => window.__injN > n, n0, { timeout: 15000 }).then(() => true).catch((e) => { if (e.name !== "TimeoutError") throw e; return false; });
   return { posted, handled };
 };
+const flagsOf = (key) => page.evaluate((k) => { const st = window[k]; return st ? (st.status.notices || []).map((n) => !!n.cont) : null; }, key);
 out.sigFlip = { before: await errRow() };
-out.sigFlip.flip = await postFlipped();
+out.sigFlip.flip = await postStatus(true); out.sigFlip.flippedFlags = await flagsOf("__lastInjected");
 out.sigFlip.after = await errRow();
-out.sigFlip.flipBack = await postFlipped();   // the flags back as the kernel sends them, so the kernel's next frame changes nothing
+out.sigFlip.flipBack = await postStatus(false); out.sigFlip.restoredFlags = await flagsOf("__lastInjected"); out.sigFlip.kernelFlags = await flagsOf("__lastStatus");
 out.sigFlip.restored = await errRow();
 mark();
 // 2. Clear on the third question: the card's own askClear wire; the row leaves with the next frame
@@ -380,6 +393,15 @@ if (fr) {
   // 6a. THE HEADER'S OWN GEAR, in the shell where a settings card can open (the second contributor's post-merge review of PR 2093: the strip's
   // gear lands on Tab strip with the box's section out of view): its click opens the settings' Chat tab with the Boxes section in the card's
   // view, and the box's level does not move
+  // the bar's own strip beside the gear, its right margin: a click there toggles the level (the second contributor's review of PR 2120: dead before)
+  await openNeedsBox(fr, 0);
+  {
+    out.marginClick = { levelBefore: await fr.evaluate(() => ["ntc-l0", "ntc-l1", "ntc-l2"].findIndex((c) => document.getElementById("notices").classList.contains(c))) };
+    const width = await fr.evaluate(() => { const el = document.querySelector("#notices .ntc-bar") || document.querySelector("#notices .ntc-head"); return el.getBoundingClientRect().width; });
+    await fr.click("#notices .ntc-bar", { position: { x: Math.max(1, width - 3), y: 2 }, timeout: 5000 }).catch((e) => { if (e.name !== "TimeoutError") throw e; });   // the gear's right margin: the bar's own click target (fail-soft: a page without the bar reads whatever it shows)
+    out.marginClick.after = await fr.waitForFunction((l) => !document.getElementById("notices").classList.contains("ntc-l" + l), out.marginClick.levelBefore, { timeout: 5000 }).then(() => fr.evaluate(() => ["ntc-l0", "ntc-l1", "ntc-l2"].findIndex((c) => document.getElementById("notices").classList.contains(c)))).catch((e) => { if (e.name !== "TimeoutError") throw e; return -1; });
+  }
+  await openNeedsBox(fr, 2);
   out.gear = { present: await fr.evaluate(() => !!document.querySelector("#notices .ntc-bar .ntc-gear")), levelBefore: (await fr.evaluate(() => ["ntc-l0", "ntc-l1", "ntc-l2"].findIndex((c) => document.getElementById("notices").classList.contains(c)))) };
   if (out.gear.present) {
     await fr.click("#notices .ntc-bar .ntc-gear");
@@ -426,7 +448,7 @@ await browser.close();
 """
 
 
-# the driver's budget. Its bounded waits sum to about 1700 s serially (every helper counted PER CALL, the round-one verifier of PR 2105: the
+# the driver's budget. Its bounded waits sum to about 1840 s serially (every helper counted PER CALL, the round-one verifier of PR 2105: the
 # kernel's four 90 s deadlines, the 60 s row, card and credential-row waits, the 30 s and 15 s waits of the brief helpers per call, the fold
 # helper's three 5 s waits per call, the shorter button, dialog, level, settings-card and frame waits, the frame loops), more than any per-test ceiling the runner gives (CI's served-page step runs pytest with --timeout=600, thread method), so
 # the cap cannot be the sum: it is the ceiling less the SETUP the same per-test timer wraps (pytest-timeout's thread method times the first
@@ -532,7 +554,7 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         ga = API + ":g1"
         Path(state, "goals", API + ".json").write_text(json.dumps(
             {"rompUuid": API, "seq": 1, "lastNode": ga, "closedTurns": [], "placements": {}, "status": {ga: "blocked"},
-             "nodes": {ga: {"id": ga, "text": "set up the api fixtures", "parentId": None, "nodeComplete": False, "blocked": True, "blockWhy": API_Q,
+             "nodes": {ga: {"id": ga, "text": "set up the api fixtures", "parentId": None, "nodeComplete": False, "blocked": True, "blockWhy": API_Q, "blockSummary": "the fixtures need a port the api will own",
                             "cleared": False, "trail": [], "t": t0 + 20, "log": [_block(t0 + 25, "asked: " + API_Q)]}}}))
         # a message from a DIRECTED peer, held for the user's decision: a needs-you notice with Approve and Deny at the first build
         Path(state, "postal", "quarantine", MID + ".json").write_text(json.dumps(
@@ -696,9 +718,10 @@ class NeedsYouBoxChatServed(unittest.TestCase):
 
     def test_a_frame_changing_only_the_continue_flag_leaves_the_refusal_line_and_the_buttons_alone(self):
         """The box arc's round three: the Continue flag left the row signature in PR 2105 with a source pin alone. Executed: the session's
-        latest status frame, with every row's Continue flag flipped and nothing else, is posted to the page as the kernel's frames arrive,
-        and the refused row keeps its refusal line and its re-armed buttons once the page has handled it (with the flag in the signature the
-        row was rebuilt: the line wiped, a latched Clear re-enabled)."""
+        latest kernel status frame, with every row's Continue flag flipped and nothing else (no liveness change, nothing read in the composer),
+        is posted to the page as the kernel's frames arrive, and the refused row keeps its refusal line and its re-armed buttons once the page
+        has handled it (with the flag in the signature the row was rebuilt: the line wiped, a latched Clear re-enabled). The flip back posts
+        the kernel's latest status unmodified, so the later scenes run on the kernel's flags."""
         r = self._result(); sf = r["sigFlip"]
         self.assertEqual(sf["before"]["err"], "That clear did not land", "premise: the refusal line stands before the flip: %r" % sf["before"])
         self.assertTrue(sf["before"]["haveStatus"], "premise: the session's latest status with the box's rows is in hand: %r" % sf["before"])
@@ -706,7 +729,9 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertEqual((sf["flip"]["posted"], sf["flip"]["handled"]), (True, True), "the frame with every row's flag flipped and nothing else was posted and handled: %r" % sf["flip"])
         self.assertEqual(sf["after"]["err"], "That clear did not land", "the refusal line survives that frame (before: the flag in the signature rebuilt the row and wiped the line): %r" % sf["after"])
         self.assertEqual([b[1] for b in sf["after"]["buttons"]], [False, False], "and the re-armed buttons stay re-armed: %r" % sf["after"])
-        self.assertTrue(sf["flipBack"]["handled"], "the flags posted back as the kernel sends them: %r" % sf["restored"])
+        self.assertTrue(sf["flipBack"]["handled"], "the kernel's latest status posted back unmodified and handled: %r" % sf["restored"])
+        self.assertEqual(sf["restoredFlags"], sf["kernelFlags"], "after the flip back the rows' Continue flags read the kernel's (the round-two review: the flipped copy was reposted and later scenes ran on flipped flags): %r" % sf)
+        self.assertEqual(sf["flippedFlags"], [not f for f in sf["kernelFlags"]], "and the flipped frame differed from the kernel's in the flags alone")
 
     def test_clear_takes_its_row_off_the_box_with_the_next_frame(self):
         r = self._result()
@@ -767,6 +792,19 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertTrue(k.get("spaced"), "Space on the header advances the level too (the box arc's round three): %r" % k.get("focusAfterSpace"))
         self.assertTrue((k.get("focusAfterSpace") or {}).get("head"), "and focus stays on the header")
 
+    def test_the_bars_edges_and_the_strip_beside_the_gear_open_the_box(self):
+        """The second contributor's review of PR 2120: with the padding on the bar and the fold action on the header alone, a click on the bar's
+        top and bottom strips, its left edge, the gap before the gear and the margin right of it did nothing where at the base each opened the
+        box. The padding is the header's again and the bar carries the fold action too: a click at the bar's top-left corner opens the items on
+        the standalone page, and in the shell a click in the gear's right margin, the bar's own strip, toggles the level while a click on the
+        gear leaves it alone (the gear scene)."""
+        r = self._result(); e = r["edgeClick"]
+        self.assertTrue(e["opened"], "a click at the bar's (left + 3, top + 2) at level 0 opens the items: %r" % e)
+        self.assertEqual(e["cursor"], "pointer", "the bar shows the fold's cursor")
+        m = r["marginClick"]
+        self.assertNotEqual(m["after"], -1, "in the shell a click in the gear's right margin, the bar's own strip, toggles the level: %r" % m)
+        self.assertNotEqual(m["after"], m["levelBefore"])
+
     def test_the_level_is_the_sessions_own(self):
         """The second contributor's post-merge review of PR 2093: the level pin spelled the code, so a mutant copying the last level to a
         session not seen before passed. web at the full context, api's box reads collapsed; back on web the level stands."""
@@ -806,6 +844,7 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertTrue(f["up"] and f["down"], "premise: the two clicks at the floor ran")
         self.assertTrue(f["released"], "the seed removed, the credential row leaves: %r (kernel: %s)" % ({k: v for k, v in f.items() if k in ("row", "up", "down", "released")}, self._kernel_tail()))
         self.assertEqual((f["afterRelease"]["level"], f["afterRelease"]["head"]), (1, "Needs you · 1"), "the box keeps the items when the row leaves (before: 0 stored, the box dropped to its header line): %r" % f["afterRelease"])
+        self.assertEqual(f["reusedRow"], {"fault": False, "bodyLaid": False, "hasBody": True}, "the reused row lost the fault class and its brief is hidden again at the items (a class never removed would keep the body showing): %r" % f["reusedRow"])
 
     def test_where_the_gear_is_drawn_the_keyboard_meets_it_then_the_header_named_by_its_label(self):
         """The round-one verifier of PR 2105: the order pin ran only on the standalone page, where no gear is drawn, and the gear nested in the

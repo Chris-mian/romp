@@ -117,7 +117,7 @@ test("a refused act re-arms the row the kernel's reply names, with the reason in
 
 test("the box is collapsed by default and opens in steps (the user 2026-09-23): three levels the page holds per session in the one fold store, the header's click advancing them, the sheet hiding the rows below level 1 and the background below level 2", () => {
   // the level lives in openFolds, the ONE fold store (ui/CLAUDE.md), as two boolean keys per session set together by the click (the second
-  // contributor's post-merge review of PR 2093: a Map of its own stood outside the census of merged keys and every reset that walks the store)
+  // contributor's post-merge review of PR 2093: a Map of its own stood outside the census of merged keys, notice-vocab.test.ts)
   assert.match(RENDER, /function noticeBoxKeys\(sid: string\): \[string, string\] \{ return \["ntcbox:" \+ sid \+ ":items", "ntcbox:" \+ sid \+ ":context"\]; \}/, "one key per level above 0");
   assert.doesNotMatch(RENDER, /noticeBoxLevel\b/, "the Map of its own is gone");
   assert.match(fn("noticeBoxLevelOf"), /const \[k1, k2\] = noticeBoxKeys\(sid\); return openFolds\.has\(k2\) \? 2 : openFolds\.has\(k1\) \? 1 : 0;/, "collapsed by default: neither key");
@@ -168,7 +168,7 @@ test("phase three: a goal row's Reply and Clear on the card's own wires (Continu
 test("the keyboard reaches both box headers (the second contributor's post-merge review of PR 2093): a button role and a tab stop, Enter or Space pressing the header, the expanded state with the level, the caret decoration, the next step as the title", () => {
   const h = fn("buildNoticeBar");
   assert.match(h, /head\.setAttribute\("role", "button"\); head\.tabIndex = 0;/, "the Needs you header is a button the keyboard can reach");
-  assert.match(h, /head\.addEventListener\("keydown", \(e\) => \{ if \(e\.target !== head\) return; if \(e\.key === "Enter" \|\| e\.key === " "\) \{ e\.preventDefault\(\); head\.click\(\); \} \}\);/, "Enter or Space press the header through its click (the delegate's path), focus kept; a key on the gear inside is the gear's own");
+  assert.match(h, /head\.addEventListener\("keydown", \(e\) => \{ if \(e\.key === "Enter" \|\| e\.key === " "\) \{ e\.preventDefault\(\); head\.click\(\); \} \}\);/, "Enter or Space press the header through its click (the delegate's path), focus kept; no target guard, since the header has no focusable descendant (the gear is its sibling in the bar)");
   assert.match(h, /const caret = el\("span", "ntc-caret"\); caret\.setAttribute\("aria-hidden", "true"\); head\.appendChild\(caret\);/, "the caret is decoration");
   assert.doesNotMatch(h, /head\.setAttribute\("aria-label"/, "no aria-label: it would drop 'Needs you · N' from the name");
   assert.match(h, /const label = el\("span", "ntc-label"\); label\.id = "ntc-label"; head\.appendChild\(label\);\s*\n\s*head\.setAttribute\("aria-labelledby", "ntc-label"\);/, "the name is the label alone: the gear nested in the button is not folded into it (the round-one verifier of PR 2105)");
@@ -219,8 +219,11 @@ test("the box's chrome: the background box's frame, its one thin edge in the Nee
   assert.match(RENDER, /if \(body && body\.style\.display !== "none" && body\.clientHeight === 0 && body\.scrollHeight === 0\) return;/, "a zero measure (a display:none pane) is no information: the row stands as it is (the post-merge review of PR 1967)");
   assert.match(RENDER, /watchChatVisibility\(document\.body, \{ \.\.\.browserChatVisibilityDeps\(\), onShown: renderNoticeDisclosures \}\);/, "the pane's return re-runs the disclosure pass");
   assert.match(RENDER, /window\.addEventListener\("resize", renderNoticeDisclosures\);/, "and so does a resize: Firefox's observer never reports the hidden pane (the second contributor's post-merge note on PR 2018)");
-  assert.match(CSS, /\.ntc-bar \{[^}]*position: sticky; top: 0; z-index: 1;\n  background: linear-gradient\(var\(--box-bg\), var\(--box-bg\)\), var\(--bg\); \}/, "an opaque ground under the box's wash, above the rows (the second contributor's review), on the bar since the box arc's round three");
-  assert.match(CSS, /body\.dense-chrome \.ntc-bar \{ padding: 5px 11px; \}/, "the bar compacts with the background box's header");
+  assert.match(CSS, /\.ntc-bar \{ flex: 0 0 auto; display: flex; align-items: center; gap: 0; cursor: pointer;\n[^}]*position: sticky; top: 0; z-index: 1;\n  background: linear-gradient\(var\(--box-bg\), var\(--box-bg\)\), var\(--bg\); \}/, "an opaque ground under the box's wash, above the rows (the second contributor's review), on the bar since the box arc's round three; no gap and no padding on the bar, its cursor the fold's");
+  assert.match(CSS, /\.ntc-head \{ flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 7px 11px; font-size: 0\.92em; user-select: none; \}/, "the padding is the header's: the click target and the focus ring cover the whole line (the second contributor's review of PR 2120: on the bar it shrank the target to the text line)");
+  assert.match(CSS, /body\.dense-chrome \.ntc-head \{ padding: 5px 11px; \}/, "the header compacts with the background box's");
+  assert.match(fn("buildNoticeBar"), /bar\.dataset\.act = "ntc-fold";/, "the bar too is the fold control: every strip of it toggles the level, the gear resolving to its own action first");
+  assert.match(CSS, /\.ntc-bar \.ntc-gear \{[^}]*margin: 0 11px 0 0;/, "the gear's right margin is the bar's 11px edge");
   assert.match(CSS, /\.ntc-btn\.ntc-ok \{ color: var\(--accent-ink\); border-color: color-mix\(in srgb, var\(--accent\) 90%, transparent\); \}/, "the ok label is the accent's ink token (the light theme's darker clay: the accent read 4.07:1 as text on the cream wash) and the ok border is the accent's own, on both themes, at the share that clears the 3:1 non-text floor on the light theme");
   assert.match(CSS, /\.ntc-btn\.ntc-deny \{ color: var\(--deny\); border-color: color-mix\(in srgb, var\(--deny\) \d+%, transparent\); \}/, "the deny label and border are the per-theme deny token (the second contributor's post-merge note on PR 2014)"); assert.match(CSS, /\.ntc-btn\.ntc-ok \{ color: var\(--accent-ink\); border-color: color-mix/);
   assert.match(CSS, /body\.dense-chrome #notices \{ margin: 4px 10px 0; \}/);
