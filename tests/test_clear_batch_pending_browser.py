@@ -17,7 +17,7 @@ records, which the kernel lands and renders through its real parse path). So the
 Ready pill, the clear boundary card and every retirement come from the kernel itself.
 
 What the real kernel path shows (and the first, injected cut could not): the FOUR report elements appear
-together WHILE the clear runs (the `mid` snapshot, held there by a small fake-SDK delay), the "Clearing
+together WHILE the clear runs (the `mid` snapshot, held there by the gate the fake SDK waits on), the "Clearing
 conversation…" row, the dashed /clear chip, and the message's dashed pending bubble. Once the clear has
 run, the fresh-episode arrives as a full `session` frame that REPLACES the view, so the "Clearing
 conversation…" row and the message's pending bubble are dropped by that replacement and the message lands
@@ -39,6 +39,12 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+
+# Hermetic state BEFORE any romp-code load below: romp modules resolve their state root at import
+# time and only pytest runs conftest's floor, so a bare unittest or script run would otherwise write
+# REAL ~/.local/state/romp (test_state_isolation_order.py is the ratchet).
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel exports it to its sessions; it outranks the XDG floor
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -106,14 +112,39 @@ const mid = await page.evaluate((msg) => {
   };
 }, cfg.msg);
 
-// RELEASE the in-flight clear on an EVENT, now that the in-flight snapshot is read (LOW c): the fake SDK is
+// RELEASE the in-flight clear on an EVENT, now that the in-flight snapshot is read: the fake SDK is
 // waiting on this file, so creating it is what lets the /clear run; no timer decides the timing.
 fs.writeFileSync(cfg.gate, "");
-// the real kernel now runs the clear (a fresh episode) and answers the message. Wait, event-based, for the
-// agent's reply to render, the moment the report describes: the reply is below and the pill reads Ready.
-await page.waitForFunction((reply) => Array.from(document.querySelectorAll("#content .turn")).some((t) => (t.textContent || "").indexOf(reply) >= 0), cfg.reply, { timeout: 30000 }).catch(() => {});
-// settle the trailing pushes (status ready, the boundary card, prune) across two frames, a paint settle, not a fixed wait
-await page.waitForFunction(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => r(true), 0)))), null, { timeout: 4000 });
+// Before reading, WAIT on the FRAMES so the after-read never races the paint (with the 800ms settle gone it
+// could read before the base's stuck chip was drawn, a false green there in a few runs of many). Wait until
+// the recorded frames show a chatTail arriving AFTER the last clear-card session frame (the fresh episode's
+// full replace), then ONE animation frame, so the settled tail (fixed head) or the chip the session frame
+// itself paints (pre-fix base) is on screen before we read. A TimeoutError is the expected no-chatTail case,
+// where that session frame already painted the chip; only a TimeoutError is swallowed.
+await page.waitForFunction(() => {
+  const fr = window.__frames || [];
+  let lastClearSession = -1;
+  for (let i = 0; i < fr.length; i++) {
+    const f = fr[i];
+    if (f && f.type === "session" && Array.isArray(f.kinds) && f.kinds.indexOf("clear") >= 0) lastClearSession = i;
+  }
+  if (lastClearSession < 0) return false;
+  for (let i = lastClearSession + 1; i < fr.length; i++) if (fr[i] && fr[i].type === "chatTail") return true;
+  return false;
+}, null, { timeout: 8000 }).catch((e) => { if (e.name !== "TimeoutError") throw e; });
+await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => r())));
+// Now POLL, event-based, to the settled ready state the report describes: the boundary card is up AND the
+// message has landed as its own row (not a queued bubble). A SYNCHRONOUS predicate (a plain boolean DOM read),
+// so Playwright actually polls it; a Promise-returning predicate would be evaluated once and never poll (the
+// lab-quality rule). Both products reach this state; the frame-wait above pins the paint and the assertions
+// below tell them apart.
+await page.waitForFunction((c) => {
+  const txt = (el) => (el.textContent || "");
+  const reply = Array.from(document.querySelectorAll("#content .turn")).some((t) => txt(t).indexOf(c.reply) >= 0);
+  const boundary = Array.from(document.querySelectorAll("#content .turn, #content .notice")).some((el) => txt(el).indexOf("Conversation cleared") >= 0 || txt(el).indexOf("fresh one starts") >= 0);
+  const landed = Array.from(document.querySelectorAll("#content .turn.turn-user:not(.echo) .user-bubble")).some((b) => txt(b).indexOf(c.msg) >= 0);
+  return reply && boundary && landed;
+}, { reply: cfg.reply, msg: cfg.msg }, { timeout: 30000 }).catch(() => {});
 
 const after = await page.evaluate((c) => {
   const txt = (el) => (el.textContent || "");
@@ -189,7 +220,7 @@ class ServedClearBatchRealKernel(unittest.TestCase):
         # the fake Agent SDK on the kernel's import path, and the synthetic reply it answers the message with
         env = _lab.kernel_env(cls.lab, claude, dist, cls.port, cls.token,
                               PYTHONPATH=FAKE_SDK, ROMP_FAKE_SDK_REPLY=REPLY,
-                              ROMP_FAKE_SDK_GATE=cls.gate)   # the fake holds the /clear IN FLIGHT until the driver creates this file (LOW c: an event, not a timer)
+                              ROMP_FAKE_SDK_GATE=cls.gate)   # the fake holds the /clear IN FLIGHT until the driver creates this file (an event, not a timer)
         cls.klog = os.path.join(cls.lab, "kernel.log")
         cls.kernel = subprocess.Popen([os.path.join(BIN, "romp-kernel")],
                                       stdout=open(cls.klog, "w"), stderr=subprocess.STDOUT, env=env)
@@ -267,6 +298,32 @@ class ServedClearBatchRealKernel(unittest.TestCase):
         self.assertTrue(a["replyShown"], "the agent's reply rendered" + table)
         self.assertTrue(a["boundaryCard"], "the 'Conversation cleared' boundary card marks the fresh episode" + table)
         self.assertEqual(a["composer"], "", "the composer is empty" + table)
+
+
+class FakeSdkRefusesWithoutClaudeConfigDir(unittest.TestCase):
+    """The fake claude_agent_sdk must FAIL LOUD rather than write transcripts under the real
+    ~/.claude when CLAUDE_CONFIG_DIR is unset. Loaded by file path under a private name so it never shadows the
+    real package in sys.modules for the other tests in the run."""
+    def _load_fake(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("_fake_cas_probe", os.path.join(FAKE_SDK, "claude_agent_sdk", "__init__.py"))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+
+    def test_unset_claude_config_dir_raises_and_a_set_one_is_used(self):
+        fake = self._load_fake()
+        saved = os.environ.pop("CLAUDE_CONFIG_DIR", None)
+        try:
+            with self.assertRaises(RuntimeError):
+                fake._proj_dir("/tmp/some-proj")     # unset -> refuse, never touch ~/.claude
+            os.environ["CLAUDE_CONFIG_DIR"] = "/tmp/hermetic-claude-root"
+            self.assertTrue(fake._proj_dir("/tmp/some-proj").startswith("/tmp/hermetic-claude-root/projects/"),
+                            "with the var set, transcripts go under the hermetic root")
+        finally:
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            if saved is not None:
+                os.environ["CLAUDE_CONFIG_DIR"] = saved
 
 
 if __name__ == "__main__":

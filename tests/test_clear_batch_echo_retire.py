@@ -338,7 +338,7 @@ class ClearBatchEchoRetires(unittest.TestCase):
         self._take_no_flip()                                 # TAKEN, awaiting its flip; the take is mirrored
         reg = sb.read_reg(self.d, SID) or {}
         self.assertEqual(reg.get("clearingTaken") or [], ["echo:cr2"], "the take is mirrored beside the echo")
-        # LOW (b): the OWN-TURN arm round-trips through the mirror too (the /clear was taken as its own fresh turn),
+        # The OWN-TURN arm round-trips through the mirror too (the /clear was taken as its own fresh turn),
         # so a restored no-flip /clear retires at its settle instead of being flagged lost. The reg KEY, by name:
         self.assertEqual(reg.get("clearingOwnTurn"), "echo:cr2", "the own-turn arm is persisted under clearingOwnTurn")
 
