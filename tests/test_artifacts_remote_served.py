@@ -28,7 +28,9 @@ waits for the kernel's echo of it, the frame carrying the nonce of the HUB'S OWN
 (both recorded by the init script; the last relay alone would be satisfied by the pre-switch's own pair on a hub-first boot, the
 second contributor's post-merge review of PR 2086 at 12:40Z, and the last HUB relay alone by a hub re-announcement recorded
 before the pre-switch, the same reviewer on PR 2091 at 15:02Z; the driver records such a re-announcement on purpose, so the
-constant-true switch mutant reds on echoOk), before the
+constant-true switch mutant reds on echoOk; and on a REMOTE-FIRST boot the pre-switch relays nothing, so a stand-in remote relay
+follows the plant, the same reviewer on PR 2097 at 16:50Z, and a second short driver run boots remote-first on purpose so both
+boots are checked in), before the
 card opens, so no echo can move the selection under the read or the pick that follows."""
 import json
 import os
@@ -101,13 +103,16 @@ const cf = await findFrame(/\/chat(\?|$)/);
 // the remote tab in the hub's strip: federation merges the checked-in host's tabs under its prefix
 if (cf) await cf.waitForSelector('#tabs .tab[data-id="TESTHOST:' + cfg.rsid + '"]', { timeout: 90000 }).catch(() => {});
 out.tabs = cf ? await cf.evaluate(() => Array.from(document.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.getAttribute("data-id"))) : null;
-await page.click('.rail-btn[data-pane="artifacts"]');
-let fr = await findFrame(/\/artifacts(\?|$)/);
-out.frame = !!fr;
 // a hold that ran out is false; any other failure of a hold (a detached frame, a thrown predicate) is a fault and surfaces
 const timedOut = (e) => { if (e && e.name === "TimeoutError") return false; throw e; };
 // a SWITCH is a click on a tab that is not the column's active one; the wait confirms the strip's own state
 const switchTo = async (col, sid) => { await col.click('#tabs .tab[data-id="' + sid + '"] .tab-label', { timeout: 15000 }).catch(() => {}); return col.waitForFunction((t) => { const a = document.querySelector("#tabs .tab.active"); return !!a && a.getAttribute("data-id") === t; }, sid, { timeout: 15000 }).then(() => true).catch(timedOut); };
+// the emulated REMOTE-FIRST boot (the second contributor's post-merge review of PR 2097 at 16:50Z): the remote tab made the chat's
+// active tab before the pane exists, so the pane boots with the remote selected and the pre-switch below is a confirmation
+if (cfg.bootRemoteFirst && cf) out.forcedRemoteFirst = await switchTo(cf, "TESTHOST:" + cfg.rsid);
+await page.click('.rail-btn[data-pane="artifacts"]');
+let fr = await findFrame(/\/artifacts(\?|$)/);
+out.frame = !!fr;
 if (fr) {
   await fr.waitForSelector("#art-pick", { timeout: 30000 }).catch(() => {});
   // the mark follows the pane's selection, the chat's active tab: make the boot state deterministic by a REAL pre-switch to the remote
@@ -120,11 +125,15 @@ if (fr) {
   // the pane BEFORE the pre-switch, the pair a boot whose hub session frame is processed after the pane's document exists would
   // record; a wait that took the last hub relay would be satisfied by it, and the constant-true switch mutant would keep echoOk true
   await fr.evaluate((lsid) => { (window.__relays = window.__relays || []).push({ id: lsid, nonce: -1 }); (window.__echoes = window.__echoes || []).push({ id: lsid, nonce: -1 }); }, cfg.lsid);
+  // on a boot that is not the hub's the pre-switch clicks the already active tab and relays nothing (setActive returns early), so the
+  // plant would stay the last relay overall and satisfy the wait alone: a stand-in remote relay (no echo) stands where the real
+  // pre-switch's relay would (the same review, executed: the constant-true switch mutant then reds on echoOk on both boots)
+  if (bootActive !== cfg.lsid) await fr.evaluate((rid) => { (window.__relays = window.__relays || []).push({ id: rid, nonce: -2 }); }, "TESTHOST:" + cfg.rsid);
   const preSwitched = cf ? await switchTo(cf, "TESTHOST:" + cfg.rsid) : false;
   const switched = cf ? await switchTo(cf, cfg.lsid) : false;
   // the echo of THE switch to the hub's own tab: the LAST relay overall must carry the hub's id, and an echo its nonce. The last relay
   // alone would be the pre-switch's pair on a hub-first boot; the last HUB relay alone would be a hub relay recorded before the
-  // pre-switch (a boot re-announcement, injected below on purpose), echoed long before the switch: either would certify nothing
+  // pre-switch (a boot re-announcement, injected above on purpose), echoed long before the switch: either would certify nothing
   // about the switch (the second contributor's post-merge reviews of PR 2086 at 12:40Z and PR 2091 at 15:02Z)
   const echoOk = switched ? await fr.waitForFunction((lsid) => { const r = (window.__relays || []).slice(-1)[0]; return !!r && r.id === lsid && typeof r.nonce === "number" && (window.__echoes || []).some((e) => e.id === r.id && e.nonce === r.nonce); }, cfg.lsid, { timeout: 30000 }).then(() => true).catch(timedOut) : false;
   const buttonOk = await fr.waitForFunction(() => { const n = document.querySelector("#art-pick .session-name"); return !!n && n.textContent === "web"; }, null, { timeout: 30000 }).then(() => true).catch(timedOut);
@@ -142,6 +151,7 @@ if (fr) {
         nameStyle: nm ? { fontWeight: getComputedStyle(nm).fontWeight, fontSize: parseFloat(getComputedStyle(nm).fontSize), color: getComputedStyle(nm).color, chip: nm.style.getPropertyValue("--chip-bg") } : null }; });
     return { background: getComputedStyle(card).backgroundColor, menuBg, classes: Array.from(card.classList), rows, fg: getComputedStyle(document.body).color };
   });
+  if (cfg.pickerOnly) { process.stdout.write("RESULT:" + JSON.stringify(out) + "\n"); await browser.close(); process.exit(0); }   // the remote-first run covers the picker leg alone
   // pick the remote session: the listing is answered by the kernel that owns it, the thumbnail rides the host relay
   await fr.click('#art-picker .ctx-item[data-sid="TESTHOST:' + cfg.rsid + '"]', { timeout: 15000 }).catch(() => {});
   await fr.waitForFunction(() => document.querySelectorAll(".art-row").length >= 2, null, { timeout: 90000 }).catch(() => {});
@@ -163,16 +173,16 @@ if (fr) {
   // that nothing could end; the remote back (the test's second stage) lists with no click
   fs.writeFileSync(cfg.stage + "/stage-1", "");
   const acked1 = await waitFile(cfg.stage + "/ack-1", 60000);
-  const down = await fr.waitForFunction(() => { const f = window.__rompFed; return !!f && typeof f.down === "function" && f.down().indexOf("TESTHOST") >= 0; }, null, { timeout: 120000 }).then(() => true).catch(() => false);
+  const down = await fr.waitForFunction(() => { const f = window.__rompFed; return !!f && typeof f.down === "function" && f.down().indexOf("TESTHOST") >= 0; }, null, { timeout: 120000 }).then(() => true).catch(timedOut);
   await fr.click("#art-pick", { timeout: 15000 }).catch(() => {});
   await fr.waitForSelector('#art-picker .ctx-item[data-sid="TESTHOST:' + cfg.rsid + '"]', { timeout: 15000 }).catch(() => {});
   await fr.click('#art-picker .ctx-item[data-sid="TESTHOST:' + cfg.rsid + '"]', { timeout: 15000 }).catch(() => {});
-  const noted = await fr.waitForFunction(() => /disconnected/.test((document.querySelector(".art-err") || {}).textContent || ""), null, { timeout: 30000 }).then(() => true).catch(() => false);
+  const noted = await fr.waitForFunction(() => /disconnected/.test((document.querySelector(".art-err") || {}).textContent || ""), null, { timeout: 30000 }).then(() => true).catch(timedOut);
   out.hostDown = { acked1, down, noted, ...(await fr.evaluate(() => ({ err: (document.querySelector(".art-err") || {}).textContent || "", wait: (document.querySelector(".art-empty") || {}).textContent || "",
     spin: (() => { const o = document.getElementById("pane-spin"); return o ? !o.classList.contains("gone") : null; })(), rows: document.querySelectorAll(".art-row").length }))) };
   fs.writeFileSync(cfg.stage + "/stage-2", "");
   const acked2 = await waitFile(cfg.stage + "/ack-2", 120000);
-  const relisted = await fr.waitForFunction(() => document.querySelectorAll(".art-row").length >= 2 && !document.querySelector(".art-err"), null, { timeout: 180000 }).then(() => true).catch(() => false);
+  const relisted = await fr.waitForFunction(() => document.querySelectorAll(".art-row").length >= 2 && !document.querySelector(".art-err"), null, { timeout: 180000 }).then(() => true).catch(timedOut);
   out.hostBack = { acked2, relisted, ...(await fr.evaluate(() => ({ rows: Array.from(document.querySelectorAll(".art-row .art-name")).map((n) => n.textContent), err: (document.querySelector(".art-err") || {}).textContent || "", relayUps: window.__relayUps }))) };
   // (the re-arm, executed) the persisted remote selection and the lock survive a reload; the pane boots before federation holds a conn
   // for the host (its boot frames have nothing to ride: the ask is deferred to the relay's open), so on the host relay the open's re-arm
@@ -250,7 +260,9 @@ def _records(sid, writes, prose):
 
 class ArtifactsRemoteServed(unittest.TestCase):
     _r = None
-    _fail = None
+    _fail = None       # the main run's fault: read by every test, since a main-run fault after stage one leaves the remote kernel down
+    _fail_rf = None    # the remote-first run's own fault (the second contributor's post-merge review of PR 2100 at 17:50Z): read by its one test alone,
+    #                    so a fault in that short run no longer fails the four main-run tests sorted after it with a message about a run they never read
 
     @classmethod
     def _skip(cls, why):
@@ -360,6 +372,32 @@ class ArtifactsRemoteServed(unittest.TestCase):
         print("ARTREMOTE:", json.dumps(type(self)._r), file=sys.stderr)
         return type(self)._r
 
+    def _result_remote_first(self):
+        """The picker leg on an emulated REMOTE-FIRST boot (the second contributor's post-merge review of PR 2097 at 16:50Z): a second,
+        short driver run on the same two kernels, the remote tab made active before the pane exists, ending after the card."""
+        if type(self)._fail:               # the main run's fault first: after stage one it leaves the remote kernel down, and its message names that cause
+            self.fail(type(self)._fail)
+        if type(self)._fail_rf:
+            self.fail(type(self)._fail_rf)
+        if getattr(type(self), "_r2", None) is None:
+            cfg = os.path.join(self.lab, "cfg-remote-first.json")
+            with open(cfg, "w") as f:
+                json.dump({"landing": "http://127.0.0.1:%d/?token=%s" % (self.hport, self.htoken), "rsid": SID_R, "lsid": SID_L,
+                           "delayActiveChat": 1000, "bootRemoteFirst": True, "pickerOnly": True}, f)
+            driver = os.path.join(self.lab, "driver-remote-first.mjs")
+            Path(driver).write_text(DRIVER)
+            p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=400,
+                               env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
+            if "browser-launch-failed" in p.stderr:
+                self._skip("no playwright browser on this box")
+            line = next((ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")), None)
+            if line is None:
+                type(self)._fail_rf = "the remote-first driver produced no RESULT (stderr: %s)" % p.stderr[-2000:]
+                self.fail(type(self)._fail_rf)
+            type(self)._r2 = json.loads(line[len("RESULT:"):])
+        print("ARTREMOTE-FIRST:", json.dumps(type(self)._r2), file=sys.stderr)
+        return type(self)._r2
+
     def logs(self):
         return "\nhub: %s\nremote: %s" % (open(self.hlog).read()[-1000:], open(self.rlog).read()[-600:])
 
@@ -384,6 +422,22 @@ class ArtifactsRemoteServed(unittest.TestCase):
         self.assertTrue(h.get("markOk"), "the card's mark rendered on the hub's row: %r" % h)
         self.assertTrue(by[SID_L]["current"], "the shown session (the chat's active tab, the hub's own) wears the mark")
         self.assertFalse(by["TESTHOST:" + SID_R]["current"], "and the remote row does not")
+
+    def test_on_a_remote_first_boot_the_pre_switch_confirms_and_the_wait_still_certifies_the_switch_to_the_hubs_own(self):
+        # the emulated remote-first boot: the pre-switch is a confirmation (no relay), the stand-in remote relay keeps the plant from being
+        # the last relay, and the wait is satisfied only by the switch's own hub relay and its echo
+        r = self._result_remote_first()
+        self.assertEqual(r["errors"], [], "no page error")
+        self.assertTrue(r.get("forcedRemoteFirst"), "the remote tab was the chat's active tab before the pane opened: %r" % r.get("forcedRemoteFirst"))
+        h = r.get("cardHolds") or {}
+        self.assertEqual(h.get("bootActive"), "remote", "the pane booted remote-first: %r" % h)
+        for k, why in (("preSwitched", "the pre-switch confirmed the already active remote tab"), ("switched", "the switch to the hub's own tab was real"),
+                       ("echoOk", "the kernel's echo of THAT switch landed (the hub's own relay, the last relay overall, and an echo carrying its nonce)"),
+                       ("buttonOk", "the pane's button wore the hub's name"), ("markOk", "the card's mark rendered on the hub's row")):
+            self.assertTrue(h.get(k), "%s: %r" % (why, h))
+        by = {row["sid"]: row for row in (r.get("card") or {}).get("rows", [])}
+        self.assertTrue(by.get(SID_L, {}).get("current"), "the hub's own row wears the mark: %r" % by)
+        self.assertFalse(by.get("TESTHOST:" + SID_R, {}).get("current"), "and the remote row does not")
 
     def test_the_picker_wears_the_strips_dress_in_the_menu_tokens(self):
         card = self._result()["card"]

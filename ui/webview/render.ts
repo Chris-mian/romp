@@ -44,6 +44,7 @@ import { flash } from "./actions";   // its own line: the import above is pinned
 import { awaitWord, awaitBreakdown, groupRows, rowIds, waitsNote, listBreakdown, keptWord, GROUP_TITLE, ROW_KINDS, workingFor, type AwaitRow } from "./spin-caption";
 import { CHIP_LABEL, chipWords, statusChip, type ChipState } from "./status-chip";   // the session status chip: its words and its classes, the one builder the bar and the tag overview's rows share (T322b)
 import { isClearCmd, isNewCmd, openTopTitles, clearConfirmDetail, endConfirmDetail, RENAME_SUBLINE, END_SESSION_STANDING } from "./clear-confirm";
+import { addRestartRow, restartInterrupts, settleRestart } from "./restart-row";   // the one Restart session row, shared with the Sessions pane's menu
 import { prebuildPlan, type ViewState } from "./prebuild";
 import { historyMarks, historyBands, windowSpans, HIST_H, HIST_GAP } from "./glow-history";
 import { newSkeletonState, applyTabOrderSkeleton, onStatus, holdStatus, onFull, onDismiss, onSocketUp, nextPrefetch, renderKind } from "./skeleton-tabs";
@@ -1008,6 +1009,12 @@ function onKernelCaps(m: { caps?: unknown; viewsSeq?: unknown }) {
 // gesture takes the path that kernel does know
 function onUnknownOp(m: { op?: unknown; writeId?: unknown }) {
   if (typeof m.op === "string") kernelCaps.delete(m.op);
+  if (m.op === "restartSession") {
+    // a kernel older than this page (it advertises restartSession in its caps): every latched row re-arms
+    // on the refusal rather than waiting for a reply that is never coming, and the toast says what to do
+    for (const id of sessions.keys()) settleRestart(id);
+    warnToast("This romp kernel is older than the dashboard and has no Restart session — end the session and revive it instead.");
+  }
   if (typeof m.writeId === "string" && viewsWrites.some((w) => w.id === m.writeId))
     onViewsAck({ type: "unknownOp", writeId: m.writeId, ok: false,
                  error: "the kernel does not know the " + String(m.op) + " operation, so the edit was not applied — try again; this dashboard now uses the older path" });
@@ -7216,7 +7223,7 @@ function setSessionColor(id: string, bg: string) {
 
 // Small inline-SVG icon for the tab menu's toggle items (trusted constant markup; `off` slashes + dims it,
 // matching the timeline lane toggles). 16-unit viewBox; currentColor so .ctx-icon/.off set the tint.
-function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "pencil" | "key", off: boolean): HTMLElement {
+function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "pencil" | "key" | "restart", off: boolean): HTMLElement {
   const span = el("span", "ctx-icon" + (off ? " off" : ""));
   const slash = off ? '<line x1="1.6" y1="14.4" x2="14.4" y2="1.6"/>' : "";
   const body = kind === "feed"
@@ -7231,6 +7238,8 @@ function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "p
           ? '<path d="M2 3.4 A1.4 1.4 0 0 1 3.4 2 L7.6 2 A1.4 1.4 0 0 1 8.6 2.4 L13.6 7.4 A1.4 1.4 0 0 1 13.6 9.4 L9.4 13.6 A1.4 1.4 0 0 1 7.4 13.6 L2.4 8.6 A1.4 1.4 0 0 1 2 7.6 Z"/><circle cx="5.4" cy="5.4" r="1.1"/>'  // luggage tag (session tags)
         : kind === "key"
           ? '<rect x="1.5" y="4" width="13" height="8" rx="1.5"/><line x1="4.5" y1="9.5" x2="11.5" y2="9.5"/>'  // a keycap (the tab's hot key)
+        : kind === "restart"
+          ? '<path d="M13.2 8 A5.2 5.2 0 1 1 11.4 4.1"/><path d="M13.4 1.9 L13.4 5 L10.3 5"/>'  // a circling arrow (relaunch the session\'s CLI)
         : kind === "pencil"
           ? '<path d="M3 13 L3.6 10.4 L10.8 3.2 A1.3 1.3 0 0 1 12.8 5.2 L5.6 12.4 Z"/><line x1="9.8" y1="4.2" x2="11.8" y2="6.2"/>'  // pencil (rename)
           : '<path d="M8 2 C5.9 2.2 4.7 3.8 4.7 5.8 L4.7 8 L3.4 9.9 L12.6 9.9 L11.3 8 L11.3 5.8 C11.3 3.8 10.1 2.2 8 2 Z"/><path d="M6.6 11.6 A1.5 1.5 0 0 0 9.4 11.6"/>';  // bell (system notifications)
@@ -7790,7 +7799,23 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
     wireFlyout(menu, item, ".ctx-sub-billing", () => openBillingFly());
     menu.appendChild(item);
   }
-  // ── 4. FILES: Browse files (web only). A different kind of thing, it opens another surface; last and
+  // ── 4. THE SESSION'S PROCESS: Restart session. Not how it shows, not where it belongs, not what
+  // reaches you — the one row that acts on the running program itself, so it takes a section of its own
+  // (the user 2026-09-23, who asked for this in place of End then Revive: a session keeps the CLI it
+  // launched with, and only a relaunch puts it on a newer one — a model the old binary does not know is
+  // otherwise unreachable from it). The row and its gesture live in restart-row.ts, the ONE copy both
+  // menus that offer it build from; everything it needs is resolved by id here, never off a node the next
+  // push rebuilds.
+  addMenuSep(menu);
+  addRestartRow(menu, id, {
+    name: s?.name || id,
+    working: restartInterrupts(st?.state),
+    titles: openTopTitles(ledgers.get(id)?.tree),
+    icon: ctxIcon("restart", false),
+    confirm: (title, detail, buttons, cb) => showConfirm(title, detail, buttons, cb),
+    post: () => { vscodeApi?.postMessage({ type: "restartSession", id }); },
+  });
+  // ── 5. FILES: Browse files (web only). A different kind of thing, it opens another surface; last and
   // alone behind its own divider (the 2026-08-24 ruling).
   // BROWSE FILES — at the BOTTOM behind its own divider (the user 2026-08-24: it is a different
   // kind of thing from the switches above), wearing the standard icon + sub-description dress. It opens
@@ -7902,6 +7927,8 @@ function startTabRename(id: string, copy?: string) {   // `copy`: which copy of 
 // in the row above/below (tabs wrap via flex-wrap).
 function onTabKey(e: KeyboardEvent) {
   if (!order.length) return;
+  if (e.ctrlKey || e.altKey || e.metaKey) return;   // a modified key on a focused tab is a chord, the shell's (the session pair): the dispatcher takes its
+  //                                                   first press and skips its auto-repeats, which must not step here as bare arrows (review, 2026-09-23)
   if (!activeId) {   // from the unfocused pane an arrow lands on the first visible tab (T357)
     if ((e.key === "ArrowRight" || e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "ArrowDown") && pickFirstVisibleTab()) { e.preventDefault(); focusActiveTab(); }
     return;
@@ -12973,9 +13000,20 @@ function postChatTabs(ids: string[]): void {
   try { window.parent.postMessage({ romp: "chatTabs", tabs }, "*"); } catch (e) { /* no shell */ }
 }
 let activeTabNonce = 0;   // one per announcement (T416 round two): the kernel echoes it on the relayed activeChat frame, so the feed's pending record clears on the echo of its own switch and never on a stranger's
+// A switch the reader made through a MESSAGE — the shell's session pair and hot keys, the VS Code host's next/prev
+// commands — runs in the message handler, where inInputEvent reads false; the sender says it was a gesture
+// (`gesture: true` on the message) and the handler runs the switch under this flag, so notifyActive announces it
+// as the reader's own (review, 2026-09-23: the feed's current-session section kept the old session until the pointer
+// left its card, though the comment below had counted a hot key among the gestures).
+let gestureHeld = false;
+function asGesture(fn: () => void): void {
+  const was = gestureHeld;
+  gestureHeld = true;
+  try { fn(); } finally { gestureHeld = was; }
+}
 function notifyActive() {
   const nonce = ++activeTabNonce;
-  const gesture = inInputEvent();   // the reader's own switch (a strip click, a hot key) passes the feed's hover-freeze; a kernel-driven one (a focus frame, a re-activation) defers there like a push
+  const gesture = gestureHeld || inInputEvent();   // the reader's own switch (a strip click; a hot key, the session pair or the host's command through asGesture) passes the feed's hover-freeze; a kernel-driven one (a focus frame, a re-activation) defers there like a push
   if (vscodeApi) vscodeApi.postMessage({ type: "activeTab", id: activeId, nonce });
   // the same fact to the shell, which hands it to this page's feed pane (T416): the feed's current-session section
   // moves on it without waiting for the kernel's relay of the post above, which then reconciles
@@ -15047,7 +15085,9 @@ function renderSubHead(): void {
 // container (installed once, below, like the background box's), so a press lands whatever the rows did meanwhile. The body
 // and the attachment are the notice face the feed card shows (notice-face.ts): one face for both surfaces (low e).
 interface NoticeRowEl extends HTMLElement { _sig?: string; _title?: string; _body?: string; _att?: string }
-function noticeActionsSig(n: ChatNotice): string { return JSON.stringify([n.kind || "notice", !!n.cont, n.fix || "", (n.actions || []).map((a) => [a.label, a.kind || "", a.route || "", a.body])]); }
+function noticeActionsSig(n: ChatNotice): string { return JSON.stringify([n.kind || "notice", n.fix || "", (n.actions || []).map((a) => [a.label, a.kind || "", a.route || "", a.body])]); }   // the Continue offer
+//   (n.cont) is not in it: no button reads it since 2026-09-23, and with it in, a backend going up or down rebuilt the row with the same buttons,
+//   wiping a refusal line and re-enabling a latched Clear (the second contributor's post-merge review of PR 2093); it returns with the button
 function noticeRowSelector(itemId: string): string { return '#notices .ntc-row[data-item="' + itemId.replace(/["\\]/g, "\\$&") + '"]'; }
 function noticeButton(label: string, cls: string, act: string, idx: number): HTMLButtonElement {
   const b = document.createElement("button"); b.className = "ntc-btn " + cls; b.textContent = label; (b as any)._idle = label;
@@ -15060,6 +15100,8 @@ function noticeRowPlain(row: HTMLElement, n: ChatNotice): void {
   const acts = row.querySelector<HTMLElement>(".ntc-actions"), note = row.querySelector<HTMLElement>(".ntc-note");
   if (!acts || !note) return;
   acts.replaceChildren(); note.style.display = "none";
+  row.classList.toggle("ntc-fault", n.kind === "goal" && n.fix === "credential");   // the fault's row: its body (the refusal's explanation) shows at the items
+  //                                                                                    too, where every other body waits for the full context (the box arc's round three)
   if (n.kind === "goal" && n.fix === "credential") {   // the judges' credential refused: the fix is the one action (the gear's Billing block); no Clear, which would hide the fault while the refusals go on
     acts.appendChild(noticeButton("Fix credential…", "ntc-ok", "ntc-fix", 0));
     return;
@@ -15113,9 +15155,10 @@ function updateNoticeRow(row: NoticeRowEl, n: ChatNotice, sid: string): void {
 // the brief's disclosure button, on the row's own delegate (act ntc-more) and not on the body div; present only while the clamped body hides
 // lines, so a short brief shows no control; kept out of the latch (a disclosure is not a decision)
 function noticeMoreButton(row: HTMLElement, body: HTMLElement | null): void {
-  // a zero measure is no information (the post-merge review of PR 1967): a display:none pane lays nothing out, so the pass would remove a
-  // closed row's button or leave a fresh row without one until the next repaint; the row stands as it is, and the pane's return re-runs the
-  // pass (renderNoticeDisclosures, from the chat visibility watcher)
+  // a zero measure is no information (the post-merge review of PR 1967): a display:none pane lays nothing out, and so does the box below
+  // level 2, where the stylesheet hides the body itself (#notices:not(.ntc-l2) .ntc-body), so the pass would remove a closed row's button
+  // or leave a fresh row without one until the next repaint; the row stands as it is, and the pane's return re-runs the pass
+  // (renderNoticeDisclosures, from the chat visibility watcher), as the header's click to the full context re-renders the box
   if (body && body.style.display !== "none" && body.clientHeight === 0 && body.scrollHeight === 0) return;
   let b = row.querySelector<HTMLButtonElement>(".ntc-more");
   const overflows = !!body && body.style.display !== "none" && body.scrollHeight > body.clientHeight + 1;
@@ -15124,26 +15167,79 @@ function noticeMoreButton(row: HTMLElement, body: HTMLElement | null): void {
   if (!b) { b = document.createElement("button"); b.className = "ntc-btn ntc-more"; b.dataset.act = "ntc-more"; body?.after(b); }
   b.textContent = open ? "Less" : "More"; (b as any)._idle = b.textContent;
 }
-function buildNoticeHead(): HTMLElement {
+function buildNoticeBar(): HTMLElement {
+  // THE BAR (the box arc's round three, the second contributor's post-merge review of PR 2105): the header and the gear are SIBLINGS in a flex
+  // bar, never a button inside the role=button header (axe nested-interactive in the shell); the bar takes the header's sticky position, its
+  // opaque ground, its rule and its dense padding, and the rows anchor to it. The header keeps focus after a mouse click as a button does
+  // (Enter then advances the level; printable keys still reach the composer): one rule for the header, More and Clear, kept on purpose
+  const bar = document.createElement("div"); bar.className = "ntc-bar";
+  bar.dataset.act = "ntc-fold";    // the bar too is the fold control: every strip of it toggles the level (the box arc's round three, the second contributor's review of
+  //                                  PR 2120: with the padding on the bar and the action on the header alone, the bar's edges and the strip beside the gear went dead); the
+  //                                  gear inside resolves to its own action first (the delegate takes the closest), and the focus ring stays the header's
   const head = document.createElement("div"); head.className = "ntc-head";
   head.dataset.act = "ntc-fold";   // the header line is the box's fold control (the user 2026-09-23): a click advances the level, on the box's delegate
-  head.appendChild(el("span", "ntc-caret"));
+  // THE KEYBOARD ROUTE (the second contributor's post-merge review of PR 2093): level 0 hides every row, so a header the keyboard could not
+  // reach left Tab and Shift+Tab nothing to stop on inside the box, where before the levels they reached every row's buttons. A button role
+  // and a tab stop, as the tab group head has; Enter or Space press the header through its click, the delegate's path, with focus kept on it
+  // (the gear is the header's sibling in the bar, so no key on it reaches the header); the expanded state moves with the level (applyNoticeBoxLevel), which also puts the next step
+  // in the header's title, never an aria-label, which would drop "Needs you · N" from the name; the caret is decoration
+  head.setAttribute("role", "button"); head.tabIndex = 0;
+  head.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); head.click(); } });   // no target guard: the header has no
+  //                                          focusable descendant (the gear is its sibling), so every key here is the header's own
+  const caret = el("span", "ntc-caret"); caret.setAttribute("aria-hidden", "true"); head.appendChild(caret);
   head.appendChild(el("span", "ntc-dot"));
-  head.appendChild(el("span", "ntc-label"));
-  return head;
+  const label = el("span", "ntc-label"); label.id = "ntc-label"; head.appendChild(label);
+  head.setAttribute("aria-labelledby", "ntc-label");   // the name is the label alone, "Needs you · N" (the round-one verifier of PR 2105: with the gear
+  //                                                    nested in the header its label was folded into the name; the gear is a sibling now, and the reference stays)
+  bar.appendChild(head);
+  // THE BOX'S OWN GEAR (the second contributor's post-merge review of PR 2093: the strip's gear, the one section-targeted opener, lands on
+  // Tab strip with the box's section out of view above it): the shell's gear glyph at the bar's right end, beside the header, opening the
+  // settings' Chat tab scrolled to the "Boxes below the transcript" section (gear.js showSection), so the switch is reachable from the box
+  // the person is looking at; drawn only where a settings card can open, as the strip's gear is
+  if ((window as any).__rompShowStrip || inRompShell()) {
+    const gear = el("button", "ntc-gear") as HTMLButtonElement; gear.type = "button"; gear.dataset.act = "ntc-gear";
+    gear.title = "Needs you box settings"; gear.setAttribute("aria-label", "Needs you box settings"); gear.textContent = GEAR_GLYPH;
+    bar.appendChild(gear);
+  }
+  return bar;
 }
 // THE BOX'S THREE LEVELS (the user 2026-09-23, who wanted the box collapsed by default like the awaiting box and opened in steps): 0, the
 // header line alone (the label and the count); 1, the items (each row's title and its buttons); 2, the full context (the background paragraph
 // under each title, with its disclosure where the brief runs long, and the attachment). The level is the PAGE's state for the session,
-// never a timer: kept here across the per-frame re-render (renderNotices never writes it) and reset only with the page. The header's
-// caret says which way the next click goes; a click at the last level folds the box back to its header line.
-const noticeBoxLevel = new Map<string, number>();
-function noticeBoxLevelOf(sid: string): number { return noticeBoxLevel.get(sid) || 0; }
-function applyNoticeBoxLevel(host: HTMLElement, sid: string): void {
-  const level = noticeBoxLevelOf(sid);
+// never a timer: kept in openFolds, the ONE fold store (ui/CLAUDE.md; the second contributor's post-merge review of PR 2093: a Map of its own
+// stood outside the census of the merged keys, notice-vocab.test.ts), as two boolean keys per session, one per level above 0,
+// set together by the header's click; the per-frame re-render only reads them (renderNotices never writes the level), and the page's reload
+// resets them. The header's title names the next step; the caret points right below the last level and down at it, the awaiting box's
+// grammar; a click at the last level folds the box back to its header line. A judges' credential row FLOORS the box at level 1 while it
+// shows (the same review: at level 0 the refusal hid under a header that read like a question's; a fault must not hide), so the click
+// cycles between the items and the full context until the row leaves.
+function noticeBoxKeys(sid: string): [string, string] { return ["ntcbox:" + sid + ":items", "ntcbox:" + sid + ":context"]; }
+function noticeBoxLevelOf(sid: string): number { const [k1, k2] = noticeBoxKeys(sid); return openFolds.has(k2) ? 2 : openFolds.has(k1) ? 1 : 0; }
+function setNoticeBoxLevel(sid: string, level: number): void {
+  const [k1, k2] = noticeBoxKeys(sid);
+  for (const [k, on] of [[k1, level >= 1], [k2, level >= 2]] as [string, boolean][]) { if (on) openFolds.add(k); else openFolds.delete(k); }
+}
+function noticeBoxFloor(rows: ChatNotice[]): number { return rows.some((n) => n.kind === "goal" && n.fix === "credential") ? 1 : 0; }
+function noticeBoxShownLevel(sid: string, rows: ChatNotice[]): number { return Math.max(noticeBoxLevelOf(sid), noticeBoxFloor(rows)); }
+// the level the next click STORES: the one after the shown level, never below the floor (the box arc's round three: at the floor two clicks
+// from the items stored 0, so the box dropped to its header line when the credential row left). One helper for the click and the header's
+// title, so "Collapse" is said only where the next click folds the box to its header line
+function noticeBoxNextLevel(sid: string, rows: ChatNotice[]): number { return Math.max((noticeBoxShownLevel(sid, rows) + 1) % 3, noticeBoxFloor(rows)); }
+// the header's title names the step the next click takes, BY THE TRANSITION (the round-one verifier of PR 2120: at the floor from the full
+// context the next click reaches the items, and "Show the items" read wrong while the items already showed): ascending, "Show the items" or
+// "Show the full context"; descending, "Collapse" where the next level is the header line, else "Hide the full context"
+function noticeBoxStepTitle(sid: string, rows: ChatNotice[]): string {
+  const shown = noticeBoxShownLevel(sid, rows), next = noticeBoxNextLevel(sid, rows);
+  if (next > shown) return next === 1 ? "Show the items" : "Show the full context";
+  return next === 0 ? "Collapse" : "Hide the full context";
+}
+function applyNoticeBoxLevel(host: HTMLElement, sid: string, rows: ChatNotice[]): void {
+  const level = noticeBoxShownLevel(sid, rows);
   host.classList.toggle("ntc-l0", level === 0); host.classList.toggle("ntc-l1", level === 1); host.classList.toggle("ntc-l2", level === 2);
+  const head = host.querySelector<HTMLElement>(".ntc-head");
+  if (head) { head.setAttribute("aria-expanded", level > 0 ? "true" : "false"); head.title = noticeBoxStepTitle(sid, rows); }
   const caret = host.querySelector<HTMLElement>(".ntc-head .ntc-caret");
-  if (caret) { caret.textContent = level === 2 ? "\u25be" : "\u25b8"; caret.title = level === 0 ? "Show the items" : level === 1 ? "Show the full context" : "Collapse"; }
+  if (caret) caret.textContent = level === 2 ? "\u25be" : "\u25b8";
 }
 function renderNotices(): void {
   const host = document.getElementById("notices");
@@ -15152,13 +15248,13 @@ function renderNotices(): void {
   const rows: ChatNotice[] = (s && s.status && s.status.notices) || [];
   if (!s || !activeId || !rows.length || !settings.needsBox) { host.replaceChildren(); host.style.display = "none"; return; }   // the gear's Needs you box switch hides it; the ring stays
   host.style.display = "";
-  let head = host.querySelector<HTMLElement>(".ntc-head");
-  if (!head) { head = buildNoticeHead(); host.prepend(head); }
-  const lab = head.querySelector<HTMLElement>(".ntc-label"); if (lab) lab.textContent = "Needs you · " + rows.length;
-  applyNoticeBoxLevel(host, s.id);   // the level the page holds for this session, before the rows so a fresh row lands under the right classes
+  let bar = host.querySelector<HTMLElement>(".ntc-bar");
+  if (!bar) { bar = buildNoticeBar(); host.prepend(bar); }
+  const lab = bar.querySelector<HTMLElement>(".ntc-label"); if (lab) lab.textContent = "Needs you · " + rows.length;
+  applyNoticeBoxLevel(host, s.id, rows);   // the level the page holds for this session (a credential row floors it), before the rows so a fresh row lands under the right classes
   const want = new Set(rows.map((n) => n.itemId));
   for (const r of Array.from(host.querySelectorAll<HTMLElement>(".ntc-row"))) if (!want.has(r.dataset.item || "")) r.remove();
-  let prev: HTMLElement = head;   // the rows follow the header, in the frame's order
+  let prev: HTMLElement = bar;   // the rows follow the bar (the header and the gear), in the frame's order
   for (const n of rows) {
     let row = host.querySelector<NoticeRowEl>(noticeRowSelector(n.itemId).replace("#notices ", ""));
     if (!row) { row = buildNoticeRow(n, s.id); prev.after(row); }
@@ -15183,6 +15279,13 @@ function renderNoticeDisclosures(): void {
 function renderBgTasks() {
   const host = document.getElementById("bg-tasks");
   if (!host) return;
+  // THE HEADER KEEPS THE KEYBOARD (the box arc's round three, the second contributor's post-merge review of PR 2105): this render empties the box
+  // and builds a new header on every call, the one its own click makes included, so Enter toggled the rows and dropped focus to the body (a
+  // second Enter reached the bare-area handler and the composer), and a push changing an awaited field or a full session frame dropped it too.
+  // As the tab strip does across its rebuild: remember whether the header holds a KEYBOARD focus (:focus-visible, so a mouse click does not
+  // change where the next Enter goes) and refocus the new header once it stands
+  const refocusHead = !!document.activeElement && document.activeElement.classList.contains("bg-fold-head") && host.contains(document.activeElement)
+    && document.activeElement.matches(":focus-visible");
   host.replaceChildren();
   const s = activeId && !snapView ? liveSession(activeId) : null;   // (snapView: the pane shows a section, not this session)
   const tasks: BgTask[] = (s && s.bgTasks && s.bgTasks.tasks) || [];
@@ -15224,7 +15327,12 @@ function renderBgTasks() {
   const worst = tasks.reduce((w, t) => (BG_RANK[t.status] || 0) > (BG_RANK[w] || 0) ? t.status : w, tasks.length ? (tasks[0].status || "running") : "running");
   const head = el("div", "bg-fold-head " + (why ? "bg-await" : "bg-" + worst) + (open ? " open" : ""));
   head.dataset.act = "bg-fold"; head.dataset.id = sid;
-  const car = el("span", "bg-caret"); car.textContent = open ? "▾" : "▸"; head.appendChild(car);   // ▸ closed → ▾ open (expands DOWNWARD beneath the header)
+  // the keyboard's route to the rows (the second contributor's post-merge review of PR 2093: the same gap as the Needs you box's header): a
+  // button role and a tab stop, Enter or Space pressing the header through its click, the expanded state with the fold, the caret decoration
+  head.setAttribute("role", "button"); head.tabIndex = 0; head.setAttribute("aria-expanded", open ? "true" : "false");
+  head.title = open ? "Collapse" : "Show the rows";
+  head.addEventListener("keydown", (e) => { if (e.target !== head) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); head.click(); } });
+  const car = el("span", "bg-caret"); car.textContent = open ? "▾" : "▸"; car.setAttribute("aria-hidden", "true"); head.appendChild(car);   // ▸ closed → ▾ open (expands DOWNWARD beneath the header)
   head.appendChild(el("span", "bg-dot"));
   const lab = el("span", "bg-fold-label");
   // THE HEADER'S RULE (T394 round three, lows 1 and 2; round four): the leading word is the wait and its count is the awaited rows
@@ -15267,6 +15375,7 @@ function renderBgTasks() {
   }
   head.appendChild(lab);
   host.appendChild(head);
+  if (refocusHead) head.focus();
   if (!open) return;
   if (!groups.length && !leftovers.length) {
     // nothing enumerable (a judge stamp, an overlay row, an older kernel): the full sentence, the legacy
@@ -16137,8 +16246,11 @@ function metaChoices(kind: MetaKind, st: Status): MetaChoice[] {
   return META_CHOICES[kind];
 }
 
-// Is this menu entry the session's current value? Effort matches exactly; the
-// model var holds a display name ("Opus 4.8"), so match on the leading word.
+// Is this menu entry the session's current value? Effort matches exactly; the model var holds a display name
+// ("Opus 4.8"), so match on the leading WORD — or the whole badge, which is how a model the API gateway declares
+// (ROMP_ROUTER_MODELS) shows: its id verbatim, mixed case and all. Both sides are downcased and the word boundary
+// is a space, so a declared prefix pair (gpt-6, gpt-6-astra) ticks one row, not two (review round two, 2026-09-22;
+// the timeline lane menu's isCurrentMeta is the twin, current-meta-tick.test.ts pins them equal).
 function isCurrentMeta(kind: MetaKind, st: Status, value: string): boolean {
   if (kind === "effort") return (st.effort || "").toLowerCase() === value;
   if (kind === "fast") return (st.fast || "").toLowerCase() === value;   // "cooldown" marks neither entry
@@ -16147,7 +16259,8 @@ function isCurrentMeta(kind: MetaKind, st: Status, value: string): boolean {
     if (value === "default") return m === "" || m === "default" || m === "normal";
     return m === value.toLowerCase();                                          // auto / acceptEdits / plan match exactly
   }
-  return (st.model || "").toLowerCase().startsWith(value);
+  const cur = (st.model || "").toLowerCase(), v = (value || "").toLowerCase();
+  return !!v && (cur === v || cur.startsWith(v + " "));
 }
 
 // The requested-model tooltip (the user 2026-09-17): why the pick is not answering, then what romp does about it —
@@ -17747,7 +17860,11 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
       // leaving tab's chip (the user 2026-07-01). A feed click that seeds a chip sets it AFTER this switch.
       composerCitations.delete(activeId);
     }
+    // The slash menu and the mention card follow the TEXT (refreshComposerMenus, below the swap): one left open over the
+    // leaving draft must not stand over the entering one, where Enter would insert into it (review, 2026-09-23: "/" then
+    // the session pair replaced the entering draft with "/compact "); the clear path runs the same two.
     ta.value = drafts.get(id) ?? "";
+    refreshComposerMenus?.();
     growComposer(ta);
     renderComposerChips(id);   // the entering tab's own citation chip (if any)
     renderStagedStrip(id);     // …and its staged stack (per-tab; the strip follows the switch)
@@ -17773,14 +17890,15 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
 
 function cycleTab(dir: number) {
   if (pickFirstVisibleTab()) return;            // from the unfocused pane: the first visible tab (T357)
+  if (!activeId) return;
   const ord = visibleOrder();                   // never cycle onto a view-hidden session
-  if (ord.length < 2 || !activeId) return;
   const i = ord.indexOf(activeId);
-  if (i < 0) {                                  // folded away: step from its header's place (onTabKey's rule)
+  if (i < 0) {                                  // folded away: step from its header's place (onTabKey's rule) — BEFORE the count below: one tab on screen is somewhere to step to (review, 2026-09-23)
     const nb = neighborOfFolded(lastStripItems, activeId, dir > 0 ? 1 : -1);
     if (nb) setActive(nb);
     return;
   }
+  if (ord.length < 2) return;
   setActive(ord[(i + dir + ord.length) % ord.length]);
 }
 
@@ -19458,6 +19576,12 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // ready (_client_reset_chat_base) drops every base and awaitingFull clears whole. A statement AHEAD of the chain, like
   // the tabOrder pre-step, so the chain's wsup arm stays the one line its pins read.
   if (m.type === "wsup") forgetHeldWm(sessions, null);
+  // the shim's socket-flip frame is also the kernel-restart signal this pane sees: re-read /models, because a restart is
+  // the documented way to change the extra models the API gateway declares (ROMP_ROUTER_MODELS is read when the service
+  // starts) and a restarted kernel sends no models frame for a list that changed while it was down. The same reader the
+  // models frame uses (loadModelChoices, rev-checked: a kernel seeds its rev from the clock at boot, so the restarted
+  // kernel's list reads newer than the one this page holds); the gear's cache block takes the frame the same way.
+  if (m.type === "wsup") loadModelChoices();
   if (m.type === "tabOrder") noteSkeletonTabOrder(m);   // BEFORE the chain's applyTabOrder below: one repaint, final skeleton set (2026-09-07)
   if (m.type === "session") upsert(m);
   else if (m.type === "globalRetryPaused") {
@@ -19543,8 +19667,8 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     const body = document.querySelector("#mcp-panel .mcp-list") as HTMLElement | null;
     if (body && mcpPanelSid) loadMcpPanel(mcpPanelSid, body);   // refetch — never an optimistic row
   }
-  else if (m.type === "nextTab") cycleTab(1);
-  else if (m.type === "prevTab") cycleTab(-1);
+  else if (m.type === "nextTab") asGesture(() => cycleTab(1));    // the shell's session pair or the VS Code host's command: the reader's own act, whichever posted it
+  else if (m.type === "prevTab") asGesture(() => cycleTab(-1));
   else if (m.type === "settingRefused" && typeof m.text === "string" && m.text) {
     // the kernel refused a gesture this page posted (its store could not be read): the optimistic state ends
     // on THIS event, not on the next push, and the reason toasts (the warn toast is this pane's soft-refusal
@@ -19765,7 +19889,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // feed jump (the `focus` path above); one without a tab opens through the host, the exact message
   // a picker row sends.
   else if (m.type === "jumpSession" && typeof m.id === "string") {
-    if (order.includes(m.id)) { revealSelfPane(); closingTabs.delete(m.id); setActive(m.id); }
+    if (order.includes(m.id)) { revealSelfPane(); closingTabs.delete(m.id); if (m.gesture === true) asGesture(() => setActive(m.id)); else setActive(m.id); }   // a hot key says gesture: true
     else if (vscodeApi) vscodeApi.postMessage({ type: "openSession", id: m.id });
   }
   // The host asks US to confirm (in-page, no native dialogs): ending a live
@@ -19810,6 +19934,16 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   else if (m.type === "reviveFailed" && m.id) {
     // the kernel's loud revive failure → named, in that session's own pane + the dismissible toast
     reviveFailedLocal(String(m.id), String(m.name || m.id), String(m.text || "unknown error"));
+  }
+  // The restart's two answers (2026-09-23), for the pane that asked: the menu row's latch lifts on the
+  // event — the kernel's own word for THIS sid, never a clock — and nothing else moves. A restart that
+  // worked is deliberately invisible (same tab, same place, same history), so the settle is all there is;
+  // a restart that did not is named in the dismissible toast, the revive failure's surface, with the
+  // session left exactly as it was.
+  else if (m.type === "restarted" && m.id) settleRestart(String(m.id));
+  else if (m.type === "restartFailed" && m.id) {
+    settleRestart(String(m.id));
+    warnToast(`Couldn’t restart “${String(m.name || m.id)}” — ${String(m.text || "unknown error")}`);
   }
   else if (m.type === "moved" && m.id) moveLanded(String(m.id), String(m.name || m.id), String(m.cwd || ""));
   else if (m.type === "moveFailed" && m.id) {
@@ -20053,6 +20187,7 @@ interface SlashCmd { name: string; description?: string; argumentHint?: string; 
 // Re-rank an OPEN @-mention card against the current roster (set by setupComposer). Null before the
 // composer is wired, and a no-op while no card is up. mentionRosterChanged calls it on every roster change.
 let refreshMentionCard: (() => void) | null = null;
+let refreshComposerMenus: (() => void) | null = null;   // the slash menu AND the mention card re-read the box (setActive's draft swap)
 // Empty the message box (set by setupComposer): the ONE path every clear takes, so the @-mention card and
 // the slash menu see it go empty. A bare `ta.value = ""` fires no input event, so with the card up a Send
 // click or Cmd/Ctrl+Enter would leave it open over the emptied composer, where the next Enter inserts a stale
@@ -20825,6 +20960,7 @@ function setupComposer() {
     updateSlash(); updateMention();
   };
   clearComposerBox = clearBox;
+  refreshComposerMenus = () => { updateSlash(); updateMention(); };
   // ↑/↓/⏎/Tab/Esc while the card is OPEN; true when the key was the card's, so the composer's own
   // Enter-to-send, history and Escape-to-tabs handlers below do not also fire. A modifier passes through,
   // and so does every key of an IME composition: Enter commits the IME's text and the arrows walk its
@@ -21317,7 +21453,8 @@ setupSettings();
     "ntc-deny-step": (el) => { const p = pick(el); if (p) noticeRowDenyStep(p[0], Number(el.dataset.idx)); },
     "ntc-deny-note": (el) => { const p = pick(el); if (!p) return; const t = (p[0].querySelector<HTMLTextAreaElement>(".ntc-note")?.value || "").trim(); go(p[0], p[1], p[2], el as HTMLButtonElement, t ? { note: t } : undefined); },
     "ntc-deny-bare": (el) => { const p = pick(el); if (p) go(p[0], p[1], p[2], el as HTMLButtonElement); },
-    "ntc-fold": () => { if (!activeId) return; noticeBoxLevel.set(activeId, (noticeBoxLevelOf(activeId) + 1) % 3); renderNotices(); },   // the header line: one click the items, a second the full context, a third folds back; the page's state, never a timer (the user 2026-09-23)
+    "ntc-fold": () => { if (!activeId) return; const s = liveSession(activeId); setNoticeBoxLevel(activeId, noticeBoxNextLevel(activeId, (s && s.status && s.status.notices) || [])); renderNotices(); },   // the header line: one click the items, a second the full context, a third folds back; the page's state, never a timer (the user 2026-09-23)
+    "ntc-gear": () => openSettingsOn("chat", "boxes"),   // the box's own gear: the settings' Chat tab scrolled to the section that holds the box's switch
     "ntc-more": (el) => { const row = rowOf(el); if (!row) return; const key = "notice:" + (row.dataset.item || "") + ":brief"; if (openFolds.has(key)) openFolds.delete(key); else openFolds.add(key); row.classList.toggle("ntc-open", openFolds.has(key)); noticeMoreButton(row, row.querySelector<HTMLElement>(".ntc-body")); },   // the brief's disclosure: no latch, a toggle (the second contributor's review)
     "ntc-back": (el) => { const row = rowOf(el); const n = row && noticeOf(row); if (row && n) noticeRowPlain(row, n); },
     "ntc-reply": (el) => { const p = item(el); if (p && activeId) setCitation(activeId, { itemId: p[1].itemId, title: p[1].title }); },

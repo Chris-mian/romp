@@ -205,13 +205,16 @@ goal card with **Reply**, which targets the composer at the card as Follow up do
 and **Clear**), keeps its in-place reconcile and its one delegate, and dresses the box as the awaiting box in the token,
 titled **Needs you** with the count. It shows when the session has such an item and hides otherwise; an item leaves with the
 frame that drops it (the answer, the judge's re-file, the clear). A settings row under Chat, **Needs you box**, on by default,
-hides it; with the box off the tab ring and the feed still say it.
+hides it; with the box off the tab (its badge, or the ring with the badge off) and the feed still say it.
 
 The box's shape after its first weeks (the user 2026-09-23, who wanted the box collapsed by default like the awaiting box and opened in
 steps, Reply and Clear only for now, and a switch they could find): collapsed to its header line until clicked, one click the items, a
 second the full context, the level the page's state for the session and never a timer; the goal row offers Reply and Clear, the Continue
 offer stored and its wire kept for a later return with no button; the switch heads its own settings section, **Boxes below the transcript**,
-under Chat.
+under Chat. Since then: while a judges' credential row shows, the box stands open at the items (the floor), so the fault is never hidden under
+the header line; the header takes the keyboard (a button with a tab stop, Enter or Space advancing the level), its title naming the step the next click
+takes (**Show the items**, **Show the full context**, **Hide the full context**, or **Collapse** where the next click folds the box to its header
+line); and in the shell and VS Code the header's bar carries the box's own gear, which opens the settings at that section.
 
 Every clear or undo account the kernel sends carries its Undo stack (`batches`: the ids an earlier undo left owed first, then the
 clears log's batches by stamp, newest first; `owedBatch`: the owed ids alone; `batchesTotal`: the count of log batches before the
@@ -308,8 +311,8 @@ relies on: a card in Completed asks nothing of the user, so a Clear all over Com
    two ring rows, the column header, the chat chip, the overview row, the sessions pane's lane chip, the outline's row).
    Every pin on the old title and the old ring names moves in the same commit.
 3. **The box** (feature): the widened slice, the rows by kind, the awaiting dress in the token, the switch, and a chat
-   lab: a card entering the column shows a row; Reply, Continue and Clear each remove it; a hard block shows no row; the
-   switch hides the box and leaves the ring.
+   lab: a card entering the column shows a row; Reply and Clear each remove it (Continue's button left the row on
+   2026-09-23; its offer and wire stay); a hard block shows no row; the switch hides the box and leaves the ring.
 
 ## Tests
 
@@ -321,8 +324,8 @@ relies on: a card in Completed asks nothing of the user, so a Clear all over Com
 - `status-chip.test.ts`, `chip-label-case.test.ts`, `tab-snapshot.test.ts`: the chip's two words.
 - The served labs: the colour lab above; `test_tab_widgets_browser.py`, `test_feed_focus_served.py`,
   `test_held_mail_chat_served.py`, `test_kernel_mobile.py` re-pointed to the words and the token.
-- Phase three: a chat lab for the box (a row per item that is not a hard block; Reply, Continue and Clear each
-  remove theirs; the switch hides the box and leaves the ring).
+- Phase three: a chat lab for the box (a row per item that is not a hard block; Reply and Clear each remove
+  theirs; the switch hides the box and leaves the ring).
 
 ## Privacy
 

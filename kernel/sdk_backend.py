@@ -631,13 +631,66 @@ EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max", "ultracode")   # ultra
 SDK_MAX_BUFFER = 100 * 1024 * 1024
 
 
+def _parse_router_models(raw):
+    """ROMP_ROUTER_MODELS -> the declared gateway ids: comma-separated, order kept, whitespace stripped, duplicates
+    and empties dropped. kernel._parse_router_models is the byte-for-byte twin; tests/test_router_models.py pins
+    them equal (the kernel must run without this module, so neither imports the other's)."""
+    out, seen = [], set()
+    for part in str(raw or "").split(","):
+        p = part.strip()
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
+_ROUTER_IDS = frozenset()   # the ids the kernel installed this life (declared or from the gateway's listing), told through
+#                             set_router_ids; monotonic on purpose (a session still running a removed id keeps its badge)
+
+
+def set_router_ids(ids):
+    """The kernel's word on the gateway ids it installed (kernel._router_tell_backend, at every apply and remove): the
+    declared list this module can read itself PLUS the ids a gateway's listing added, which only the kernel knows. The
+    badge, the served-model learn and the live count read the union through _router_declared."""
+    global _ROUTER_IDS
+    _ROUTER_IDS = frozenset(str(i) for i in (ids or ()) if i)
+
+
+# The first-party skip's twin (kernel._router_first_party): a declared Claude version id or family alias is never a
+# gateway id, so the badge keeps labelling it as first-party ('Opus 4.8', 'Opus') whatever the variable says. The
+# regex is the kernel's _MODEL_ID_RE byte for byte and the aliases its shipped families; tests/test_router_models.py
+# pins both equal. (The kernel's catalog-filed ids, _catalog_family, are beyond a twin: the told set carries only
+# ids the kernel actually installed, so they never arrive that way either.)
+_ROUTER_FIRST_PARTY_RE = re.compile(r"^claude-(fable|opus|sonnet|haiku)-(\d+(?:-\d+)*)$")
+_ROUTER_FIRST_PARTY_ALIASES = ("fable", "opus", "sonnet", "haiku")
+
+
+def _router_first_party(mid):
+    mid = re.sub(r"\[[^\]]*\]$", "", str(mid or "").strip().lower())   # the kernel's _model_id_clean: lower-cased, tag stripped
+    return mid in _ROUTER_FIRST_PARTY_ALIASES or bool(_ROUTER_FIRST_PARTY_RE.match(mid))
+
+
+def _router_declared():
+    """The gateway ids this process knows: the operator's ROMP_ROUTER_MODELS after the first-party skip (the
+    environment the manager handed the process; a short split per call, no memo, so a test's env change is seen)
+    united with the ids the kernel told it (set_router_ids: what it installed, a listing's ids included). The BADGE's
+    use: such an id is a real model id the CLI may report and is shown verbatim — the Extra models switch's state
+    plays no part, because a session still running a removed id keeps its badge."""
+    return frozenset(m for m in _parse_router_models(os.environ.get("ROMP_ROUTER_MODELS"))
+                     if not _router_first_party(m)) | _ROUTER_IDS
+
+
 def pretty_model(raw: str) -> str:
     """A raw SDK model id → the short badge the tmux statusline shows, so SDK and tmux sessions read the
     same and the model picker's 'current' highlight (which matches on the leading word) lights up.
     'claude-opus-4-8' → 'Opus 4.8', 'claude-haiku-4-5-20251001' → 'Haiku 4.5', 'claude-fable-5' → 'Fable 5'.
-    Unrecognised ids pass through verbatim."""
+    A declared gateway id (ROMP_ROUTER_MODELS) shows VERBATIM, and the picker row reads the same id: one name per
+    model, so the pickers' current-model tick (the badge against the row's value, exactly or on a space boundary)
+    holds. Unrecognised ids pass through verbatim."""
     if not raw:
         return ""
+    if raw in _router_declared():
+        return raw
     m = re.match(r"claude-([a-z]+)-(\d+)(?:[-.](\d+))?", raw)
     if not m:
         return raw
@@ -656,7 +709,7 @@ def model_label(live: str, chosen: str) -> str:
         return live
     if not chosen or chosen == "default":
         return ""
-    return pretty_model(chosen) if chosen.startswith("claude-") else chosen.capitalize()
+    return pretty_model(chosen) if (chosen.startswith("claude-") or chosen in _router_declared()) else chosen.capitalize()
 
 
 def _alias_label(alias: str) -> str:
@@ -665,7 +718,7 @@ def _alias_label(alias: str) -> str:
     if not alias or alias == "default":
         return ""
     alias = re.sub(r"\[[^\]]*\]$", "", alias)   # fable[1m] → Fable: the context tag is not part of the name
-    return pretty_model(alias) if alias.startswith("claude-") else alias.capitalize()
+    return pretty_model(alias) if (alias.startswith("claude-") or alias in _router_declared()) else alias.capitalize()
 
 
 def _is_compact_cmd(text: str) -> bool:
@@ -4987,6 +5040,21 @@ def write_sdk_default(state_dir: Path, **fields) -> None:
         _write_sdk_defaults(state_dir, d)
 
 
+def reset_sdk_default_model_if(state_dir: Path, expected: str) -> bool:
+    """Reset the remembered `model` to the account default ONLY IF it still reads `expected`, under _defaults_lock:
+    the kernel's create door judges the seed it read and must not overwrite a pick that landed since (a dormant
+    pick's write, with its own fresh modelTok, between the read and the reset). A fresh modelTok goes with the
+    reset, as write_sdk_default mints. Returns whether the reset landed."""
+    with _defaults_lock:
+        d = read_sdk_defaults(state_dir)
+        if str(d.get("model") or "") != str(expected or ""):
+            return False
+        d["model"] = "default"
+        d["modelTok"] = _mint_write_tok()
+        _write_sdk_defaults(state_dir, d)
+        return True
+
+
 def _swap_sdk_default_locked(state_dir: Path, key: str, value):
     """swap_sdk_default's body, for a caller that already holds _defaults_lock and has more to do under
     the same hold (SdkBackend._seed_write_pending inserts the write's node before letting go: with the
@@ -8848,9 +8916,12 @@ class SdkSession:
                 m = None
             # Only adopt a REAL model id. Injected / synthetic assistant turns carry model="<synthetic>" (and
             # the CLI writes it to the transcript too); pretty_model passes unrecognised ids through verbatim,
-            # so an unguarded assign would CORRUPT the model badge to "<synthetic>". A real id always contains
-            # "claude" (claude-opus-4-8, us.anthropic.claude-…); keep the last good one otherwise.
-            if m and "claude" in m.lower():
+            # so an unguarded assign would CORRUPT the model badge to "<synthetic>". A real id contains
+            # "claude" (claude-opus-4-8, us.anthropic.claude-…), is a gateway id this process knows (declared in
+            # ROMP_ROUTER_MODELS or told by the kernel, the Extra models switch), or is the id this session PICKED
+            # (self._model_id: after a kernel restart under an off switch the told set is empty, but the model the
+            # CLI reports for the pick it was given is real; review find, 2026-09-21); keep the last good one otherwise.
+            if m and ("claude" in m.lower() or m in _router_declared() or (self._model_id and m == self._model_id)):
                 self._learn_model(pretty_model(m), raw=str(m), served=True)
         elif isinstance(msg, ResultMessage) and self._consume_move_settle(msg):
             pass   # the accepted move's turn-less result — nothing ended, so nothing settles (see the def)
@@ -15719,6 +15790,49 @@ class SdkBackend:
             self._stand_down_move(s, sid)
             return ""
         self._finish_move(s, sid, old, new)
+        return ""
+
+    def relaunch(self, sid: str) -> str:
+        """Relaunch this session's CLI process in place (see SessionBackend.relaunch; the user 2026-09-23,
+        who wanted one action for what End + Revive was doing in two — a session that has been up since
+        before a CLI upgrade cannot reach a model only the new binary knows). "" on success, else the
+        reason, verbatim for the user.
+
+        THE ROAD IS THE ONE ALREADY HERE: request_reconnect, what /effort, per-session env and the billing
+        switch take to apply a connect-time change. The run loop leaves its `async with ClaudeSDKClient`
+        and re-enters it, and for a kernel child that IS a new CLI process — spawned from `cli_path`, the
+        `claude` symlink the kernel resolved (_claude_bin), so the fresh process is whatever version is
+        installed NOW. Nothing else is touched: no kill, no `alive` flip, no death record, so no surface
+        ever paints this session dead on the way through (the board's tab, its place and its history all
+        stay put), and the reconnect resumes the same conversation.
+
+        A RUNNING TURN IS CUT, and the dashboard's confirm says so before it gets here: the reconnect is
+        ARMED first and the turn is then interrupted, so the arm exists before the interrupted turn's
+        result fires it (the deferred reconnect the ResultMessage handler runs — the CLI is never torn
+        down under a live turn, whichever order the two land in). A queued-but-not-started turn is not
+        interrupted: there is nothing running to cut, and the armed reconnect fires at the next turn end.
+
+        A session with no live object (dormant, or one this kernel has not started this life) has no
+        process to replace — connect() starts one, which is a fresh CLI on the current binary and so the
+        same outcome by the shortest road."""
+        reg = read_reg(self.state_dir, sid)
+        if not reg:
+            return "romp has no record of this session"
+        if not reg.get("alive"):
+            return "this session is not running — revive it to bring it back"
+        with self._lock:
+            s = self.sessions.get(sid)
+        if s is None:
+            # nothing to tear down: the next connect IS the fresh CLI
+            return "" if self.connect(sid) else "the session's CLI did not start (see the kernel log)"
+        with s._lock:
+            running = s.inflight > 0          # a turn in flight NOW (busy() also counts a queued one: nothing to cut there)
+        s.request_reconnect()                 # armed first — see the docstring's order
+        if running:
+            self.interrupt(sid)
+        self._log("relaunch (%s): %s; its CLI is replaced by a fresh one resuming the same conversation"
+                  % (s.name, "the running turn is cut" if running else "idle, reconnecting now"))
+        self._poke()
         return ""
 
     def _stand_down_move(self, s, sid: str) -> None:

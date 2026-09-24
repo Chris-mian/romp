@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+"""Restart session (the user 2026-09-23): ONE action that relaunches a session's own CLI process in place.
+
+A session keeps the Claude Code binary it launched with, so a long-running one cannot reach a model only a
+newer CLI knows — its alias resolves to the old model and the new id is refused as unrecognized. The only
+in-product way onto the new binary was End session then Revive: two destructive-looking steps, through a
+confirm dialog, for something that destroys nothing.
+
+What this pins, on both sides of the backend seam:
+
+  * SdkBackend.relaunch, the primitive. It rides request_reconnect — the road /effort, per-session env and
+    the billing switch already take to apply a connect-time change, whose run loop leaves its
+    ClaudeSDKClient and re-enters it, spawning a FRESH CLI from the `claude` path the kernel resolved. So
+    the registry row is never flipped dead, nothing is killed, no death record is written, and the session
+    is live throughout: no surface can paint it dead on the way through. A RUNNING turn is cut — the
+    reconnect is armed BEFORE the interrupt, so the arm exists before the interrupted turn's result fires
+    it — while a merely queued one is not cut at all. A dormant row has no process to replace and is simply
+    connected. A sid romp has no record of, and a row that is not alive, refuse in words the user reads.
+
+  * _restart_session, the door behind the WS restartSession op. It hands the work to the OWNING backend
+    (nothing here duplicates the revive's resume), runs off the recv loop, and answers the pane that asked
+    in the window that asked: `restarted` on success, `restartFailed` carrying the reason otherwise. It
+    never focuses anything (the tab you are looking at is yours), never records a death, and leaves the
+    names registry and the registry row exactly as it found them.
+
+Every leg reds at the merge base on the behaviour, not on a missing name: the two doors do not exist there,
+so the tests say so through the AttributeError the getattr guards raise as an explicit failure. Synthetic
+fixtures only: a hermetic state root, private placeholder sids, the notes-api demo names.
+"""
+import json
+import os
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+from romp_load import load_source
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+BIN = os.path.join(os.path.dirname(HERE), "bin")
+
+# Hermetic state BEFORE the loads — they resolve their state root at import time.
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)
+os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+os.environ["ROMP_CLI_SCOPE"] = "0"
+os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
+load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge", os.path.join(BIN, "romp-judge"))
+km = load_source("romp_kernel_restart", os.path.join(BIN, "romp-kernel"))
+sb = load_source("romp_sdk_backend_restart", os.path.join(BIN, "romp_sdk_backend.py"))
+
+SID = "3a7c0001-2222-3333-4444-555555555555"      # a running session named web (this module's own sid)
+OTHER = "3a7c0002-2222-3333-4444-555555555555"    # one this kernel has never heard of
+
+
+def _backend(d):
+    # per-session hosts OFF in this bare state root (they are on by default, T348): nothing here means to
+    # start a real bin/romp-session-host, and relaunch's dormant road calls the real connect()
+    Path(d, "session-hosts").write_text("off")
+    return sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+
+
+def _reg(d, sid=SID, **extra):
+    r = {"sid": sid, "name": "web", "cwd": "/tmp", "alive": True, "lastSid": sid, "effort": "high"}
+    r.update(extra)
+    sb.write_reg(Path(d), sid, r)
+    return r
+
+
+class _Sess:
+    """The SdkSession as relaunch touches it: the lock and the counter it reads, and the two calls it makes,
+    recorded in the order they land (the order IS the contract — the arm before the cut)."""
+
+    def __init__(self, calls, inflight=0, name="web"):
+        self.calls, self.inflight, self.name, self.sid = calls, inflight, name, SID
+        self._lock = threading.RLock()
+
+    def request_reconnect(self, defer=True):
+        self.calls.append(("request_reconnect", defer))
+
+    def interrupt(self):
+        self.calls.append(("interrupt",))
+
+
+class RelaunchPrimitive(unittest.TestCase):
+    """SdkBackend.relaunch: what it does to the process, and what it deliberately leaves alone."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.be = _backend(self.d)
+        self.calls = []
+
+    def relaunch(self, sid=SID):
+        fn = getattr(self.be, "relaunch", None)
+        self.assertIsNotNone(fn, "SdkBackend has no relaunch: Restart session has no primitive to ride")
+        return fn(sid)
+
+    def test_an_idle_session_reconnects_and_nothing_is_cut(self):
+        _reg(self.d)
+        self.be.sessions[SID] = _Sess(self.calls)
+        self.assertEqual(self.relaunch(), "", "an idle running session relaunches")
+        self.assertEqual(self.calls, [("request_reconnect", True)], "the reconnect road, and no interrupt")
+
+    def test_a_running_turn_is_cut_with_the_reconnect_armed_first(self):
+        _reg(self.d)
+        self.be.sessions[SID] = _Sess(self.calls, inflight=1)
+        self.assertEqual(self.relaunch(), "")
+        self.assertEqual(self.calls, [("request_reconnect", True), ("interrupt",)],
+                         "armed before the cut: the interrupted turn's result must find the arm standing")
+
+    def test_a_queued_turn_with_nothing_running_is_not_interrupted(self):
+        # busy() also answers True for a turn merely QUEUED; there is nothing running to cut there, and the
+        # armed reconnect fires at the next turn's end
+        _reg(self.d)
+        s = _Sess(self.calls)
+        s._pending = ["please pick the search work back up"]
+        self.be.sessions[SID] = s
+        self.assertEqual(self.relaunch(), "")
+        self.assertEqual(self.calls, [("request_reconnect", True)])
+
+    def test_the_session_is_never_marked_dead_and_no_death_is_recorded(self):
+        # the whole point: End + Revive reached the same place by killing the session first, and every
+        # surface saw it dead on the way through
+        _reg(self.d)
+        self.be.sessions[SID] = _Sess(self.calls, inflight=1)
+        self.relaunch()
+        reg = sb.read_reg(Path(self.d), SID)
+        self.assertEqual((reg.get("alive"), reg.get("name"), reg.get("lastSid"), reg.get("effort")),
+                         (True, "web", SID, "high"), "the row is untouched: alive, named, on its newest transcript")
+        self.assertIn(SID, self.be.sessions, "and the session object is still the backend's")
+
+    def test_a_dormant_row_has_no_process_to_replace_and_is_simply_connected(self):
+        _reg(self.d)
+        connects = []
+        self.be.connect = lambda sid: (connects.append(sid) or True)
+        self.assertEqual(self.relaunch(), "")
+        self.assertEqual(connects, [SID], "connect() starts a fresh CLI, which is the same outcome by the shortest road")
+
+    def test_a_dormant_row_whose_cli_will_not_start_says_so(self):
+        _reg(self.d)
+        self.be.connect = lambda sid: False
+        self.assertIn("did not start", self.relaunch())
+
+    def test_a_row_that_is_not_alive_refuses_and_points_at_the_revive(self):
+        _reg(self.d, alive=False)
+        r = self.relaunch()
+        self.assertIn("not running", r)
+        self.assertIn("revive", r)
+        self.assertEqual(self.calls, [])
+
+    def test_a_sid_with_no_record_refuses(self):
+        self.assertIn("no record of this session", self.relaunch(OTHER))
+
+    def test_a_backend_with_no_relaunch_primitive_refuses_in_words_for_no_backend_in_particular(self):
+        # the ABC's default (session_backend.move's shape), which the unowned route and any future backend
+        # inherit — so a backend never reads as relaunchable by omission
+        self.assertIn("no way to relaunch", km._UNOWNED.relaunch(SID))
+        self.assertIn("revive", km._UNOWNED.relaunch(SID))
+
+
+class _Be:
+    """The owning backend as the door touches it."""
+
+    def __init__(self, answer="", entered=None, gate=None):
+        self.answer, self.entered, self.gate, self.calls, self.threads = answer, entered, gate, [], []
+
+    def relaunch(self, sid):
+        self.calls.append(sid)
+        self.threads.append(threading.current_thread())
+        if self.entered is not None:
+            self.entered.set()
+            self.gate.wait(timeout=10)
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
+
+
+class RestartDoor(unittest.TestCase):
+    """_restart_session and the WS op behind it."""
+
+    def patch(self, name, value):
+        saved = getattr(km, name)
+        setattr(km, name, value)
+        self.addCleanup(setattr, km, name, saved)
+
+    def setUp(self):
+        self.sent = []
+        self.patch("_send_to_view", lambda app, msg, wid: self.sent.append((app, msg, wid)))
+        self.patch("_push_soon", lambda: None)
+        self.reveals = []
+        self.patch("_reveal_chat_for", lambda client, msg: self.reveals.append((client, msg)))
+        self.patch("_name_of", lambda sid: "web" if sid == SID else None)
+        self.patch("_kernel_knows", lambda sid: sid == SID)
+        self.be = _Be()
+        saved = km.Sessions.__dict__["backend_for"]
+        km.Sessions.backend_for = staticmethod(lambda sid: self.be)
+        self.addCleanup(setattr, km.Sessions, "backend_for", saved)
+        self.client = {"app": "chat", "wid": "win-A"}
+        self.door = getattr(km, "_restart_session", None)
+        self.assertIsNotNone(self.door, "the kernel has no _restart_session door")
+
+    def frames(self):
+        return [(app, m["type"], m["id"], wid) for app, m, wid in self.sent]
+
+    def test_a_restart_relaunches_through_the_owning_backend_and_answers_the_asking_pane(self):
+        self.door(SID, self.client)
+        self.assertEqual(self.be.calls, [SID], "the backend that owns the sid does the work")
+        self.assertEqual(self.frames(), [("chat", "restarted", SID, "win-A")],
+                         "the pane that asked, in the window that asked, and nowhere else")
+        self.assertEqual(self.sent[0][1]["name"], "web", "named, as every answer about a session is")
+        self.assertEqual(self.reveals, [], "a restart never moves the focus: the tab you are looking at is yours")
+
+    def test_the_Sessions_panes_own_ask_is_answered_there(self):
+        self.door(SID, {"app": "fleet", "wid": "win-B"})
+        self.assertEqual(self.frames(), [("fleet", "restarted", SID, "win-B")])
+
+    def test_an_asker_with_no_pane_of_ours_is_answered_in_both_that_offer_the_row(self):
+        self.door(SID, {"app": "timeline", "wid": "win-C"})
+        self.assertEqual([a for a, _, _, _ in self.frames()], ["chat", "fleet"])
+
+    def test_a_backend_refusal_reaches_the_asker_verbatim(self):
+        self.be.answer = "this session is not running — revive it to bring it back"
+        self.door(SID, self.client)
+        self.assertEqual(self.frames(), [("chat", "restartFailed", SID, "win-A")])
+        self.assertEqual(self.sent[0][1]["text"], "this session is not running — revive it to bring it back")
+
+    def test_a_backend_that_raises_is_a_named_failure_not_a_silent_drop(self):
+        self.be.answer = RuntimeError("the control channel is gone")
+        self.door(SID, self.client)
+        self.assertEqual([t for _, t, _, _ in self.frames()], ["restartFailed"])
+        self.assertIn("the control channel is gone", self.sent[0][1]["text"])
+
+    def test_a_sid_this_kernel_does_not_have_is_refused_before_any_backend_is_asked(self):
+        self.door(OTHER, self.client)
+        self.assertEqual(self.be.calls, [], "no backend is asked about a session this kernel has never heard of")
+        self.assertEqual(self.frames(), [("chat", "restartFailed", OTHER, "win-A")])
+        self.assertIn("no session with id", self.sent[0][1]["text"])
+
+    def test_the_ws_op_answers_off_the_recv_loop(self):
+        # the relaunch takes as long as an interrupt and a reconnect take; the socket must not wait on it
+        entered, gate = threading.Event(), threading.Event()
+        self.be = _Be(entered=entered, gate=gate)
+        km.Sessions.backend_for = staticmethod(lambda sid: self.be)
+        client = dict(self.client, alive=True, send=lambda raw: None)
+        km.Handler._dispatch_ws(None, {"type": "restartSession", "id": SID}, client)
+        self.assertTrue(entered.wait(timeout=10), "the op was never handled")
+        self.assertEqual(self.sent, [], "the dispatch returned while the relaunch was still in flight")
+        gate.set()
+        for _ in range(500):
+            if self.sent:
+                break
+            threading.Event().wait(0.01)
+        self.assertEqual(self.frames(), [("chat", "restarted", SID, "win-A")])
+        self.assertIsNot(self.be.threads[0], threading.current_thread(), "…on a thread of its own")
+
+    def test_the_op_is_advertised_so_a_newer_page_meets_the_unknownOp_refusal_not_silence(self):
+        self.assertIn("restartSession", km.KERNEL_WS_CAPS)
+
+    def test_an_op_with_no_id_takes_no_thread_and_is_answered_unknownOp_like_any_unhandled_frame(self):
+        sent = []
+        client = dict(self.client, alive=True, send=lambda raw: sent.append(json.loads(raw)))
+        km.Handler._dispatch_ws(None, {"type": "restartSession"}, client)
+        self.assertEqual(self.be.calls, [])
+        self.assertEqual([m.get("type") for m in sent], ["unknownOp"])
+
+
+if __name__ == "__main__":
+    unittest.main()

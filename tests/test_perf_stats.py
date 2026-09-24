@@ -125,7 +125,7 @@ class Collector(unittest.TestCase):
         self.assertEqual(snap["judge"]["ms_mean"], 0.0, "no passes: the mean is 0, not a division error")
         self.assertIn("cpu_ms_sum", snap["judge"])
         self.assertIn("cpu_ms_workers", snap["judge"])
-        self.assertEqual(set(snap["goals"]), {"loads", "saves", "writes"}, "read through jd.goal_io_stats")
+        self.assertEqual(set(snap["goals"]), {"loads", "saves", "writes", "carryBase", "carryNoBase"}, "read through jd.goal_io_stats (the two carry counters since the field carry of 2026-09-23)")
         # the three identity memos' readers land here (review find, 2026-09-08: they had no consumer)
         self.assertEqual(set(snap["memos"]), {"pass", "shared", "chain", "nudgeGate", "nudgeWalk", "convergeDeclined", "sessionsListing", "cleared", "courierSkip", "backref", "captions", "goalArchive", "plannerSkip", "ghostDropped",
                                               "bgTops", "liftGate", "intrMarks", "deadWait", "tickSeen", "statesOverlay", "lanes", "spendTree", "summaryAnchor",

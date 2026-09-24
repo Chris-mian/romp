@@ -174,6 +174,15 @@ var GEAR_HTML =
   '<span><b>Conserve memory</b><span class=rs-mixed hidden></span>' +
   '<span class=rs-sub>Close the claude process of a session that has FADED (idle over an hour) and is on no open tab (each averages ~340MB). Everything persists — it revives on a tab click, a message, or a scheduled wake. An open tab always keeps its process; off = every session keeps its process for as long as it lives.</span>' +
   '</span></label>' +
+  // EXTRA MODELS FROM YOUR API GATEWAY (2026-09-21): per-install like Conserve memory beside it — the gateway is THIS
+  // machine's, declared in its service.env — so stamped and filled from /version but not a KERNEL_SETTING. The rs-line
+  // under the label is the row's live status (what the kernel parsed, whether a gateway is configured, or the read's
+  // fault), written from the authed /models `router` section at open and on every models frame (fillRouterLine).
+  "<label class='rs-row'><input type=checkbox id=rs-router>" +
+  '<span><b>Extra models from your API gateway</b><span class=rs-mixed hidden></span>' +
+  '<span class=rs-sub>Also offer the models your API gateway serves in every model picker. Declare them with ROMP_ROUTER_MODELS in service.env; read when the service starts. Off: Claude models only.</span>' +
+  '<span class=rs-line id=rs-router-line></span>' +
+  '</span></label>' +
   "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Updates install automatically <span class=rs-mixed hidden></span></b>" +
   '<span class=rs-sub>romp watches for new tagged releases (every 6 hours) AND new commits on main (origin polled every few minutes, plus a restart offer when updated code sits on disk unbooted) — one banner covers both, and acting on it converges every attached machine. Check and ask (the default) offers the banner with an Update button; Install automatically converges by itself: a change to kernel code restarts it at once (turns in flight are cut and resume with their history); anything else (the UI, the docs, the postal bus) converges in place with the kernel left up; Off never checks. Kernel-side setting.</span>' +
   "<select id=rs-updates style='display:none'>" +
@@ -205,11 +214,11 @@ var GEAR_HTML =
   '</span></label>' +
   // BOXES BELOW THE TRANSCRIPT (the user 2026-09-23, who looked for the switch and did not find it under Display): the Needs you box's
   // switch in a section of its own, named for where the box sits, so a scan of the section heads lands on it. plans/needs-you.md, phase
-  // three; on by default: render.ts hides the box on the save; the tab ring and the feed keep saying it
+  // three; on by default: render.ts hides the box on the save; the tab (its badge, or the ring with the badge off) and the feed keep saying it
   "<div class='rs-sec' data-section=boxes>Boxes below the transcript</div>" +
   '<label class=rs-row><input type=checkbox id=rs-needsbox checked>' +
   '<span><b>Needs you box</b>' +
-  '<span class=rs-sub>Between the transcript and the composer, collapsed to its header line until you open it: what this session needs from you, a question to answer or a message to approve. Off, the tab ring and the feed still say it.</span>' +
+  '<span class=rs-sub>Between the transcript and the composer, collapsed to its header line until you open it: what this session needs from you, a question to answer or a message to approve. Off, the tab and the feed still say it.</span>' +
   '</span></label>' +
   "<div class='rs-sec'>Comments</div>" +
   "<div class='rs-row rs-jrow'><b>Comment model <span class=rs-mixed hidden></span></b><span class=rs-sub>The model NEW comment threads start on. Same as the session (the default) keeps each thread on the model of the conversation it branches from; pinning one here starts every new thread on it. The comment dialog shows this default and its own pick still wins. Follows to every connected machine's kernel.</span><select id=rs-cmtmodel></select></div>" +
@@ -413,6 +422,7 @@ function initGear(post, opts) {
     jix = document.getElementById('rs-judges-index'), jtr = document.getElementById('rs-judges-triage'),
     an = document.getElementById('rs-autonudge'), bk = document.getElementById('rs-backend'),
     cvm = document.getElementById('rs-conserve'),
+    rtr = document.getElementById('rs-router'), rtrLine = document.getElementById('rs-router-line'),   // Extra models from your API gateway (2026-09-21): the box and its status line
     csg = document.getElementById('rs-suggestcompact'),
     dd = document.getElementById('rs-defaultdir'),
     fsc = document.getElementById('rs-filesctl'),
@@ -1166,6 +1176,10 @@ function initGear(post, opts) {
   });
   if (fe) fe.addEventListener('change', function () { post(scoped({ type: 'setFileEditing', enabled: fe.checked, gt: gclock.stamp('file-editing') })); });
   if (cvm) cvm.addEventListener('change', function () { post({ type: 'setConserve', enabled: cvm.checked }); });
+  // Extra models from your API gateway (2026-09-21): per-install like Conserve memory (the gateway is this machine's), so no
+  // scoped() and not a KERNEL_SETTING; stamped all the same, since the kernel orders every setting by gt. No echo frame: the
+  // kernel sends its models frame when the catalog changes, and the re-read below repaints the pickers and the status line.
+  if (rtr) rtr.addEventListener('change', function () { post({ type: 'setRouterModels', enabled: rtr.checked, gt: gclock.stamp('router-models') }); });
   if (csg) csg.addEventListener('change', function () { post(scoped({ type: 'setCompactSuggest', enabled: csg.checked, gt: gclock.stamp('compact-suggest') })); });
   // ── the in-dashboard LOGIN flow (T157): the dashboard is already on the phone over Tailscale,
   // so streaming the CLI's paste-code OAuth URL here IS the phone login. The code input is a pure
@@ -1587,13 +1601,14 @@ function initGear(post, opts) {
     'comment-fast': 'Fast comment threads',
     'judge-fast': 'Fast mode (triage judges)', 'distill-fast': 'Fast mode (distilling judges)', 'index-fast': 'Fast mode (indexing judges)',
     'always-fast': 'Always fast', 'retry-upgrade': 'Retry upgrades after downgrades',
-    'thinking-summaries': 'Thinking summaries', 'whole-chat-frames': 'Always load whole chats' };
+    'thinking-summaries': 'Thinking summaries', 'whole-chat-frames': 'Always load whole chats',
+    'router-models': 'Extra models from your API gateway' };
   // store name → the message type that sets it: the whitelist for the toast's Apply anyway (a frame
   // may re-issue the one setting it names, nothing else) and the completeness pin's map
   // (gear.test.ts checks every emitter stamps through the clock under its own store name)
   var STALE_TYPE = { 'auto-nudge': 'setAutoNudge', 'compact-suggest': 'setCompactSuggest', 'task-tracking': 'setTaskTracking',
     'file-editing': 'setFileEditing', 'update-mode': 'setUpdateMode', 'thinking-summaries': 'setThinkingSummaries',
-    'whole-chat-frames': 'setWholeChatFrames',
+    'whole-chat-frames': 'setWholeChatFrames', 'router-models': 'setRouterModels',
     'judge-model': 'setJudgeModel', 'judge-effort': 'setJudgeEffort',
     'index-model': 'setIndexModel', 'index-effort': 'setIndexEffort', 'judge-concurrency': 'setJudgeConcurrency',
     'distill-model': 'setDistillModel', 'distill-effort': 'setDistillEffort',
@@ -1740,6 +1755,11 @@ function initGear(post, opts) {
   // The model/effort <option>s come from /models — the same single source the
   // chat + timeline pickers use. Cached after the first successful fetch.
   var choices = null, choicesRev = -1;   // the list, and the highest /models `rev` applied to it
+  // A row that follows the list but is no select (the Extra models row's status line, 2026-09-21) hears every paint
+  // through this hook, handed the list that won. Left null here and set below the block: gear-models-frame.test.ts
+  // lifts the cache block alone (`var choices` through the models listener) and runs it against stand-in selects, so
+  // the block itself names no element outside it.
+  var onChoices = null;
   // A /models response is applied only if it is not OLDER than one already applied: its `rev` is the
   // pick memory's revision — the models frame's counter — and the frame's re-read can overlap the first
   // fill, or two quick frames each other, with the responses landing out of order; without the check the
@@ -1805,6 +1825,7 @@ function initGear(post, opts) {
     // kernel shows the inherit behavior, not a model nobody picked; "default" = the account default
     put(cmm, '<option value="session">Same as the session</option><option value="default">Default</option>' + mo);
     put(cme, '<option value="session">Same as the session</option>' + eff);
+    if (onChoices) onChoices(choices);   // the non-select rows that follow the list (the Extra models status line)
   }
   // The promise is the memo, not the list: a settings open racing the page-load fetch used to fire a
   // SECOND /models fetch, and whichever resolved last rewrote every select's options after fill() had
@@ -1826,12 +1847,35 @@ function initGear(post, opts) {
   // (paintChoices keeps their values), so a frame that lands before the page-load fill has painted still
   // leaves populated pickers. The frame reaches this document because the kernel sends it to the FEED
   // app too (the gear lives in the feed bundle).
+  // The shim's wsup frame (the socket back up after a drop) re-reads too: a kernel restart is the documented way
+  // to change the declared extra models (ROMP_ROUTER_MODELS is read when the service starts), and a restarted
+  // kernel sends no models frame for a list that changed while it was down. Its rev is seeded from the clock at
+  // boot, so the restarted kernel's list is newer than the one this page holds and adoptChoices takes it.
   window.addEventListener('message', function (e) {
     var m = e.data;
-    if (!m || m.type !== 'models') return;
+    if (!m || (m.type !== 'models' && m.type !== 'wsup')) return;
     fetch(ku('/models'), { cache: 'no-store' }).then(function (r) { return r.json(); })
       .then(function (d) { if (d && Array.isArray(d.models) && adoptChoices(d)) paintChoices(); }).catch(function () {});
   });
+  // The Extra models row's status line (rs-router-line), from the authed /models `router` section: what the kernel
+  // parsed out of ROMP_ROUTER_MODELS, whether a gateway is configured, or the read's fault. Written on every paint
+  // through the onChoices hook above, from whichever /models payload WON (the `choices` adoptChoices kept): the open's
+  // fill and every models frame's re-read, which is the kernel's one signal for an applied flip (setRouterModels has no
+  // echo frame; the catalog moving IS the echo). So the line follows the kernel's catalog and never a page guess. An
+  // older kernel's payload has no `router`: blank. The section is {enabled, declared: [ids], gateway: true|false|null,
+  // error: string|null}: the kernel probes the gateway and files an advisory only while the switch is ON, so
+  // gateway null means not probed (nothing is said about it) and an off switch with nothing declared, a stock
+  // install, shows nothing at all under the box.
+  function fillRouterLine(d) {
+    if (!rtrLine) return;
+    var r = d && d.router;
+    if (!r || typeof r !== 'object') { rtrLine.textContent = ''; return; }
+    if (r.error) { rtrLine.textContent = String(r.error); return; }
+    var n = Array.isArray(r.declared) ? r.declared.length : 0;
+    if (!n) { rtrLine.textContent = ''; return; }   // nothing declared: the kernel's own advisory (r.error, above) says so when that is the case; a URL-only install declares nothing and still offers the listing's rows (verify find, 2026-09-22)
+    rtrLine.textContent = n + ' declared' + (r.gateway === false ? ' · no gateway configured' : '');
+  }
+  onChoices = fillRouterLine;
   function lv() { var t = document.querySelector('script[src*="feed.js"]');
     var m = t && t.getAttribute('src').match(/[?&]v=(\d+)/); return m ? +m[1] : 0; }
   function clearAutoNudgeSplit() {
@@ -2096,6 +2140,7 @@ function initGear(post, opts) {
     if (tk) { tk.checked = v.taskTracking !== false; dressTracking(tk.checked); }   // the master switch (T404): absent reads on
     if (fe) fe.checked = !!v.fileEditing;   // the kernel's persisted opt-in is authoritative (see the viewer's consent popup)
     if (cvm) cvm.checked = !!v.conserveMemory;   // T148: the kernel's persisted conserve flag is authoritative
+    if (rtr) rtr.checked = !!v.routerModels;   // Extra models from your API gateway: the same per-install rule
     if (csg) csg.checked = !!v.compactSuggest;   // T208+: the kernel's persisted opt-in is authoritative
     lgRender(v);   // the Billing login block (T157) rides the same /version read
     lgFetchLogins();   // …and the stored logins beside it (T346), from the authed /logins

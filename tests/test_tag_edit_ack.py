@@ -887,9 +887,12 @@ class Capability(_Wire):
                         "after a reconnect, which must stay the resync frame itself")
         self.assertNotIn("tabOrder", types, "no strip from the handler itself: the connect push is the one source")
         caps = next(m for m in self.sent if m["type"] == "caps")
-        self.assertEqual(caps, {"type": "caps", "caps": ["tagEdit", "chatProto2"], "viewsSeq": None},
-                         "no store exists yet: the stubbed push carried no seq and the store has none; viewsSeq is null, "
-                         "the key always present")
+        self.assertEqual(caps, {"type": "caps", "caps": list(km.KERNEL_WS_CAPS), "viewsSeq": None},
+                         "every cap this kernel advertises, whole (tagEdit and chatProto2 at first; restartSession "
+                         "since 2026-09-23) — the frame is the list, and the list is the kernel's; no store exists "
+                         "yet, so the stubbed push carried no seq and the store has none: viewsSeq is null, the key "
+                         "always present")
+        self.assertEqual(caps["caps"][:2], ["tagEdit", "chatProto2"], "…with the two this pane's own gate reads first")
         # a RE-SENT ready (the shim, on a reconnected socket) gets the caps again — the event a page
         # with writes in flight across the drop keys on
         n = len(self.sent)
