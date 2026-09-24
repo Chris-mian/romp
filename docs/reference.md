@@ -5531,6 +5531,14 @@ gone on both ends.
     drop is logged in the kernel log and shows in the Log (the settings panel's "Open log" button carries the unread count on the desktop; the phone's bottom bar reddens its bell), so a
     link that cannot keep up reads as what it is rather than as a flaky network.
 
+The panes' socket compression is on by default. `ROMP_WS_DEFLATE=0` (exactly
+`0`) declines every pane's offer, so every pane runs plain: the lever if a proxy
+on the way mishandles compressed frames. `ROMP_WS_DEFLATE_LEVEL` sets the level,
+1 to 9 (default 3); a value outside that range is clamped, and one that is not a
+number falls back to 3. The kernel reads both when it starts; they go in
+`service.env` like the other service knobs (see
+[Service environment and credentials](#service-environment-and-credentials)).
+
 ## Reaching romp from a phone: the full Tailscale setup
 
 The user interface is a web page, so your phone can run it against a kernel on
