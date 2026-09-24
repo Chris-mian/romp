@@ -7015,7 +7015,9 @@ class TimelinePanel {
     // (against the round message/prompt dots) sits on the lane at the commented message, in the
     // SESSION's own color with the same white border and footprint as a message dot (the user
     // 2026-08-15 — the shape alone says "comment"), dimmed once resolved. Click → the chat at that
-    // message, where the yellow highlight opens the thread.
+    // message, where the yellow highlight opens the thread. A FILE passage's square sits at the comment's
+    // own moment (it quotes no message), and its click lands on the last chat event before it; the
+    // thread opens from the chat's comment rail.
     laneRows.forEach(({ s, i }) => {
       const y = laneY(i);
       (s.comments || []).forEach((c) => {

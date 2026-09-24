@@ -18906,11 +18906,12 @@ def _comments_frame(sid, live_map=None):
 
 
 def _comment_markers(sid):
-    """The timeline lane's comment SQUARES: [{t, uuid, tid, status}] for threads anchored on this
+    """The timeline lane's comment SQUARES: [{t, uuid, tid, status, src}] for threads anchored on this
     session — open + resolved only (a promoted thread is a session with a branch connector; a
     dead-promoted one is done). anchorT (stamped at create) places the square at the commented
-    message; rows from before that stamp fall back to createdT, the comment's own moment. One
-    exists() stat for every session that never had a thread."""
+    message; rows from before that stamp fall back to createdT, the comment's own moment. A file
+    passage (src set) quotes no message: its anchorT is the create time, and its uuid the last chat
+    event then. One exists() stat for every session that never had a thread."""
     p = _comments_path(sid)
     if not p.exists():
         return []
@@ -21354,11 +21355,13 @@ def _drive(msg, client):
                 sys.stderr.write("comment create refused (%s, name %r): %s\n" % (sid[:8], str(msg.get("name") or "")[:80], err))
                 # A start that died AFTER a file passage's ack rolled its row back. Recorded before any
                 # send (a send can raise): the reason and the words go to the dashboard's error center.
-                # The viewer takes the failure by its createId, so no bare warn goes out to misfire.
+                # The viewer takes the failure by its createId, so no bare warn goes out to misfire: not
+                # after the ack, and not for a file passage refused before its row either (a bare warn
+                # fails every box the viewer holds open, not just this one).
                 if acked_tids:
                     _sdk_problem(COMMENT_START_FAILED % (cmt_src, " ".join(str(err).split()),   # one line: a multi-line entry reads as a traceback
                                                          " ".join(str(msg["text"]).split())[:COMMENT_FAILED_TEXT_CAP]))
-                else:
+                elif not (cmt_src and cmt_cid):
                     client["send"](json.dumps({"type": "warn", "text": err}))
             try:
                 fr = _comments_frame(sid) if acked_tids else None   # drops the thread the pusher may have listed

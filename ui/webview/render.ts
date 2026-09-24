@@ -89,6 +89,7 @@ import { openFileClick } from "./file-view";                  // a clicked file 
 import { fileLinkRoute, browseRoute, type BrowseRoute } from "./file-route";   // where a file or folder click opens: here, or the Files pane (file-route.test.ts, browse-route.test.ts)
 // initFileView rides its OWN line: the import above is pinned verbatim by file-view.test.ts
 import { initFileView, setFileViewIdentity, hostStub } from "./file-view";
+import { VIEWER_TO_HOST, HOST_TO_VIEWER } from "./file-view";   // the viewer's Submit and staged notes, over DOM events
 import { openUrlView } from "./file-view";                 // the URL mode of the same viewer (md-url-view.test.ts)
 import { viewerPathGate } from "./file-view-links";       // the viewer's code-aware path gate, for the chat's fenced blocks (2026-09-12)
 import { isMarkdownUrl } from "./md-links";
@@ -17457,20 +17458,19 @@ function routeUserMessage(sid: string, text: string, cites: Citation[] | undefin
     data: { sid, key: qid, ts: Date.now(), len: text.length, route: goalCite?.itemId ? "followup" : quoteCites.length ? "quote" : "plain" } });
 }
 
-/** How many messages a Submit would send for `sid`: the staged run, plus one carrying any loose chips. */
+/** How many messages a Submit would send for `sid`: the staged run. A loose chip is a selection, not a note,
+ *  and waits for the words typed about it. */
 function composerPendingCount(sid: string | null): number {
-  if (!sid) return 0;
-  const cites = composerCitations.get(sid);
-  const hasLooseQuote = !!cites && cites.some((c) => c.quote);
-  return stagedMsgs.list(sid).length + (hasLooseQuote ? 1 : 0);
+  return sid ? stagedMsgs.list(sid).length : 0;
 }
 
-/** Tell the file viewer what its Submit button would send. The viewer renders in this document but
- *  imports nothing from it, so the count rides the window channel editorSelection already uses. */
+/** Tell the file viewer, rendered in this document, what its Submit button would send. */
+function toViewer(detail: Record<string, unknown>): void {
+  window.dispatchEvent(new CustomEvent(HOST_TO_VIEWER, { detail }));
+}
+
 function notifyComposerPending(sid: string | null): void {
-  if (!sid) return;
-  try { window.postMessage({ romp: "composerPending", sid, n: composerPendingCount(sid) }, "*"); }
-  catch { /* messaging our own window cannot really fail */ }
+  if (sid) toViewer({ romp: "composerPending", sid, n: composerPendingCount(sid) });
 }
 
 /** Hold a note the file viewer wrote about a passage: the quote and the words about it, as ONE staged
@@ -17478,34 +17478,24 @@ function notifyComposerPending(sid: string | null): void {
  *  that is the point. A note is durable the instant this runs (it rides the drafts into localStorage),
  *  so the viewer's dialog closes on the spot, an unreachable host costs nothing, and a tmux session
  *  can take notes at all. Answers with the new pending count so the viewer can paint both. */
-function stageViewerNote(sid: string, text: string, exact: string, src?: string): void {
+function stageViewerNote(sid: string, text: string, exact: string, src: string | undefined, createId: string): void {
   const cite = mkQuoteCitation(exact, null, src);
   stagedMsgs.push(sid, { text, cites: [cite] });
   if (cite.quote) dropSeededQuote(sid, cite.quote);
   persistDrafts();
   if (sid === activeId) renderStagedStrip(sid);
   notifyComposerPending(sid);   // renderStagedStrip announces too, but only on the pane that HAS a strip
-  try { window.postMessage({ romp: "noteStaged", sid, n: composerPendingCount(sid) }, "*"); }
-  catch { /* messaging our own window cannot really fail */ }
+  toViewer({ romp: "noteStaged", sid, createId });
 }
 
-/** Send everything the composer holds for `sid`, staged run first and the loose chips last — the send
- *  path's own order. Returns how many messages went; 0 means the session was unreachable and nothing
- *  moved, which the toast says. */
+/** Send the notes staged for `sid`, as the send path releases the staged run. Returns how many went; 0 means the
+ *  session was unreachable and nothing moved, which the toast says. */
 function submitComposerPending(sid: string): number {
   if (hostIsDown(sid) || isProvisionalId(sid)) {
     warnToast("Can't send yet — the session isn't reachable. Your notes stay where they are.");
     return 0;
   }
-  let sent = flushStaged(sid);
-  const cites = composerCitations.get(sid);
-  if (cites && cites.some((c) => c.quote)) {
-    routeUserMessage(sid, "", cites);
-    composerCitations.delete(sid);
-    if (sid === activeId) renderComposerChips(sid);
-    persistDrafts();
-    sent += 1;
-  }
+  const sent = flushStaged(sid);
   notifyComposerPending(sid);
   return sent;
 }
@@ -20449,17 +20439,6 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   }
   // the editor selection collapsed (deselect / click away) — drop the chip that highlight seeded
   else if (m.type === "editorSelectionCleared") clearEditorCitation(activeId);
-  // The file viewer's Submit: reading a doc and sending the notes it produced should not require
-  // scrolling back to the composer, so the viewer asks THIS document to run its own send path.
-  else if (m.romp === "submitComposer" && typeof m.sid === "string" && m.sid) submitComposerPending(m.sid);
-  else if (m.romp === "composerPendingAsk" && typeof m.sid === "string" && m.sid) notifyComposerPending(m.sid);
-  // A note written in the viewer's comment box: a file passage has no place in the conversation to
-  // branch from, so it stages here instead of minting a thread.
-  else if (m.romp === "stageNote" && typeof m.sid === "string" && m.sid
-           && typeof m.text === "string" && m.text.trim()
-           && typeof m.exact === "string" && m.exact.trim()) {
-    stageViewerNote(m.sid, m.text, m.exact, typeof m.src === "string" ? m.src : undefined);
-  }
   // comment threads (the user 2026-08-13): the per-session thread frame — store, prune dead
   // client-side state, re-anchor the highlights, adopt a parked create ack, refresh the popover
   else if (m.type === "comments" && m.id) {
@@ -22430,5 +22409,18 @@ initFileView((m) => vscodeApi?.postMessage(m));
 setFileViewIdentity((id) => {
   const s = sessions.get(id) ?? tabMeta.get(id);
   return s && s.name ? { name: s.name, color: s.color ?? null } : hostStub(id);
+});
+// The file viewer's asks: its Submit runs this document's own send path, so sending the notes a doc produced needs
+// no scroll back to the composer; a note from its box stages here, since a file passage has no place in the
+// conversation to branch from.
+window.addEventListener(VIEWER_TO_HOST, (e: Event) => {
+  const m = (e as CustomEvent).detail || {};
+  if (typeof m.sid !== "string" || !m.sid) return;
+  if (m.romp === "submitComposer") submitComposerPending(m.sid);
+  else if (m.romp === "composerPendingAsk") notifyComposerPending(m.sid);
+  else if (m.romp === "stageNote" && typeof m.text === "string" && m.text.trim()
+           && typeof m.exact === "string" && m.exact.trim() && typeof m.createId === "string") {
+    stageViewerNote(m.sid, m.text, m.exact, typeof m.src === "string" ? m.src : undefined, m.createId);
+  }
 });
 if (vscodeApi) vscodeApi.postMessage({ type: "ready", proto: 2 });   // proto 2: the uuid-anchored chat wire (T323 stage 4b); an older kernel ignores the field and sends index frames

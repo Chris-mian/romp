@@ -637,7 +637,7 @@ test("a create refused by parse lag holds its mark and retries on the frame even
   const KERNELSRC = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
   assert.match(KERNELSRC, /ANCHOR_LAG_ERR = "that message isn't in the transcript yet; try again in a moment"/);
   assert.match(KERNELSRC, /"transient": err == ANCHOR_LAG_ERR,/);
-  assert.match(KERNELSRC, /else:\s*\n\s*client\["send"\]\(json\.dumps\(\{"type": "warn", "text": err\}\)\)/,
+  assert.match(KERNELSRC, /elif not \(cmt_src and cmt_cid\):\s*\n\s*client\["send"\]\(json\.dumps\(\{"type": "warn", "text": err\}\)\)/,
     "no toast for plumbing the retry makes moot; real refusals stay loud");
   // …and the kernel PARKS the lag-refused create and retries it per pusher cycle (the file it is
   // waiting on is its own): a settled session emits no further frames, so the client-side re-post

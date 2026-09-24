@@ -151,6 +151,10 @@ class CreateIsIdempotent(unittest.TestCase):
             msg["createId"] = create_id                 # the client's per-gesture stamp (absent from an older client)
         return self._drive(msg)
 
+    def _fails(self):
+        """The file viewer's refusals: each by its createId, never a bare warn that would fail every open box."""
+        return [(f.get("createId"), f.get("text")) for f in self.sent if f.get("type") == "commentCreateFailed"]
+
     def _rows(self):
         return km._load_comments(PARENT).get("threads") or []
 
@@ -232,7 +236,8 @@ class CreateIsIdempotent(unittest.TestCase):
         self._file_create()
         self.assertEqual(self._rows(), [])
         self.assertEqual(self._acks(), [])
-        self.assertIn(km.FILE_COMMENT_NO_ANCHOR, self._warns())
+        self.assertEqual(self._fails(), [("c-file-1", km.FILE_COMMENT_NO_ANCHOR)])
+        self.assertEqual(self._warns(), [], "the refusal reaches its own box alone")
 
     def test_the_anchor_is_read_from_the_pushers_last_build(self):
         km._built_chat[PARENT] = ("sig", {"id": PARENT, "events": [{"uuid": "u1"}, {"uuid": "b7"}]}, "", None)
@@ -250,8 +255,8 @@ class CreateIsIdempotent(unittest.TestCase):
         self.addCleanup(setattr, km, "build_session", real)
         _, log = self._file_create()
         self.assertEqual((self._rows(), self._acks()), ([], []))
-        self.assertIn(km.FILE_COMMENT_UNREAD, self._warns())
-        self.assertNotIn(km.FILE_COMMENT_NO_ANCHOR, self._warns(), "a parse fault is not an empty conversation")
+        self.assertEqual(self._fails(), [("c-file-1", km.FILE_COMMENT_UNREAD)], "a parse fault is not an empty conversation")
+        self.assertEqual(self._warns(), [])
         self.assertIn("file comment anchor for %s not read: ValueError: torn line" % PARENT[:8], log)
 
     def test_a_multi_line_comment_keeps_every_line_in_the_error_center(self):

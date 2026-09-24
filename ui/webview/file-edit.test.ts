@@ -94,7 +94,7 @@ test("a lost save reply cannot wedge 'Saving…' forever", () => {
   // re-arm Save with honest wording (a save that DID land refuses the retry as changed-on-disk)
   // the warn arm and the drop arm are SHARED with the comment box, which needs the same verdict for the
   // same reason; Save keeps first claim on the warn, since a save in flight is the narrower state
-  assert.match(VIEW, /m\.type === "warn" && typeof m\.sid !== "string" && \(editHooks \|\| cmtHooks\)/, "only a warn naming NO session fails the save or the comment: one that names a session answers a send into that session (a Codex slash refusal broadcast to every chat pane), never this save");
+  assert.match(VIEW, /m\.type === "warn" && typeof m\.sid !== "string" && \(editHooks \|\| cmtHooks\.size\)/, "only a warn naming NO session fails the save or the comment: one that names a session answers a send into that session (a Codex slash refusal broadcast to every chat pane), never this save");
   assert.match(VIEW, /if \(editHooks\) \{\n        const h = editHooks; editHooks = null;/);
   assert.match(VIEW, /window\.addEventListener\("romp:wsdown", \(\) => \{[\s\S]*?if \(!editHooks\) return;/);
   assert.match(VIEW, /it may or may not have landed/);

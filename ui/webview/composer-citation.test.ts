@@ -298,73 +298,75 @@ test("the FILE VIEWER owns its own selection menu, so every pane that mounts it 
   // the FEED pane, whose bundle never loaded a line of it, so commenting a doc worked on one surface
   // and silently did nothing on the other. file-view.ts is imported by both.
   assert.match(FILEVIEW, /box\.addEventListener\("contextmenu", \(ev: MouseEvent\) => \{/);
-  assert.match(FILEVIEW, /item\("Comment", \(\) => openCommentBox\(picked, ev\.clientX, ev\.clientY, marked\)\);/);
+  // the shared card: placed, dismissed on Escape, scroll or blur, and reachable from the keyboard
+  assert.match(FILEVIEW, /openContextMenu\(ev\.clientX, ev\.clientY, \[\n\s*\{ label: stagesNotes\(\) \? "Stage" : "Comment", pick: \(\) => openCommentBox\(picked, ev\.clientX, ev\.clientY, marked\) \},/,
+    "Stage where the pane has a composer, Comment where it opens a thread");
+  assert.match(FILEVIEW, /\], \{ className: "fileview-ctx" \}\);/);
+  assert.match(FILEVIEW, /closeContextMenu\(\);\s+\/\/ through the builder, so its Escape listener goes too/);
   assert.match(FILEVIEW, /if \(editing \|\| !sid\) return;/, "an edit gesture, or no session to hang a thread on");
   // routed to the sid the file was opened FOR, matching the quote chip's rule — never the active tab
-  assert.match(FILEVIEW, /window\.postMessage\(\{ romp: "stageNote", sid, text: body, exact: picked, src \}, "\*"\)/);
-  assert.match(FILEVIEW, /const src = quoteSrcLabel\(path, text, picked\);/);
+  assert.match(FILEVIEW, /toHost\(\{ romp: "stageNote", sid: s, text: body, exact: picked, src, createId \}\);/);
+  // the label is minted against a fresh read at send, falling back to what the viewer shows
+  assert.match(FILEVIEW, /\.catch\(\(\) => viewText\(\)\)\n\s*\.then\(\(doc\) => \{\n\s*if \(!cmtHooks\.has\(createId\)\) return;[^\n]*\n\s*const src = quoteSrcLabel\(path, doc, picked\);/);
   // the composer-less pane keeps the kernel path: a thread is the only place a note can land there
-  assert.match(FILEVIEW, /post\(\{ type: "commentCreate", id: sid, uuid: "", exact: picked, text: body, src, createId \}\);/);
+  assert.match(FILEVIEW, /post\(\{ type: "commentCreate", id: s, uuid: "", exact: picked, text: body, src, createId \}\);/);
   assert.match(FILEVIEW, /const createId = mintCreateId\(\);/, "one id per send, echoed back to settle this box");
+  assert.match(FILEVIEW, /if \(ev\.button > 0\) return;/, "the right-click's release seeds no quote chip");
   // the chat bundle keeps the TRANSCRIPT menu and nothing else — one owner per surface, no duplicate
   assert.doesNotMatch(RENDER, /fileViewSelection/);
   assert.match(RENDER, /if \(!content \|\| !sel \|\| !sel\.anchorNode \|\| !content\.contains\(sel\.anchorNode\) \|\| !text\.trim\(\)\) return;/);
   assert.match(RENDER, /document\.getElementById\("content"\)\?\.addEventListener\("contextmenu", showSelectionMenu\);/);
   // both sheets carry the skin: the viewer renders in the chat pane and the feed pane
-  assert.match(CSS, /\.fileview-ctx \{/);
-  assert.match(CSS, /\.fileview-cmt \{/);
-  assert.match(FEEDCSS, /\.fileview-ctx \{/);
-  assert.match(FEEDCSS, /\.fileview-cmt \{/);
+  for (const sheet of [CSS, FEEDCSS]) {
+    assert.match(sheet, /\.ctx-menu\.fileview-ctx \{ z-index: 1250; \}/);
+    assert.match(sheet, /\.fileview-cmt \{[^}]*max-width: calc\(100vw - 8px\);[^}]*box-shadow: var\(--shadow-menu\);/, "no floorless clamp, the theme's shadow");
+    assert.match(sheet, /\.fileview-cmt-mark \{\n\s*background: color-mix\(in srgb, var\(--accent/, "the mark follows the accent");
+  }
 });
 
-test("a note on a file passage stages locally — no fork, so no wait and no SDK requirement", () => {
-  // Minting a thread meant a process spawn, connect and opening send before the box could close, and
-  // refused outright on tmux ("nothing to fork") — for a passage that has no place in the conversation
-  // to branch from anyway. The quote+note pair is one staged message instead, held client-side.
-  assert.match(RENDER, /function stageViewerNote\(sid: string, text: string, exact: string, src\?: string\): void \{/);
-  assert.match(RENDER, /const cite = mkQuoteCitation\(exact, null, src\);\n  stagedMsgs\.push\(sid, \{ text, cites: \[cite\] \}\);\n  if \(cite\.quote\) dropSeededQuote\(sid, cite\.quote\);/);
-  assert.match(RENDER, /m\.romp === "stageNote" && typeof m\.sid === "string" && m\.sid/);
-  assert.match(RENDER, /window\.postMessage\(\{ romp: "noteStaged", sid, n: composerPendingCount\(sid\) \}, "\*"\)/);
-  // the box paints only on the answer, never on the post — the lie it used to tell
-  assert.match(FILEVIEW, /let cmtHooks: \{ sid: string; viaHost: boolean; createId: string; box: HTMLElement; landed: \(\) => void;\n  failed: \(err: string\) => void \} \| null = null;/);
-  assert.match(FILEVIEW, /m\.romp === "noteStaged" && cmtHooks && m\.sid === cmtHooks\.sid/);
-  assert.match(FILEVIEW, /m\.type === "commentCreated" && cmtHooks && m\.id === cmtHooks\.sid && !m\.uuid/,
-    "an EMPTY anchor uuid is what marks the ack as the file viewer's, not the transcript popover's");
-  assert.match(FILEVIEW, /m\.type === "commentCreateFailed" && cmtHooks && m\.id === cmtHooks\.sid && !m\.uuid/);
-  assert.match(FILEVIEW, /m\.type === "warn" && typeof m\.sid !== "string" && \(editHooks \|\| cmtHooks\)/);
-  // a connection-loss verdict belongs ONLY to the note that needed the connection
-  assert.match(FILEVIEW, /\} else if \(cmtHooks\?\.viaHost\) \{/);
-  assert.match(FILEVIEW, /if \(cmtHooks\?\.viaHost\) \{\n      cmtHooks\.failed\("the connection dropped/);
-  // the draft survives a refusal — the box is the only place that text exists
-  assert.match(FILEVIEW, /send\.disabled = false; send\.textContent = "Comment";/);
-  assert.doesNotMatch(FILEVIEW, /romp: "stageNote"[\s\S]{0,400}?send\.textContent = "Saved";/);
-  // a verdict landing after a close or a replace-open paints nothing
-  assert.match(FILEVIEW, /cmtHooks = null;\s+\/\/ a verdict landing after the close paints nothing/);
-  // a landed comment leaves a trace: the passage is marked, and the bar counts what the re-render drops
-  assert.match(FILEVIEW, /range\.surroundContents\(mark\);/);
-  assert.match(FILEVIEW, /const noteCommentLanded = \(delta = 1\): void => \{/);
-  assert.match(CSS, /\.fileview-cmt-mark \{/);
-  assert.match(FEEDCSS, /\.fileview-cmt-mark \{/);
+test("each comment box settles by its own createId", () => {
+  // A single slot let a second box sent before the first's ack take that ack, leaving the first on Sending.
+  assert.match(FILEVIEW, /const cmtHooks = new Map<string, CmtHooks>\(\);/);
+  assert.match(FILEVIEW, /m\.type === "commentCreated" && !m\.uuid && typeof m\.createId === "string" && cmtHooks\.has\(m\.createId\)\n\s*&& cmtHooks\.get\(m\.createId\)!\.sid === m\.id\) \{/,
+    "an EMPTY anchor uuid marks the ack as the file viewer's, the createId as this box's");
+  assert.match(FILEVIEW, /m\.type === "commentCreateFailed" && !m\.uuid && typeof m\.createId === "string" && cmtHooks\.has\(m\.createId\)/);
+  assert.match(FILEVIEW, /m\.romp === "noteStaged" && typeof m\.createId === "string" && cmtHooks\.get\(m\.createId\)\?\.sid === m\.sid/);
+  assert.match(RENDER, /toViewer\(\{ romp: "noteStaged", sid, createId \}\);/);
+  // a host drop or a socket drop fails every box still waiting on the host, never a staged note
+  assert.match(FILEVIEW, /for \(const \[id, h\] of Array\.from\(cmtHooks\)\) if \(h\.viaHost\) \{ cmtHooks\.delete\(id\); h\.failed\(why\); \}/);
+  assert.match(FILEVIEW, /m\.type === "warn" && typeof m\.sid !== "string" && \(editHooks \|\| cmtHooks\.size\)/);
+  // the draft survives a refusal, and a box closed mid-send reopens with it
+  assert.match(FILEVIEW, /send\.disabled = false; send\.textContent = verb;/);
+  assert.match(FILEVIEW, /if \(!pop\.isConnected\) \{ openCommentBox\(picked, x, y, marked, body, why, false\); return; \}/);
+  // a start that fails after the ack re-marks the passage on retry, and the late reopen takes no focus
+  assert.match(FILEVIEW, /const again = unmark\(mark\) \|\| marked;/);
+  assert.match(FILEVIEW, /openCommentBox\(picked, x, y, again, body, reason, false\);/);
+  assert.match(FILEVIEW, /if \(takeFocus\) ta\.focus\(\);/);
+  assert.match(FILEVIEW, /cmtHooks\.clear\(\);\s+\/\/ a verdict landing after the close paints nothing/);
 });
 
-test("the viewer's Submit sends what the composer holds, without leaving the modal", () => {
-  // The viewer imports nothing from render.ts, so the count and the send ride the window channel
-  // editorSelection already uses; the host owns both, which is also why the FEED pane shows no button.
-  assert.match(FILEVIEW, /window\.postMessage\(\{ romp: "submitComposer", sid \}, "\*"\)/);
-  assert.match(FILEVIEW, /window\.postMessage\(\{ romp: "composerPendingAsk", sid \}, "\*"\)/);
-  assert.match(FILEVIEW, /m\.romp === "composerPending" && submitHooks && m\.sid === submitHooks\.sid/);
+test("the viewer and its host talk over DOM events, not window messages", () => {
+  // A window message also reached the chat's kernel-frame handler, spending a parked image's retries.
+  assert.match(FILEVIEW, /window\.dispatchEvent\(new CustomEvent\(VIEWER_TO_HOST, \{ detail \}\)\);/);
+  assert.match(RENDER, /window\.dispatchEvent\(new CustomEvent\(HOST_TO_VIEWER, \{ detail \}\)\);/);
+  assert.match(RENDER, /window\.addEventListener\(VIEWER_TO_HOST, \(e: Event\) => \{/);
+  assert.match(FILEVIEW, /window\.addEventListener\(HOST_TO_VIEWER, \(e: Event\) => \{/);
+  assert.doesNotMatch(FILEVIEW, /postMessage\(\{ romp: "(stageNote|submitComposer|composerPendingAsk)"/);
+  assert.doesNotMatch(RENDER, /postMessage\(\{ romp: "(noteStaged|composerPending)"/);
+});
+
+test("the viewer's Submit sends the staged notes, without leaving the modal", () => {
+  assert.match(FILEVIEW, /submit\.addEventListener\("click", \(\) => \{ if \(sid\) toHost\(\{ romp: "submitComposer", sid \}\); \}\);/);
+  assert.match(FILEVIEW, /if \(sid\) toHost\(\{ romp: "composerPendingAsk", sid \}\);/);
   assert.match(FILEVIEW, /submit\.hidden = n < 1;/);
-  assert.match(RENDER, /m\.romp === "submitComposer" && typeof m\.sid === "string" && m\.sid\) submitComposerPending\(m\.sid\);/);
-  assert.match(RENDER, /m\.romp === "composerPendingAsk" && typeof m\.sid === "string" && m\.sid\) notifyComposerPending\(m\.sid\);/);
-  // the staged run goes first and the loose chips last — routeUserMessage stays the one routing owner
-  assert.match(RENDER, /let sent = flushStaged\(sid\);/);
-  assert.match(RENDER, /routeUserMessage\(sid, "", cites\);/);
-  assert.match(RENDER, /composerCitations\.delete\(sid\);\n    if \(sid === activeId\) renderComposerChips\(sid\);/);
-  // an unreachable session keeps the notes instead of eating them — the send path's own guards
+  assert.match(RENDER, /if \(m\.romp === "submitComposer"\) submitComposerPending\(m\.sid\);/);
+  // a loose chip is a selection, not a note: the count and the send are the staged run alone
+  assert.match(RENDER, /function composerPendingCount\(sid: string \| null\): number \{\n  return sid \? stagedMsgs\.list\(sid\)\.length : 0;\n\}/);
+  assert.match(RENDER, /const sent = flushStaged\(sid\);\n  notifyComposerPending\(sid\);/);
   assert.match(RENDER, /if \(hostIsDown\(sid\) \|\| isProvisionalId\(sid\)\) \{\n    warnToast\(/);
-  // both strips announce, so the button's label tracks a stage, a dismiss, and a send
-  assert.match(RENDER, /const strip = document\.getElementById\("composer-chips"\);\n  if \(!strip\) return;\n  notifyComposerPending\(id\);/);
   assert.match(RENDER, /const strip = document\.getElementById\("composer-staged"\);\n  if \(!strip\) return;\n  notifyComposerPending\(id\);/);
+  // staging a note drops the loose chip its selection seeded, so it never rides a later send twice
+  assert.match(RENDER, /if \(cite\.quote\) dropSeededQuote\(sid, cite\.quote\);/);
 });
 
 test("the viewer's menu and comment box outrank the viewer they open over", () => {
@@ -380,6 +382,7 @@ test("the viewer's menu and comment box outrank the viewer they open over", () =
   for (const sheet of [CSS, FEEDCSS]) {
     const overlay = zIndexOf(sheet, "#romp-fileview");
     assert.ok(zIndexOf(sheet, ".fileview-ctx") > overlay, "the selection menu paints over the viewer");
+    assert.ok(zIndexOf(sheet, ".fileview-cmt") > zIndexOf(CSS, "#warn-toasts"), "a toast never covers the box");
     assert.ok(zIndexOf(sheet, ".fileview-cmt") > overlay, "the comment box paints over the viewer");
   }
   // the warn toast too: a refusal raised by a gesture INSIDE the viewer is the case that needs reading
