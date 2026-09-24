@@ -179,6 +179,37 @@ interactive `/cd`), with Romp moving its own records alongside. It fires Claude
 Code's `CwdChanged` hook, not `SessionStart`; Romp registers no `CwdChanged`
 hook, so nothing on Romp's side re-runs.
 
+### Restarting a session in place
+
+A session runs the Claude Code it launched with and keeps it for as long as it
+lives. That matters when the CLI is upgraded: when a new model ships, a session
+started before the upgrade cannot reach it — the short name resolves to the old
+model and the new id comes back unrecognized — while a session started after it
+can. **Restart session** replaces the program without disturbing the session.
+
+Right-click the session's tab, or its row in the Sessions panel, and choose
+**Restart session**. The agent's process ends and a fresh one resumes the same
+conversation. The session id, name, folder, tags, colour, model and effort,
+mailbox, goals, cards and whole history are untouched, and the session is never
+marked closed on the way through: its tab stays where it is, still selected if
+it was, and the transcript keeps reading as it did. This is the same place End
+session followed by Revive arrives at, in one step that never presents the
+session as dead.
+
+If the session is idle, the restart happens with no dialog; the menu row reads
+**Restarting…** until the kernel answers, then goes back. If it is working — a
+turn in flight, a compaction, or background work it dispatched — Romp confirms
+first, naming its open cards and saying that the running turn is cut off. The
+turn is interrupted and the relaunch follows at that turn's end, so the program
+is never torn down from under a live turn. Work the old process was running,
+its subagents and its background tasks, ends with it; a message you had queued
+survives and is delivered by the new one.
+
+A session that is not running has nothing to restart: the row refuses and
+points at Revive, which is the same thing for a closed session. Every refusal
+(a session this kernel does not have, a backend with no relaunch of its own)
+is reported in the pane you asked from and changes nothing.
+
 ## The Romp Postal Service
 
 How sessions message each other, from either side. Inside a session it is an MCP
@@ -5304,10 +5335,11 @@ The settings open from the gear at the bottom right, or the palette's **Open
 settings**, in seven tabs: General, Chat, Feed, Sessions, Automation, Task
 tracking and Debug. The tab you used last is remembered in this browser.
 
-## Renaming and ending a session from the Outline
+## Renaming, restarting and ending a session from the Outline
 
 Right-click a session's name in the Outline pane, or press the Menu key (or
-Shift and F10) on the focused row, for two items: **Rename** and **Delete**.
+Shift and F10) on the focused row, for three items: **Rename**, **Restart
+session** and **Delete**.
 
 **Rename** turns the name into an input with the current name selected. Enter
 commits, Escape cancels, and clicking away commits as Enter does. The name is
@@ -5315,6 +5347,11 @@ a label: mail, goals and history follow the session, not the word. Nothing
 changes locally until the kernel confirms, so a name it refuses leaves the old
 one standing; on a session from another machine the `host:` prefix stays fixed
 beside the input and you edit the bare name.
+
+**Restart session** is the tab menu's own row, described under [Restarting a
+session in place](#restarting-a-session-in-place): the agent's process is
+replaced by a fresh one on the same conversation, so the row stays where it is
+and the session keeps everything but its program.
 
 **Delete** raises the same confirmation the tab strip uses. It names the
 session's open top-level goals and says that the session shuts down while its

@@ -19,7 +19,12 @@ export interface CtxItem {
   icon?: HTMLElement | null;   // a drawn icon before the body (the tab menu's toggles, the card menu's bell)
   className?: string;      // extra classes on the row, for a caller's own rule or pin
   title?: string;
-  pick: () => void;        // runs after the menu has closed
+  // A row that ACTS IN PLACE: the card stays up and the pick latches the row itself (its label and its
+  // aria-disabled), the post-and-wait acknowledgement the button rule asks for (ui/CLAUDE.md) — the chat
+  // and Sessions menus' "Restart session", whose whole point is that nothing else on screen changes. A
+  // latched row takes no second click; every other row closes the card first, as they always have.
+  keepOpen?: boolean;
+  pick: (row: HTMLElement) => void;   // runs after the menu has closed (with the row, for a keepOpen pick)
 }
 export interface CtxMenuOpts {
   className?: string;      // extra classes on the card
@@ -74,7 +79,12 @@ export function addMenuItem(menu: HTMLElement, it: CtxItem): HTMLElement {
   const label = document.createElement("span"); label.className = "ctx-item-label"; label.textContent = it.label; body.appendChild(label);
   if (it.sub) { const sub = document.createElement("span"); sub.className = "ctx-item-sub"; sub.textContent = it.sub; body.appendChild(sub); }
   row.appendChild(body);
-  row.addEventListener("click", (ev) => { ev.stopPropagation(); closeContextMenu(); it.pick(); });
+  row.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    if (it.keepOpen) { if (row.getAttribute("aria-disabled") !== "true") it.pick(row); return; }
+    closeContextMenu();
+    it.pick(row);
+  });
   menu.appendChild(row);
   return row;
 }
