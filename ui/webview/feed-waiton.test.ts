@@ -26,7 +26,7 @@ test("it.waitingOn drives the chip: 'Awaiting <peer>' / 'Handed off to <peer>' (
   assert.match(FEED, /if \(wo\.color && wo\.color\.bg\) name\.style\.color = wo\.color\.bg/);
   assert.match(FEED, /"fask-waiton" \+ \(wo\.inCycle \? " fask-waiton-cycle" : ""\)/);   // teal pill / red cycle kept
   assert.match(FEED, /const wo = it\.waitingOn;\s*\n\s*if \(wo\) \{/, "built when waitingOn is set");
-  assert.match(FEED, /out\.push\(b\);\s*\n\s*\}\s*\n\s*if \(it\.handoffTo/, "and not built when it isn't (the slot is rebuilt on every update)");
+  assert.match(FEED, /const wo = it\.waitingOn;\s*\n\s*if \(wo\) \{[\s\S]*?out\.push\(b\);\s*\n\s*\}\s*\n\s*return out;/, "and not built when it isn't (the slot is rebuilt on every update); the last badge before the builder returns");
 });
 
 test("the chip has its own teal style + a distinct red cycle variant", () => {

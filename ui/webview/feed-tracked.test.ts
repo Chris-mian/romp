@@ -19,17 +19,18 @@ test("the default board hides satellites; the session filter is the one-click pa
 });
 
 test("the primary names its recipients with the board's own live dot, STACKING after any ↪ from", () => {
-  const BLK = SRC.slice(SRC.indexOf("if (it.delegTracked && it.delegTracked.length) {"),
-                        SRC.indexOf("  return out;\n}", SRC.indexOf("if (it.delegTracked && it.delegTracked.length) {")));   // the block ends the badge builder
+  const BLK = SRC.slice(SRC.indexOf("if (hasTracked) {"),
+                        SRC.indexOf("if (it.recheck && spinCaption"));   // the tracked half of the one provenance anchor (stateBadges), up to the next badge
   // an else-if hid a MIDDLEMAN's tracked handoff behind its own ↪ from badge (review 2026-08-24):
   // origin and delegTracked are different facts about one card, so they stack on the slot
-  assert.match(SRC, /if \(it\.origin && it\.origin\.peer\) \{[\s\S]*?if \(it\.handoffTo && it\.handoffTo\.peerSid\) \{[\s\S]*?if \(it\.delegTracked && it\.delegTracked\.length\) \{/, "stacks after the ↪ from badge and the handoff badge, in that order (stateBadges)");
-  assert.match(BLK, /pre\.textContent = "↪ delegated to ";/);
+  assert.match(SRC, /if \(hasOrigin\) \{[\s\S]*?if \(hasHandoff\) \{[\s\S]*?if \(hasTracked\) \{/, "stacks after the ↪ from badge and the handoff badge, in ONE anchor, in that order (stateBadges)");
+  assert.match(BLK, /pre\.textContent = \(had \? " · " : ""\) \+ "↪ delegated to ";/, "the separator after an origin or a handoff");
+
   assert.match(BLK, /peer\.replaceChildren\(\.\.\.hostPartsNodes\(d\.host, d\.name\)\);/,
     "identity rendering matches every other session name (quiet host: prefix included)");
   assert.match(SRC, /workDot: \(peer, name\) => setWorkDot\(peer, dotFor\(name\)\),/, "the feed hands the builder its live dot"); assert.match(BLK, /env\.workDot\?\.\(peer, d\.name\);/,
     "the recipient's LIVE state rides the card — the dot language the board already speaks");
-  assert.match(BLK, /peer\.dataset\.act = "sec-open-session"; peer\.dataset\.sid = d\.sid;/, "each recipient span opens ITS session — ↪ from keeps its own click (delegated)");
+  assert.match(BLK, /peer\.dataset\.act = "sec-open-session"; peer\.dataset\.sid = d\.sid;/, "each recipient span opens ITS session — ↪ from keeps its own click (delegated)"); assert.match(BLK, /if \(!had\) \{ og\.title = "a tracked handoff: the work runs with " \+ ds\.map\(\(d\) => d\.name\)\.join\(", "\) \+ " and reports back to this card"; \}/, "with no sender the anchor names the work; the clicks stay the recipients'");
 });
 
 test("both keys are additive on the type — an untracked payload renders exactly as before", () => {

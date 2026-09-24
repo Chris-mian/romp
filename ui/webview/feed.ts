@@ -1980,7 +1980,6 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // the name row's state badges (re-judging, done confirming, follow-up failed, the interrupt words, the warning chip, the peer wait, the
   // delegation's origin and handoff) are drawn below, after the swirl's caption is known, by the shared builder (stateBadges)
   a._clr.style.display = it.provisional ? "none" : "";   // a placeholder has nothing to curate — no Clear
-  a._clr.style.display = it.provisional ? "none" : "";   // a placeholder has nothing to curate — no Clear
   // (The card-face "Status?" sweep was removed 2026-07-21 — see the comment where it used to be declared.)
   // ⏳ awaiting: held in Working, waiting on work it dispatched/delegated (agents, a subagent, a build). The
   // peer case already shows the "Awaiting <peer>" chip (waitingOn), so the generic awaiting box is suppressed
@@ -5531,7 +5530,7 @@ window.addEventListener("blur", () => { if (kbMode) kbExit(); });   // shell mov
 let lastCollapsedPref = feedPrefs().collapsed;
 function onSettingsChanged(): void {
   const p = feedPrefs();
-  if (p.collapsed !== lastCollapsedPref) { lastCollapsedPref = p.collapsed; replaceSectionChoices([], { quiet: true }); }   // through the shared setter: the row's default follows too; the render below applies every card
+  if (p.collapsed !== lastCollapsedPref) { lastCollapsedPref = p.collapsed; replaceSectionChoices([]); }   // through the shared setter, which re-applies every card here (the render gate leaves a card whose payload stood alone) and posts the map, so the row's default follows too
   applyStacked(p.stacked);
   if (viewMenuEl) paintViewMenu(viewMenuEl);   // an open view menu re-reads the prefs it shows
   render();

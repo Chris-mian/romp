@@ -128,6 +128,10 @@ type SectionSyncMsg = { kind: "hello" } | { kind: "set"; id: string; choice: Sec
 const sectionChannel: BroadcastChannel | null = typeof window !== "undefined" && typeof (window as { BroadcastChannel?: unknown }).BroadcastChannel === "function" ? new window.BroadcastChannel("romp-card-sections") : null;
 let syncRole: "owner" | "follower" = "follower";
 let onChoiceChange: (() => void) | null = null;
+// a FOLLOWER's own picks, kept until the owner speaks for the item (a set from the owner, or a map carrying the same choice): a pick made on
+// the row before the feed document is up would otherwise be discarded when the feed hydrates and posts its map (the verifier's round two);
+// the follower re-imposes them over a received map and re-posts them, so the owner persists them like its own
+const ownPicks = new Map<string, SecChoice | null>();
 function postSync(m: SectionSyncMsg): void { try { sectionChannel?.postMessage(m); } catch { /* a closed channel */ } }
 function reapplyHosts(id: string): void {
   for (const c of sectionHosts(id)) {
@@ -167,7 +171,8 @@ export function configureSectionSync(opts: { role: "owner" | "follower"; onChang
 /** ONE item's choice (null forgets it): posted to the other document, re-applied to this document's hosts, the change callback run. */
 export function setSectionChoice(id: string, choice: SecChoice | null, opts: { fromPeer?: boolean } = {}): void {
   if (choice === null) secChoice.delete(id); else secChoice.set(id, choice);
-  if (!opts.fromPeer) postSync({ kind: "set", id, choice });
+  if (!opts.fromPeer) { postSync({ kind: "set", id, choice }); if (syncRole === "follower") ownPicks.set(id, choice); }
+  else ownPicks.delete(id);   // the owner spoke for this item
   reapplyHosts(id);
   onChoiceChange?.();
 }
@@ -186,13 +191,22 @@ export function replaceSectionChoices(entries: Iterable<[string, SecChoice]>, op
   if (!opts.quiet) reapplyAllHosts();
   onChoiceChange?.();
 }
-sectionChannel?.addEventListener("message", (ev: MessageEvent) => {
-  const d = ev.data as SectionSyncMsg | null;
+/** What the other document said (exported for the pins; the channel's listener calls it). */
+export function receiveSectionSync(d: SectionSyncMsg | null): void {
   if (!d || typeof d !== "object") return;
   if (d.kind === "hello") { if (syncRole === "owner") postSync({ kind: "map", entries: Array.from(secChoice.entries()) }); return; }
   if (d.kind === "set") { if (typeof d.id !== "string" || (d.choice !== null && !SEC_CHOICES.includes(d.choice as string))) return; setSectionChoice(d.id, d.choice, { fromPeer: true }); return; }
-  if (d.kind === "map") { if (syncRole === "owner" || !Array.isArray(d.entries)) return; replaceSectionChoices(d.entries.filter((e) => Array.isArray(e) && typeof e[0] === "string"), { fromPeer: true }); }
-});
+  if (d.kind === "map") {
+    if (syncRole === "owner" || !Array.isArray(d.entries)) return;
+    const entries = d.entries.filter((e) => Array.isArray(e) && typeof e[0] === "string");
+    for (const [id, choice] of entries) if (ownPicks.get(id) === choice) ownPicks.delete(id);   // the owner carries it: acknowledged
+    const merged = new Map<string, SecChoice>(entries);
+    for (const [id, choice] of ownPicks) { if (choice === null) merged.delete(id); else merged.set(id, choice); }   // this document's own picks stand over the map
+    replaceSectionChoices(Array.from(merged.entries()), { fromPeer: true });
+    for (const [id, choice] of ownPicks) postSync({ kind: "set", id, choice });   // and reach the owner, which persists them
+  }
+}
+sectionChannel?.addEventListener("message", (ev: MessageEvent) => receiveSectionSync(ev.data as SectionSyncMsg | null));
 export const secChoice = new Map<string, SecChoice>();   // READ here; every write goes through setSectionChoice / replaceSectionChoices above
 export function resolveSec(id: string, hasAwaitTasks = false, collapsed = false): "bg" | "summary" | "subgoals" | "tasks" | "stall" | "none" {
   // an awaiting-on-tasks card OPENS its task list by default (the user 2026-08-23: the wait is the
@@ -735,17 +749,54 @@ export interface BadgeItem {
 export function stateBadges(it: BadgeItem, env: Pick<SectionEnv, "durNodes" | "openSession" | "clockHM" | "openWarns" | "workDot">, spinCaption: string | null = null): HTMLElement[] {
   const out: HTMLElement[] = [];
   const badge = (cls: string, text: string, title: string) => { const b = el("span", cls); b.textContent = text; b.title = title; return b; };
-  if (it.origin && it.origin.peer) {
-    // ↪ courier handoff: planted by a peer's message → "↪ from <sender>", click opens the sender. "↪ from" in dim gray, the peer name in
-    // the bold session-name style in its own identity colour (the user 2026-06-16); a federated sender wears the quiet "host:" prefix.
-    // Absorbed (the sender's linked entry closed): the same badge, dimmed — provenance, not an active handoff; the title also warns that a
-    // clear takes the linked entry with it (the user 2026-08-16).
-    const og = el("a", "fask-origin" + (it.origin.live === false ? " fask-origin-absorbed" : ""));
-    const pre = el("span", "fask-origin-pre"); pre.textContent = "↪ from ";
-    const peer = el("span", "fask-origin-peer"); peer.replaceChildren(...hostPartsNodes(it.origin.peerHost, it.origin.peer)); if (it.origin.color) peer.style.color = it.origin.color.bg;
-    og.append(pre, peer);
-    og.title = (it.origin.live === false ? "delegated by " + it.origin.peer + "; their linked entry closed with this card" : "delegated by " + it.origin.peer + " — clearing this card also clears their linked entry") + " · click opens the session";
-    og.dataset.act = "sec-open-session"; og.dataset.sid = it.origin.peerSid;   // delegated (sectionActs)
+  // ↪ PROVENANCE, one anchor as the card always drew it: "↪ from <sender>" for a courier handoff (planted by a peer's message; click opens
+  // the sender; "↪ from" in dim gray, the peer name in the bold session-name style in its own identity colour, the user 2026-06-16; a
+  // federated sender wears the quiet "host:" prefix), STACKED with " · ↪ delegated to <peer>" for a sender-side handoff (the user 2026-08-24)
+  // and " · ↪ delegated to <a>, <b>" for a tracked delegation's recipients with the board's live dot (the feed's workDot): origin and the
+  // delegations are different facts about one card, so they stack rather than replace (review 2026-08-24). Absorbed (the sender's linked
+  // entry closed): the whole badge dimmed, provenance rather than an active handoff, and the title warns that a clear takes the linked entry
+  // with it (the user 2026-08-16). Each recipient carries its own click; the anchor's own click opens the sender, or the recipient when there
+  // is no sender (the verifier's round two on PR 2124: the separator and the one-anchor rendering had been lost in the move here).
+  const hasOrigin = !!(it.origin && it.origin.peer), hasHandoff = !!(it.handoffTo && it.handoffTo.peerSid), hasTracked = !!(it.delegTracked && it.delegTracked.length);
+  if (hasOrigin || hasHandoff || hasTracked) {
+    const og = el("a", "fask-origin" + (hasOrigin && it.origin!.live === false ? " fask-origin-absorbed" : ""));
+    let had = false;
+    if (hasOrigin) {
+      const o = it.origin!;
+      const pre = el("span", "fask-origin-pre"); pre.textContent = "↪ from ";
+      const peer = el("span", "fask-origin-peer"); peer.replaceChildren(...hostPartsNodes(o.peerHost, o.peer)); if (o.color) peer.style.color = o.color.bg;
+      og.append(pre, peer);
+      og.title = (o.live === false ? "delegated by " + o.peer + "; their linked entry closed with this card" : "delegated by " + o.peer + " — clearing this card also clears their linked entry") + " · click opens the session";
+      og.dataset.act = "sec-open-session"; og.dataset.sid = o.peerSid;   // delegated (sectionActs)
+      had = true;
+    }
+    if (hasHandoff) {
+      const h = it.handoffTo!;
+      if (!had) { og.title = "delegated to " + h.peer + "; their result checks this card off · click opens the session"; og.dataset.act = "sec-open-session"; og.dataset.sid = h.peerSid; }
+      const pre = el("span", "fask-origin-pre"); pre.textContent = (had ? " · " : "") + "↪ delegated to ";
+      const peer = el("span", "fask-origin-peer"); peer.replaceChildren(...hostPartsNodes(h.peerHost, h.peer)); if (h.color && h.color.bg) peer.style.color = h.color.bg;
+      peer.title = "delegated to " + h.peer + "; their result checks this card off · click opens the session"; peer.style.cursor = "pointer";
+      peer.dataset.act = "sec-open-session"; peer.dataset.sid = h.peerSid;   // the recipient's own click (the nearest act wins)
+      og.append(pre, peer);
+      had = true;
+    }
+    if (hasTracked) {
+      const ds = it.delegTracked!;
+      if (!had) { og.title = "a tracked handoff: the work runs with " + ds.map((d) => d.name).join(", ") + " and reports back to this card"; }
+      const pre = el("span", "fask-origin-pre"); pre.textContent = (had ? " · " : "") + "↪ delegated to ";
+      og.append(pre);
+      ds.forEach((d, i) => {
+        if (i) og.append(", ");
+        const peer = el("span", "fask-origin-peer");
+        peer.replaceChildren(...hostPartsNodes(d.host, d.name));
+        if (d.color && d.color.bg) peer.style.color = d.color.bg;
+        env.workDot?.(peer, d.name);
+        peer.title = "a tracked handoff: the work runs with " + d.name + " and reports back to this card · click opens the session";
+        peer.style.cursor = "pointer";
+        peer.dataset.act = "sec-open-session"; peer.dataset.sid = d.sid;   // delegated (sectionActs)
+        og.append(peer);
+      });
+    }
     out.push(og);
   }
   if (it.recheck && spinCaption !== "Analyzing…") out.push(badge("fask-followedup", BADGE_WORDS.rejudging.text, BADGE_WORDS.rejudging.title));
@@ -763,7 +814,7 @@ export function stateBadges(it: BadgeItem, env: Pick<SectionEnv, "durNodes" | "o
     const allDistill = it.warns.every((w) => DISTILL_FAIL_RE.test(w.kind));
     const lbl = allDistill ? "distill failed" : "warning";
     const chip = el("button", "fask-warnchip"); chip.textContent = it.warns.length > 1 ? `${lbl} ×${it.warns.length}` : lbl;
-    // hover = the attempt history when one exists (the user 2026-08-18: "tried opus — 529" ×3 says what the prose can't)
+    // hover = the attempt history when one exists (the user 2026-08-18, who wanted a model's repeated failure visible at a glance, since switching it is then the obvious fix)
     chip.title = (it.failLog && it.failLog.length ? it.failLog.map((f) => `${env.clockHM(f.t)} tried ${f.model} — ${f.note}`).join("\n") : it.warns[it.warns.length - 1].msg) + "\n— click for what happened and why";
     chip.dataset.act = "sec-open-warns";   // delegated (sectionActs → env.openWarns with the host's freshest item)
     out.push(chip);
@@ -779,36 +830,6 @@ export function stateBadges(it: BadgeItem, env: Pick<SectionEnv, "durNodes" | "o
       : wo.kind === "delegate" ? "this session handed work to " + wo.name + " and acts when the result comes back — not stalled, so auto-nudge skips it"
       : "this session has an unanswered message out to " + wo.name + " — waiting on its reply, not stalled, so auto-nudge skips it";
     out.push(b);
-  }
-  if (it.handoffTo && it.handoffTo.peerSid) {
-    // ↪ sender-side handoff provenance (the user 2026-08-24): the card titles the WORK and wears the delegation as this badge
-    const og = el("a", "fask-origin");
-    const pre = el("span", "fask-origin-pre"); pre.textContent = "↪ delegated to ";
-    const peer = el("span", "fask-origin-peer"); peer.replaceChildren(...hostPartsNodes(it.handoffTo.peerHost, it.handoffTo.peer)); if (it.handoffTo.color && it.handoffTo.color.bg) peer.style.color = it.handoffTo.color.bg;
-    og.append(pre, peer); og.title = "delegated to " + it.handoffTo.peer + "; their result checks this card off · click opens the session";
-    og.dataset.act = "sec-open-session"; og.dataset.sid = it.handoffTo.peerSid;   // delegated (sectionActs)
-    out.push(og);
-  }
-  if (it.delegTracked && it.delegTracked.length) {
-    // tracked delegation PRIMARY (the user 2026-08-24): the ONE card, homed under the delegator, names the recipient(s) in their identity
-    // colours with the board's live dot (the feed's workDot), so the manager reads the worker's state without leaving this card; each
-    // recipient carries its own click
-    const og = el("a", "fask-origin");
-    og.title = "a tracked handoff: the work runs with " + it.delegTracked.map((d) => d.name).join(", ") + " and reports back to this card";
-    const pre = el("span", "fask-origin-pre"); pre.textContent = "↪ delegated to ";
-    og.append(pre);
-    it.delegTracked.forEach((d, i) => {
-      if (i) og.append(", ");
-      const peer = el("span", "fask-origin-peer");
-      peer.replaceChildren(...hostPartsNodes(d.host, d.name));
-      if (d.color && d.color.bg) peer.style.color = d.color.bg;
-      env.workDot?.(peer, d.name);
-      peer.title = "a tracked handoff: the work runs with " + d.name + " and reports back to this card · click opens the session";
-      peer.style.cursor = "pointer";
-      peer.dataset.act = "sec-open-session"; peer.dataset.sid = d.sid;   // delegated (sectionActs)
-      og.append(peer);
-    });
-    out.push(og);
   }
   return out;
 }

@@ -115,18 +115,25 @@ test("stateBadges: the peer wait, the origin, the handoff and the tracked delega
   assert.deepEqual(o.map((b) => [b.tagName, b.className, b.textContent]), [["A", "fask-origin fask-origin-absorbed", "↪ from api"]], "absorbed: the same badge, dimmed, never removed");
   assert.deepEqual([o[0].dataset.act, o[0].dataset.sid], ["sec-open-session", "s-api"], "delegated: the act names the sender");
   assert.equal(badges({ origin: { peer: "api", peerSid: "s-api", live: true } })[0].className, "fask-origin");
-  assert.equal(badges({ handoffTo: { peer: "tests", peerSid: "s-t" } })[0].textContent, "↪ delegated to tests");
+  const h = badges({ handoffTo: { peer: "tests", peerSid: "s-t" } });
+  assert.deepEqual([h[0].textContent, h[0].dataset.act, h[0].dataset.sid], ["↪ delegated to tests", "sec-open-session", "s-t"], "a handoff alone: the anchor opens the recipient");
   const d = badges({ delegTracked: [{ sid: "s1", name: "web" }, { sid: "s2", name: "api" }] });
-  assert.equal(d[0].textContent, "↪ delegated to web, api");
-  assert.deepEqual(d[0].children.filter((c) => c.className === "fask-origin-peer").map((c) => c.dataset.dot), ["web", "api"], "the page's live dot before each recipient (the feed's workDot)");
+  assert.equal(d[0].textContent, "↪ delegated to web, api"); assert.equal(d[0].dataset.act, undefined, "a tracked delegation alone: the anchor itself opens nothing; each recipient does");
+  assert.deepEqual(d[0].children.filter((c) => c.className === "fask-origin-peer").map((c) => [c.dataset.dot, c.dataset.act, c.dataset.sid]), [["web", "sec-open-session", "s1"], ["api", "sec-open-session", "s2"]], "the page's live dot before each recipient (the feed's workDot), each with its own click");
+  // STACKED, as the card always drew it (the verifier's round two): ONE anchor, " · " between the facts, the absorbed class dimming the whole badge
+  const stacked = badges({ origin: { peer: "api", peerSid: "s-api", live: false }, handoffTo: { peer: "tests", peerSid: "s-t" }, delegTracked: [{ sid: "s1", name: "web" }] });
+  assert.equal(stacked.length, 1, "one anchor for the three facts");
+  assert.deepEqual([stacked[0].className, stacked[0].textContent, stacked[0].dataset.sid], ["fask-origin fask-origin-absorbed", "↪ from api · ↪ delegated to tests · ↪ delegated to web", "s-api"], "the sender first, the separators, the whole badge absorbed; the anchor's own click opens the sender");
+  assert.deepEqual(stacked[0].children.filter((c) => c.className === "fask-origin-peer").map((c) => c.dataset.sid), ["s-api", "s-t", "s1"].map((x, i) => i === 0 ? undefined : x), "the recipients carry their own clicks; the sender's name is the anchor's");
 });
 
 test("stateBadges: the card's order when every badge shows", () => {
   const all = badges({ recheck: true, doneConfirming: true, nudgeFailed: true, interrupting: true, interrupted: true,
                        warns: [{ kind: "x", t: 1, msg: "m", detail: "" }], waitingOn: { name: "api" },
                        origin: { peer: "api", peerSid: "s" }, handoffTo: { peer: "tests", peerSid: "t" }, delegTracked: [{ sid: "u", name: "docs" }] });
-  assert.deepEqual(classes(all), ["fask-origin", "fask-followedup", "fask-doneconfirming", "fask-nudgefailed", "fask-warnchip", "fask-waiton", "fask-origin", "fask-origin"],
-    "origin, re-judging, done confirming, follow-up failed (the interrupt words yield to it), the warning chip, the peer wait, the handoff, the tracked delegation");
+  assert.deepEqual(classes(all), ["fask-origin", "fask-followedup", "fask-doneconfirming", "fask-nudgefailed", "fask-warnchip", "fask-waiton"],
+    "the one provenance anchor (origin, the handoff and the tracked delegation stacked in it), re-judging, done confirming, follow-up failed (the interrupt words yield to it), the warning chip, the peer wait");
+  assert.equal(all[0].textContent, "↪ from api · ↪ delegated to tests · ↪ delegated to docs");
 });
 
 test("cardSpin: a targeted follow-up (recheck) and a plain reply (rejudging) both say Analyzing…, so neither wears the chip beside the swirl", () => {
@@ -161,7 +168,7 @@ test("every write to the section choice goes through the module's setters, which
   assert.match(FEED, /replaceSectionChoices\(Object\.entries\(st\.sec\) as \[string, SecChoice\]\[\], \{ quiet: true \}\);/, "hydration");
   assert.match(FEED, /replaceSectionChoices\(Object\.entries\(kept\.sec\) as \[string, SecChoice\]\[\], \{ quiet: true \}\);/, "the prune to the live set (quiet: the render applies every card next; a map that did not move is no change at all)");
   assert.match(MOD, /let same = next\.size === secChoice\.size;\s*\n\s*if \(same\) for \(const \[k, v\] of next\) if \(secChoice\.get\(k\) !== v\) \{ same = false; break; \}\s*\n\s*if \(same\) return;/, "the whole-map setter is a no-op when nothing moved: the prune runs on every render");
-  assert.match(FEED, /lastCollapsedPref = p\.collapsed; replaceSectionChoices\(\[\], \{ quiet: true \}\); \}/, "the Collapsed flip");
+  assert.match(FEED, /lastCollapsedPref = p\.collapsed; replaceSectionChoices\(\[\]\); \}/, "the Collapsed flip re-applies every card (the render gate would not) and posts the map");
   assert.match(FEED, /configureSectionSync\(\{ role: "owner", onChange: \(\) => persistViewState\(\) \}\);/, "the owner persists every change, a follower's pick included");
   assert.match(RENDER, /configureSectionSync\(\{ role: "follower" \}\);/, "the chat page says hello and takes the map");
   assert.match(MOD, /setSectionChoice\(id, choice === want \? "none" : want\);/, "a press writes through the setter");
@@ -200,4 +207,18 @@ test("sectionActs: one delegated map for both pages, each act stopping the click
   cardTreeExpanded.delete("i1:g2");
   acts["sec-tree"](at("sec-tree", { key: "i1:g2" }), ev);
   assert.ok(cardTreeExpanded.has("i1:g2"), "the tree act flips the branch"); acts["sec-tree"](at("sec-tree", { key: "i1:g2" }), ev); assert.ok(!cardTreeExpanded.has("i1:g2"));
+});
+
+test("a follower's own pick survives the owner's map and reaches the owner; the owner's later word for the item retires it", () => {
+  const { configureSectionSync, setSectionChoice, receiveSectionSync, secChoice } = mod as any;
+  configureSectionSync({ role: "follower" });
+  setSectionChoice("i9", "bg");                                      // the row picked before the feed document came up
+  receiveSectionSync({ kind: "map", entries: [["i8", "stall"]] });   // the feed hydrates and posts its map, which knows nothing of i9
+  assert.deepEqual([secChoice.get("i9"), secChoice.get("i8")], ["bg", "stall"], "the map is taken and the row's own pick stands over it (the verifier's round two: it was discarded)");
+  receiveSectionSync({ kind: "set", id: "i9", choice: "summary" });  // the owner speaks for the item
+  receiveSectionSync({ kind: "map", entries: [] });
+  assert.equal(secChoice.get("i9"), undefined, "after the owner's word, a later map governs the item");
+  receiveSectionSync({ kind: "map", entries: [["i7", "bg"]] });
+  setSectionChoice("i7", "none"); receiveSectionSync({ kind: "map", entries: [["i7", "none"]] }); receiveSectionSync({ kind: "map", entries: [] });
+  assert.equal(secChoice.get("i7"), undefined, "a map carrying the follower's own choice acknowledges it: a later map governs");
 });

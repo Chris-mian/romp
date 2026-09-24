@@ -57,7 +57,7 @@ test("the ⏸ picker/approval chip jumps to the LIVE prompt in the chat (openSes
 
 test("courier handoff: the '↪ from <sender>' origin marker is wired and styled", () => {
   // a chip beside the session name, hidden until the card carries a courier origin
-  assert.match(FEED, /const og = el\("a", "fask-origin" \+ \(it\.origin\.live === false \? " fask-origin-absorbed" : ""\)\);/);   // built fresh by stateBadges (card-sections.ts) when the item has an origin
+  assert.match(FEED, /const og = el\("a", "fask-origin" \+ \(hasOrigin && it\.origin!\.live === false \? " fask-origin-absorbed" : ""\)\);/);   // the one provenance anchor, built fresh by stateBadges (card-sections.ts) when the item has an origin, a handoff or a tracked delegation
   // it's a direct child of the wrapping row2 (NOT nested in idwrap) so a narrow card wraps it under the
   // name instead of overlapping the chips (the user 2026-06-20)
   assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, badges\)/, "the origin marker rides the name row beside the chips");
@@ -67,9 +67,9 @@ test("courier handoff: the '↪ from <sender>' origin marker is wired and styled
   assert.match(FEED, /pre\.textContent = "↪ from "/);
   // the peer renders through hostPartsNodes so a FEDERATED sender wears the quiet "host:" prefix,
   // same treatment as remote session names everywhere else (the user 2026-07-26)
-  assert.match(FEED, /peer\.replaceChildren\(\.\.\.hostPartsNodes\(it\.origin\.peerHost, it\.origin\.peer\)\)/);
-  assert.match(FEED, /if \(it\.origin\.color\) peer\.style\.color = it\.origin\.color\.bg/);
-  assert.match(FEED, /og\.dataset\.act = "sec-open-session"; og\.dataset\.sid = it\.origin\.peerSid;/, "clicking the marker opens the sender (delegated through sectionActs)");
+  assert.match(FEED, /peer\.replaceChildren\(\.\.\.hostPartsNodes\(o\.peerHost, o\.peer\)\)/);
+  assert.match(FEED, /if \(o\.color\) peer\.style\.color = o\.color\.bg/);
+  assert.match(FEED, /og\.dataset\.act = "sec-open-session"; og\.dataset\.sid = o\.peerSid;/, "clicking the marker opens the sender (delegated through sectionActs)");
   assert.match(CSS, /\.fask-origin-pre \{[^}]*var\(--dim\)/);     // "↪ from" dim gray
   assert.match(CSS, /\.fask-origin-peer \{[^}]*font-weight: 600/); // peer bold like other session names
 });

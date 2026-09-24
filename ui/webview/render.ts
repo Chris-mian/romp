@@ -1,7 +1,7 @@
 import { marked } from "marked";
 import { GEAR_GLYPH, ICON_FORK } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
-import { sanitizeMd, userContentTarget } from "./md-sanitize";
-import { noticeBodyNodes, noticeAttachmentNodes, type NoticeAttachment } from "./notice-face";   // the notice face the feed card shows, for the approval box   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
+import { sanitizeMd, userContentTarget } from "./md-sanitize";   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
+import { noticeBodyNodes, noticeAttachmentNodes, type NoticeAttachment } from "./notice-face";   // the notice face the feed card shows, for the approval box
 import { applySections, registerSectionHost, unregisterSectionHost, stateBadges, buildSectionElements, cardSpin, applySpin, applyDistillLanding, configureSectionSync, sectionActs,
          type SectionEnv, type SectionItem, type BadgeItem, type SpinFields, type AskTreeNode } from "./card-sections";   // the card's sections, badges, swirl and landings: one builder with the feed card (plans/needs-you.md, the row carries what the card carries)
 import { applyDistillLine } from "./distiller-line";

@@ -38,7 +38,7 @@ test("every surface renders the prefix through the shared treatment", () => {
   assert.match(FEED, /agent\.replaceChildren\(\.\.\.hostNameNodes\(it\.name, it\.sid\)\)/);
   // the feed card's "↪ from" chip: the host rides origin.peerHost (its own field — peerSid stays a
   // bare uuid), rendered through the same .host-prefix treatment (the user 2026-07-26)
-  assert.match(FEED, /peer\.replaceChildren\(\.\.\.hostPartsNodes\(it\.origin\.peerHost, it\.origin\.peer\)\)/);
+  assert.match(FEED, /peer\.replaceChildren\(\.\.\.hostPartsNodes\(o\.peerHost, o\.peer\)\)/);   // the one provenance anchor (card-sections.ts stateBadges)
   const HP = read("host-prefix.ts");
   assert.match(HP, /export function hostPartsNodes\(host: string \| null \| undefined, name: string,\s*\n\s*doc: Pick<Document, "createElement" \| "createTextNode"> = document\): Node\[\]/, "builds in the document it is handed (T322b: a fake's chip carries a fake's name node); the page's by default");
   // fleet: the prefix stays OUT of the search highlight (metadata never highlights)
