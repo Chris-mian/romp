@@ -4,7 +4,11 @@
 // 2026-07-27): sendComposer gates the send on an explicit confirm when clearConfirmDetail returns a
 // detail. Pure helpers here so the gate's logic is node-testable without the DOM.
 
-// mirrors the kernel's _is_clear_cmd (sdk_backend.py) — the same truth table, client-side
+// mirrors the kernel's _is_clear_cmd (sdk_backend.py), the same truth table, client-side. The only
+// divergence is which leading/trailing code points each side treats as whitespace: JS String.trim() and
+// Python str.strip() have whitespace sets that differ on a few non-typeable control/BOM code points (the
+// BOM/ZWNBSP U+FEFF, NEL U+0085 and the like). Pre-existing and not reachable from the composer or a
+// keyboard, so the two predicates agree on every send a user can make; deliberately NOT reconciled here.
 export function isClearCmd(text: string): boolean {
   const t = text.trim();
   return t === "/clear" || t.startsWith("/clear ");
@@ -56,3 +60,28 @@ export function endConfirmDetail(titles: string[], base: string): string {
     + shown + ". Ending takes them off the working surfaces with it. " + base;
 }
 
+
+// ── Restart session (the user 2026-09-23) ────────────────────────────────────────────────────────
+// One action for what End + Revive was doing in two: the session's own CLI process is replaced by a
+// fresh one that picks the same conversation up. The reason it exists is a CLI UPGRADE — a session
+// launched before one keeps the binary it started with, so a model only the newer CLI knows is out of
+// reach from it. Nothing about the session changes, which is exactly why the copy has to say so: the
+// user is being asked to accept an interruption for a change they will not see.
+// One copy for both menus (the chat's tab menu, the Sessions pane's row menu), like the two above.
+export const RESTART_LABEL = "Restart session";
+export const RESTART_BUSY_LABEL = "Restarting…";                 // the row's own label while the relaunch is in flight
+export const RESTART_SUBLINE = "relaunches its CLI on the version installed now — the conversation stays";
+export const RESTART_BUSY_SUBLINE = "replacing its CLI; the tab and the conversation stay put";
+export const RESTART_STANDING = "It keeps its name, its place and its whole conversation — only the program running it is replaced, by one that picks up where it left off.";
+
+// The restart confirm's detail, shown ONLY when the session is working (an idle one restarts with no
+// dialog at all): what the click interrupts, named the way the End dialog names what it drops — the open
+// tops are what the running turn is about, so they say more than "a turn" does.
+export function restartConfirmDetail(titles: string[]): string {
+  if (!titles.length) return "The turn it is running now is cut off. " + RESTART_STANDING;
+  const list = titles.join(", ");
+  const shown = list.length > 140 ? list.slice(0, 139) + "…" : list;
+  const n = titles.length;
+  return (n === 1 ? "It is working on 1 open card: " : "It is working on " + n + " open cards: ")
+    + shown + ". The turn it is running now is cut off. " + RESTART_STANDING;
+}

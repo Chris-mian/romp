@@ -80,7 +80,7 @@ test("every composer-shaped send rides the same gate — staged flush and provis
   // …whose every branch registers the optimistic bubble (2026-08-23), so the gate covers them all
   assert.match(RENDER, /if \(goalCite\?\.itemId\) \{ [^\n]*registerOptimistic\(sid, text, imgPaths, qid, paths\); \}/);
   assert.match(RENDER, /else if \(quoteCites\.length\) \{ [^\n]*registerOptimistic\(sid, body, imgPaths, qid, paths\); \}/);
-  assert.match(RENDER, /else \{ [^\n]*registerOptimistic\(sid, text, imgPaths, qid, paths\); \}/);
+  assert.match(RENDER, /else \{ [^\n]*registerOptimistic\(sid, text, imgPaths, qid, paths, [^\n]*\); \}/);
   // provisional adoption re-sends through registerOptimistic too
-  assert.match(RENDER, /registerOptimistic\(realId, text, undefined, qid\);/);
+  assert.match(RENDER, /registerOptimistic\(realId, text, undefined, qid, undefined, [^\n]*\);/);
 });

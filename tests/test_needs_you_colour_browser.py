@@ -137,6 +137,10 @@ for (const t of themes) {
     const c = row ? row.querySelector(".chip") : null; const cs = c ? getComputedStyle(c) : null; return { text: c ? c.textContent : null, bg: cs ? cs.backgroundColor : null, cls: c ? c.className : null }; }, cfg.web);
 }
 await setTheme(chatF, "dark"); if (setF) await setTheme(setF, "dark"); await setTheme(page, "dark");
+// …and the section opened again: the folds are every device's since 2026-09-23 (the kernel keeps them and serves them to the phone
+// below), and the phone's steps pick web from its picker, which a notes folded here would fold there too
+await chatF.evaluate(() => { const h = document.querySelector('#tabs .tab-group-head[data-group="notes"]'); if (h && h.dataset.folded === "1") h.click(); });
+await chatF.waitForFunction(() => { const h = document.querySelector('#tabs .tab-group-head[data-group="notes"]'); return !!h && h.dataset.folded === "0"; }, null, { timeout: 20000 }).catch(() => { errors.push("strip: notes never opened again"); });
 // ── the phone: the picker's current-session border and the row's bar ──
 const phoneCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 3 });
 await phoneCtx.addInitScript(() => { try { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.tabStateBadge = false; localStorage.setItem("romp:settings", JSON.stringify(s)); } catch (e) {} });   // RING mode: this lab's subject is the ring, not the badge (the 2026-09-23 default flip; the dot is the badge lab's + test 5's)

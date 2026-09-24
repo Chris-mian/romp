@@ -9,18 +9,18 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
-const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the badges and the swirl moved to card-sections.ts (round two of the box content PR: one builder for the card and the Needs you row)
+const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.css"), "utf8");   // the badge and swirl rules moved to the sheet both pages import
 
 test("the badge is built once and rides the wrapping chip row", () => {
-  assert.match(FEED, /const dcBadge = el\("span", "fask-doneconfirming"\)/);
-  assert.match(FEED, /dcBadge\.textContent = "done, confirming"/, "text label, no emoji/glyph");
-  assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge\)/);
-  assert.match(FEED, /a\._doneConfirming = dcBadge;/);
+  assert.match(FEED, /if \(it\.doneConfirming\) out\.push\(badge\("fask-doneconfirming", "done, confirming", /);   // the badges and the swirl moved to card-sections.ts (round two of the box content PR: one builder for the card and the Needs you row)
+  assert.match(FEED, /badge\("fask-doneconfirming", "done, confirming", "ruled done — it files under Completed once the session has moved on; a follow-up before then reopens it in place"\)/, "text label, no emoji/glyph; the tooltip in the user's terms");
+  assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, badges\)/);
+  assert.match(FEED, /a\._badges = badges;/);
 });
 
 test("it.doneConfirming toggles the badge; the payload carries the kernel flag", () => {
-  assert.match(FEED, /\(a\._doneConfirming as HTMLElement\)\.style\.display = it\.doneConfirming \? "" : "none";/);
+  assert.match(FEED, /a\._badges\.replaceChildren\(\.\.\.stateBadges\(it, sectionEnv, spinCaption\)\);/, "drawn with the rest of the name row\'s badges on every update");
   assert.match(FEED, /doneConfirming\?: boolean;/, "the card payload carries the kernel flag");
 });
 

@@ -74,6 +74,34 @@ if log:
                              "argv": args, "cwd": os.getcwd(),                            # review MED 2: the flags and the cwd the caller ran, observed
                              "credPresent": [k for k in SENSITIVE if os.environ.get(k)],  # which sensitive names ride the child env (presence, never a value)
                              "rawHash": raw_hash, "markNorm": mark_norm}) + "\n")         # raw differs per call (the mark); mark-normalized is equal across builds
+if os.environ.get("JE_TEST_KILL_ALL") and judge in ("planner", "closer", "unblocker"):   # kill EVERY arm call (none ever serves): no usage row lands, so the budget stop must price kills from the floor
+    import signal as _sig
+    os.kill(os.getpid(), _sig.SIGALRM); sys.exit(1)
+_kte = os.environ.get("JE_TEST_KILL_PLANNER_THEN_EMPTY")       # <dir>: the first PLANNER call's first attempt KILLS, its re-sample serves an EMPTY envelope (result "", last_call_fail None)
+if _kte and judge == "planner":                                # so killedCalls reads 1 (one real kill) where the old fak+retry-rec reads 2 (PR 2122 review medium 2)
+    import signal as _sig
+    _mk = os.path.join(_kte, "planner")
+    if not os.path.exists(_mk):
+        open(_mk, "w").write("killed"); os.kill(os.getpid(), _sig.SIGALRM); sys.exit(1)
+    elif open(_mk).read() == "killed":
+        open(_mk, "w").write("emptied")
+        print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "duration_ms": 7, "duration_api_ms": 5,
+                          "num_turns": 1, "result": "", "stop_reason": "end_turn", "session_id": "11111111-2222-4333-8444-555555555555",
+                          "total_cost_usd": 0.01, "usage": {"input_tokens": 10, "output_tokens": 5}}))
+        sys.exit(0)                                            # a served EMPTY reply on the re-sample: not a kill, not a pause
+_killdir = os.environ.get("JE_TEST_KILL_FIRST")                # kill-first knob: the FIRST planner/closer call dies for its first N attempts (per judge; the test clears the dir between arms)
+if _killdir and judge in ("planner", "closer"):                # like a timer kill (empty stdout, returncode -SIGALRM), so the retry's re-sample road is exercised. N per judge via JE_TEST_KILL_FIRST_<JUDGE> (default 1)
+    import signal as _sig
+    _thr = int(os.environ.get("JE_TEST_KILL_FIRST_%s" % judge.upper(), "1"))
+    _marker = os.path.join(_killdir, judge)
+    _n = int(open(_marker).read()) if os.path.exists(_marker) else 0
+    if _n < _thr:                                              # kill the first call's first N attempts; the (N+1)th attempt and every later call serve
+        open(_marker, "w").write(str(_n + 1))
+        _alog = os.environ.get("JE_TEST_ALARM_LOG")
+        if _alog:
+            open(_alog, "a").write("%s %d\n" % (judge, _sig.alarm(0)))   # the perl alarm the arm set: 240 at the harness alarm, 120 if the alarm-raise is removed
+        os.kill(os.getpid(), _sig.SIGALRM)                     # die with empty stdout: a timeout kill the retry re-samples
+        sys.exit(1)                                            # unreached
 m = re.search(r"<(turn|segment|message)[^>]*>\n(.*?)\n</(turn|segment|message)", user, re.S)
 text = m.group(2) if m else user
 flag = bool(re.search(r"i can also|which option|not done", text, re.I))
@@ -91,10 +119,15 @@ elif judge == "labeller":
                else "undone" if re.search(r"not done", text, re.I) else "finished")
     reply_text = json.dumps({"class": cls, "why": "synthetic"})
 elif judge == "closer":
-    reply_text = json.dumps({"done": [], "block": [{"goal": 1, "why": "the go-ahead is owed"}]} if (cand and flag)
-                            else {"done": [{"goal": 1, "why": "delivered"}], "block": []})
+    if os.environ.get("JE_TEST_CLOSER_NOOP"):
+        reply_text = json.dumps({"done": [], "block": []})     # a closer that files no verdict, so a minted top keeps NO done/block (the scored-boundary pin)
+    else:
+        reply_text = json.dumps({"done": [], "block": [{"goal": 1, "why": "the go-ahead is owed"}]} if (cand and flag)
+                                else {"done": [{"goal": 1, "why": "delivered"}], "block": []})
 elif judge == "planner":
-    if not menu_has:
+    if os.environ.get("JE_TEST_PLANNER_MINT"):
+        reply_text = json.dumps({"ops": [{"why": "a fresh ask this turn", "do": "mint", "text": "A turn-minted goal"}]})   # ALWAYS mint a new top (even on a non-empty menu), so an opener-less ending has an own-turn top with no verdict
+    elif not menu_has:
         reply_text = json.dumps({"ops": [{"why": "the ask", "do": "mint", "text": "The synthetic goal"}]})
     elif cand and flag:
         reply_text = json.dumps({"ops": [{"why": "the go-ahead is owed", "do": "block", "goal": 1}]})
@@ -466,6 +499,506 @@ class Harness(unittest.TestCase):
         self.assertTrue(all(v % 3 == 0 for v in counts.values()),
                         "every mark-normalized planner input recurs once per build (a multiple of the build count; a bucket may hold several endings); a build-dependent byte in one ending would split it: %r" % dict(counts))
 
+    def test_seal_pre_cut_adopt_seals_pre_cut_and_leaves_the_turn_at_every_older_version(self):
+        """The 2026-09-23 method change (manager's condition 1): a seed at each older PLACEMENTS_V (9-14) plans exactly the
+        ending's OWN turn, with every pre-cut unit sealed. seal_pre_cut_adopt seals the units born BEFORE the cut (keyed on
+        time, derivation-independent) and adopts the current version, so _plan_session runs no whole-store seal and only the
+        turn's units (time >= cut) remain to plan. Stubbed jd so the contract is deterministic."""
+        import types as _t
+        session = {"turns": [[{"id": "s0"}, {"id": "s1"}, {"id": "s2"}, {"id": "s3"}, {"id": "s4"}]]}
+        units = [("s0", "work", 30), ("s1", "work", 50), ("s2", "work", 70), ("s3", "work", 100), ("s4", "work", 120)]   # cut at 100: s0,s1,s2 pre-cut; s3,s4 the turn
+        for v in (9, 10, 11, 12, 13, 14):
+            store = {"placements": {"s0#work": "nodeX"}, "placementsV": v}   # s0 is a pre-cut unit ALREADY PLACED (a node id): the guard must LEAVE it, never overwrite it with None (PR 2099 review low 4)
+            jd = _t.SimpleNamespace(PLACEMENTS_V=15)
+            jd.episode_floor = lambda fsid: None
+            jd._segs = lambda turn, store: turn
+            jd.plan_units = lambda session, store, floor=None, lazy_text=True: units
+            jd._unit_key = lambda seg, phase: "%s#%s" % (seg, phase)
+            jd._placed_key = lambda placements, key, live=None, floor=None: placements.get(key) is not None   # placed = a non-None node id
+            sealed = self.je.seal_pre_cut_adopt(jd, "fsid", session, store, 100)
+            self.assertEqual(store["placementsV"], 15, "adopts the current version from %d, so _plan_session skips its seal" % v)
+            self.assertEqual(sealed, 2, "exactly the two UNPLACED pre-cut units sealed (from version %d), the placed one not counted: %r" % (v, store["placements"]))
+            self.assertEqual(store["placements"].get("s0#work"), "nodeX", "a placed pre-cut key KEEPS its node id (the guard skips it), never overwritten to None")
+            self.assertIsNone(store["placements"].get("s1#work"), "an unplaced pre-cut unit sealed")
+            self.assertIsNone(store["placements"].get("s2#work"), "an unplaced pre-cut unit sealed")
+            self.assertNotIn("s3#work", store["placements"], "the turn unit at the cut is left to plan")
+            self.assertNotIn("s4#work", store["placements"], "the turn unit after the cut is left to plan")
+
+    def test_own_turn_plannable_count_counts_only_work_and_live_units(self):
+        """The excuse fix (PR 2143): the count is only the units the ARM's planner plans with an UNCONDITIONAL model call from a
+        sealable own-turn position (work / live). A `prompt` (opener) is the opener judge's; a `nudge` is resolve-or-noop whose
+        own-turn instance is never sealed (so an unplanned one is one of the kernel's no-call roads, not a fault); a `delegation`
+        drives no planner call in the arm (no courier runs). So work + delegation counts 1 (only work), a NUDGE-ONLY own turn
+        counts 0 (excused), a work unit counts. The pre-fix code (phase != 'prompt') counted nudge and delegation: this reds it."""
+        import types as _t
+        session = {"turns": [[{"id": "s1"}, {"id": "s2"}, {"id": "s3"}, {"id": "s4"}]]}
+        jd = _t.SimpleNamespace()
+        jd.episode_floor = lambda fsid: None
+        jd._segs = lambda turn, store: turn
+        jd._unit_key = lambda seg, phase: "%s#%s" % (seg, phase)
+        jd._placed_key = lambda placements, key, live=None, floor=None: False   # none placed
+        store = {"placements": {}}
+        jd.plan_units = lambda session, store, floor=None, lazy_text=True: [("s1", "prompt", 100), ("s2", "nudge", 100), ("s3", "work", 100), ("s4", "delegation", 100)]
+        self.assertEqual(self.je.own_turn_plannable_count(jd, "fsid", session, store), 1, "only the work unit counts; prompt (opener), nudge and delegation (no courier in the arm) do not")
+        jd.plan_units = lambda session, store, floor=None, lazy_text=True: [("s2", "nudge", 100)]
+        self.assertEqual(self.je.own_turn_plannable_count(jd, "fsid", session, store), 0, "a nudge-only own turn counts zero: an unplanned own-turn nudge is a no-call road, not a fault")
+        jd.plan_units = lambda session, store, floor=None, lazy_text=True: [("s4", "delegation", 100)]
+        self.assertEqual(self.je.own_turn_plannable_count(jd, "fsid", session, store), 0, "a delegation-only own turn counts zero: the arm runs no courier, so it drives no planner call in any arm")
+        jd.plan_units = lambda session, store, floor=None, lazy_text=True: [("s3", "work", 100), ("s3b", "live", 100)]
+        jd._segs = lambda turn, store: [{"id": "s3"}, {"id": "s3b"}]
+        session = {"turns": [[{"id": "s3"}, {"id": "s3b"}]]}
+        self.assertEqual(self.je.own_turn_plannable_count(jd, "fsid", session, store), 2, "work and live both count: they reach plan_llm unconditionally")
+
+    def test_a_minted_top_scores_by_the_seedstart_boundary_not_startt(self):
+        """PR 2099 review low 3: a top the arm mints in the ending's own turn WITHOUT filing a done or block on it records as
+        SCORED, by the seedStart cut boundary. For an opener-less ending startT is None, so reverting the boundary to startT
+        would read the minted-no-verdict top as unscored: the pin reds that revert. A top the arm filed a verdict on scores
+        regardless of birth."""
+        now = 1000
+        lo = 500                                               # seedStart for an opener-less ending (its previous turn's end); startT would be None
+        minted = {"t": 600, "log": []}                          # born in the turn, no done/block filed
+        self.assertTrue(self.je.top_scored(minted, lo, now), "a top minted in the turn (no verdict) scores by the seedStart boundary")
+        self.assertFalse(self.je.top_scored(minted, None, now), "the revert to startT (None) drops the minted-no-verdict top: the pin")
+        seed = {"t": 100, "log": []}                            # born before the turn, never touched
+        self.assertFalse(self.je.top_scored(seed, lo, now), "a pre-turn top with no verdict does not score")
+        filed = {"t": 100, "log": [{"kind": "done", "at": now}]}   # pre-turn, but the arm filed a done THIS build (at >= now)
+        self.assertTrue(self.je.top_scored(filed, lo, now), "a top the arm filed a done/block on this build scores regardless of birth")
+        old_verdict = {"t": 100, "log": [{"kind": "done", "at": now - 100}]}   # a seed verdict, before this pass
+        self.assertFalse(self.je.top_scored(old_verdict, lo, now), "a seed's own earlier verdict is not the arm's filing")
+
+    def test_a_silent_measured_judge_reads_not_comparable_and_is_named_in_the_table(self):
+        """The comparability precondition (manager's condition 2): an arm in which any measured judge made ZERO calls is not
+        comparable, whatever the failure count, and the table names the silent judge, so a silent planner can never pass."""
+        dest, m = self._corpus()
+        run_root = os.path.join(self.td, "runs-silent")
+        base = self.je.run_arm(dest, "current", None, run_root, None, self.fake, now=T0 + 10**6)
+        self.assertTrue(self.je.measure(m, base, self.state)["comparable"], "the real run is comparable to start")
+        base["callsByJudge"] = {"placer": 5, "closer": 5, "unblocker": 5}   # a run where the PLANNER was silent (every seed sealed)
+        mb = self.je.measure(m, base, self.state)
+        self.assertFalse(mb["comparable"], "a silent planner is not comparable")
+        self.assertEqual(mb["silentJudges"], ["planner"], "the placer is reported but not required (a conditional judge)")
+        (Path(run_root) / "current" / "results.json").write_text(json.dumps(base))
+        self.je.report(dest, run_root, str(self.state))
+        table = (Path(run_root) / "table.md").read_text()
+        self.assertIn("planner 0 calls", table, "the table names the silent measured judge: %s" % table)
+        self.assertIn("not comparable", table)
+        # an old/withdrawn results record with NO per-judge record cannot read comparable on an empty cell
+        base.pop("callsByJudge", None)
+        m2 = self.je.measure(m, base, self.state)
+        self.assertFalse(m2["comparable"]); self.assertTrue(m2["noPerJudgeRecord"], "no callsByJudge -> not comparable, not a silent pass")
+
+    def test_an_old_version_seed_is_planned_through_the_real_road_and_an_opener_less_ending_is_not_skipped(self):
+        """End-to-end (manager round-one medium 1 + 2, round-two medium): a corpus seed at an OLD placements version is driven
+        through the real _plan_session road the harness uses (the fake as the model), and the seal_pre_cut_adopt WIRING makes
+        its turn plan the SAME as at the current version, version-independently (a mutant removing the call would seal it whole
+        and red this). NOTE the seal HALF (which units it seals) is not pinned here: these fixture placements are written at the
+        current derivation, so _placed_key dedups the pre-cut units and seal_pre_cut_adopt seals zero of them; the seal's own
+        logic is pinned by the stubbed unit test above. Opener-less endings (startT None) with seedStart set are sealed by
+        seedStart; with neither seedStart nor startT they are refused loudly (no-seed-cut), never sealed on cutT (there is no
+        store-derived third leg: seedStart, else startT, else refuse)."""
+        self._judge_written_stores()                       # populate the live 2-turn stores so the corpus carries pre-cut seeds
+        dest, m = self._corpus(name="seeded")
+        self.assertTrue(all("seedStart" in e for e in m["endings"]), "build_corpus records seedStart for the run-time seal (opener-less endings included)")
+        seeds = list(Path(dest, "state", "romp", "goals").glob("*.json"))
+        self.assertTrue(seeds, "a turn-1 ending carries a pre-cut seed store from its turn 0")
+        def set_all(version):
+            for f in seeds:
+                d = json.loads(f.read_text()); d["placementsV"] = version; f.write_text(json.dumps(d))
+        def planner_of(rr):
+            res = self.je.run_arm(dest, "current", None, os.path.join(self.td, rr), None, self.fake, now=T0 + 10**6)
+            self.assertTrue(self.je.measure(m, res, self.state)["comparable"], "comparable: %r" % res.get("callsByJudge"))
+            return (res.get("callsByJudge") or {}).get("planner", 0)
+        set_all(PV)
+        base = planner_of("r-cur")
+        self.assertGreater(base, 0, "the turn is planned at the current version")
+        for v in (PV - 1, 9):
+            set_all(v)
+            self.assertEqual(planner_of("r-v%d" % v), base,
+                             "an old-version (%d) seed plans the SAME turn (seal_pre_cut_adopt normalizes; the whole-store seal did not fire)" % v)
+        # opener-less: startT None but seedStart set -> sealed and adopted by seedStart, not skipped
+        mp = Path(dest, "manifest.json")
+        def set_manifest(mutate):
+            mm = json.loads(mp.read_text())
+            for me in mm["endings"]:
+                mutate(me)
+            mp.write_text(json.dumps(mm))
+        set_manifest(lambda me: me.__setitem__("startT", None))   # a continuation; seedStart stays as the seed's cut
+        set_all(9)
+        self.assertEqual(planner_of("r-openerless"), base,
+                         "an opener-less ending (startT None, seedStart set) is sealed, adopted and its turn planned via seedStart, not skipped")
+
+    def test_a_degenerate_opener_less_ending_with_no_previous_turn_is_refused_and_a_zero_planner_ending_is_not_comparable(self):
+        """Round-two/four medium's degenerate leg + the per-ending precondition. An ending with no seed cut at all (startT None
+        and no seedStart) is REFUSED loudly (a no-seed-cut failure that counts in FAILURE_KINDS) rather than sealed on cutT, is
+        named in endingsUnplanned, and marks the arm not comparable. No third derivation: seedStart, else startT, else refuse."""
+        self._judge_written_stores()
+        dest, m = self._corpus(name="degen")
+        seeded = [x for x in m["endings"] if Path(dest, "state", "romp", "goals", x["id"] + ".json").is_file() and x["turn"] == 1]
+        self.assertTrue(seeded, "a turn-1 ending with a seed store")
+        e = seeded[0]
+        mp = Path(dest, "manifest.json"); mm = json.loads(mp.read_text())
+        for me in mm["endings"]:
+            if me["id"] == e["id"]:
+                me["startT"] = None; me.pop("seedStart", None)               # startT None and no seedStart: no seed cut -> refused, never sealed on cutT
+        mp.write_text(json.dumps(mm))
+        res = self.je.run_arm(dest, "current", None, os.path.join(self.td, "r-degen"), None, self.fake, now=T0 + 10**6)
+        self.assertIn(e["id"], res.get("endingsUnplanned") or [], "the refused ending is named unplanned: %r" % res.get("endingsUnplanned"))
+        self.assertGreater(res.get("failures", 0), 0, "the no-seed-cut refusal counts as a failure")
+        errs = [json.loads(l) for l in (Path(self.td, "r-degen", "current", "state", "romp", "judge-errors.jsonl")).read_text().splitlines()]
+        self.assertTrue(any(r.get("err") == "no-seed-cut" for r in errs), "a no-seed-cut failure row was filed (never a cutT seal)")
+        self.assertGreaterEqual((res.get("failuresByKind") or {}).get("no-seed-cut", 0), 1,
+                                "no-seed-cut is in FAILURE_KINDS so it counts against comparability: %r" % res.get("failuresByKind"))
+        self.assertFalse(self.je.measure(m, res, self.state)["comparable"], "a refused / zero-planner ending marks the arm not comparable")
+        # the per-ending precondition also fires from the measure record alone (a withdrawn re-read)
+        m2 = self.je.measure(m, {"arm": "x", "failures": 0, "buildsPerCard": 3, "callsByJudge": {"planner": 5, "closer": 5},
+                                 "endingsUnplanned": ["abc"], "endings": {}}, self.state)
+        self.assertFalse(m2["comparable"]); self.assertEqual(m2["endingsUnplanned"], ["abc"])
+        # a CRASHED ending marks the arm not comparable on its own, even at failures 0 (the comparable term, not just failures)
+        m3 = self.je.measure(m, {"arm": "x", "failures": 0, "buildsPerCard": 3, "callsByJudge": {"planner": 5, "closer": 5},
+                                 "endingsCrashed": ["def"], "endings": {}}, self.state)
+        self.assertFalse(m3["comparable"], "a crashed ending alone marks the arm not comparable"); self.assertEqual(m3["endingsCrashed"], ["def"])
+
+    def test_annotate_fills_seed_start_from_start_t_on_an_old_manifest(self):
+        """The annotate step (round four): a manifest built before seedStart existed is filled by build_corpus's rule,
+        seedStart = startT for an opener'd ending; an opener-less ending (startT None) is left null so the run refuses it."""
+        self._judge_written_stores()
+        dest, m = self._corpus(name="annot")
+        mp = Path(dest, "manifest.json"); mm = json.loads(mp.read_text())
+        for me in mm["endings"]:
+            me.pop("seedStart", None)                          # an older manifest: no seedStart at all
+        mm["endings"][0]["startT"] = None                      # one opener-less ending stays null (refused at run, not guessed)
+        mp.write_text(json.dumps(mm))
+        withstart = sum(1 for me in mm["endings"] if me.get("startT") is not None)
+        self.assertEqual(self.je.annotate_seed_start(dest), withstart, "every opener'd ending gets seedStart = startT")
+        after = json.loads(mp.read_text())["endings"]
+        self.assertTrue(all(me.get("seedStart") == me.get("startT") for me in after), "seedStart equals startT after annotate (null stays null)")
+        # a re-run writes NOTHING: the bytes are identical, not a reformat
+        b1 = mp.read_bytes()
+        self.assertEqual(self.je.annotate_seed_start(dest), 0, "a re-run is a no-op")
+        self.assertEqual(mp.read_bytes(), b1, "a re-run leaves the manifest byte-for-byte")
+        # a failed write leaves the ORIGINAL manifest intact (atomic temp + os.replace)
+        json.loads(b1)                                          # sanity: b1 is valid
+        d = json.loads(mp.read_text()); d["endings"][0].pop("seedStart", None); mp.write_text(json.dumps(d, indent=1))
+        before = mp.read_bytes()
+        saved_replace = self.je.os.replace
+        self.je.os.replace = lambda *a, **k: (_ for _ in ()).throw(OSError("disk full"))
+        try:
+            with self.assertRaises(OSError):
+                self.je.annotate_seed_start(dest)
+        finally:
+            self.je.os.replace = saved_replace
+        self.assertEqual(mp.read_bytes(), before, "a failed os.replace leaves the original manifest intact")
+        # a corpus inside a git checkout is refused (a mistyped --corpus cannot overwrite a repo manifest)
+        with self.assertRaises(SystemExit):
+            self.je.annotate_seed_start(ROOT)
+
+    def test_the_measure_window_keys_on_seed_start_not_start_t(self):
+        """Round-four low: placement_gestures and tier_one_label key their turn window on seedStart, not startT, so an
+        opener-less ending (startT None) is not structurally empty. A needs_input top the live judges placed in [seedStart, cut)
+        that the user crossed off after the cut is a false interrupt; a revert to startT (None) empties the window and it
+        vanishes."""
+        sid = SIDS[1]
+        e = self._ending(self._corpus(name="win")[1], sid, 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}])
+        e2 = dict(e); e2["startT"] = None; e2["seedStart"] = s        # opener-less: the window must come from seedStart
+        results = {"arm": "x", "failures": 0, "callsByJudge": {"planner": 3, "closer": 3},
+                   "endings": {e2["id"]: {"builds": [{e2["id"] + ":g1": {"column": "needs_input", "scored": True}}] * 2}}}
+        mm = self.je.measure({"endings": [e2]}, results, self.state)
+        self.assertEqual((mm["falseInterrupts"], mm["gesturedEndings"]), (1, 1),
+                         "placement_gestures keys the window on seedStart: the cross-off is scored despite startT None: %r" % mm)
+        # tier_one_label reads the same window from the start it is passed (the measure passes seedStart)
+        self.assertIsNotNone(self.je.tier_one_label(self.state, sid, c, s), "tier_one_label finds the post-cut gesture via seedStart")
+        self.assertIsNone(self.je.tier_one_label(self.state, sid, c, None), "with no start there is no window")
+
+    def test_label_reads_tier_one_through_the_seed_start_window_for_an_opener_less_ending(self):
+        """Round-four low: label()'s call site passes seedStart (not startT) to tier_one_label, so an opener-less ending's tier
+        one is read from [seedStart, cut). The revert-to-startT mutant at the label() site empties the window and drops tierOne."""
+        sid = SIDS[0]
+        dest, m = self._corpus(name="lblwin")
+        e = self._ending(m, sid, 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}])
+        mp = Path(dest, "manifest.json"); mm = json.loads(mp.read_text())
+        for me in mm["endings"]:
+            if me["id"] == e["id"]:
+                me["startT"] = None; me["seedStart"] = s        # opener-less: label() must key tier one on seedStart
+        mp.write_text(json.dumps(mm))
+        run_root = os.path.join(self.td, "lbl")
+        self.je.label(dest, run_root, str(self.state), claude_bin=self.fake)
+        labels = json.loads((Path(run_root) / "labels.json").read_text())
+        row = [r for r in labels if r["id"] == e["id"]][0]
+        self.assertIsNotNone(row.get("tierOne"), "label() reads tier one via the seedStart window for an opener-less ending: %r" % row)
+
+    def test_evict_document_and_the_label_loop_keep_the_event_model_caches_flat(self):
+        """The 2026-09-24 memory fix: the label/arm loops parse many one-shot documents, and neither event-model cache's own
+        bound helps, so they grow to the cap. evict_document drops a document from both caches, and the label loop calls it per
+        ending so the caches stay flat across the corpus instead of one entry per ending."""
+        em = self.je._event_model()
+        # the function: parsing then evicting a document leaves both caches as they were
+        em._JSONL_CACHE.clear(); em._ASM_CACHE.clear()
+        for i in range(6):
+            sid = "evi%d" % i
+            p = self.pdir / (sid + ".jsonl")
+            p.write_text("".join(json.dumps(r) + "\n" for r in [uline(sid, T0, "ask%d" % i, "u1"), aline(sid, T0 + 30, "ok", "a1", "u1")]))
+            em.parse_session(str(p), rompuuid=sid)
+        self.assertGreaterEqual(len(em._ASM_CACHE), 6, "without eviction the assembly cache holds one per document")
+        em._JSONL_CACHE.clear(); em._ASM_CACHE.clear()
+        peak = 0
+        for i in range(6):
+            sid = "evi%d" % i; p = self.pdir / (sid + ".jsonl")
+            em.parse_session(str(p), rompuuid=sid); em.evict_document(str(p))
+            peak = max(peak, len(em._ASM_CACHE))
+        self.assertLessEqual(peak, 1, "evict_document keeps the assembly cache flat across documents: peak %d" % peak)
+        self.assertEqual((len(em._ASM_CACHE), len(em._JSONL_CACHE)), (0, 0), "both caches empty after evicting every document")
+        # eviction goes through the counted pops, not a bare dict clear: the record BYTE weight returns (a bare dict pop would
+        # leave _JSONL_CACHE_BYTES stale) and the assembly index is RELEASED (a dropped _asm_release never gives the atoms back).
+        # The test's bare clears above leave the byte counter stale, so set it to a known floor first (review 2026-09-24).
+        em._JSONL_CACHE.clear(); em._ASM_CACHE.clear(); em._JSONL_CACHE_BYTES[0] = 0
+        sid = "byt0"; p = self.pdir / (sid + ".jsonl")
+        p.write_text("".join(json.dumps(r) + "\n" for r in [uline(sid, T0, "a longer ask so the record has weight", "u1"), aline(sid, T0 + 30, "ok done", "a1", "u1")]))
+        em.parse_session(str(p), rompuuid=sid)
+        self.assertGreater(em.record_cache_stats()["bytes"], 0, "the parse held record bytes")
+        em.evict_document(str(p))
+        self.assertEqual(em.record_cache_stats()["bytes"], 0, "evict_document returns the record byte weight through _cache_pop_locked (a bare dict pop leaves it stale)")
+        # a dropped release: an assembly entry carrying a lazy index must have it RELEASED when the entry is popped (a whole
+        # parse's entry has no index, so drive it with a stub index keyed to the leaf; a bare dict pop would skip the release)
+        released = []
+        em._ASM_CACHE.clear()
+        em._ASM_CACHE["k-release"] = {"path": str(p), "cands": (), "index": type("_Ix", (), {"release": lambda self: released.append(1)})()}
+        em.evict_document(str(p))
+        self.assertEqual(released, [1], "evict_document releases the popped assembly entry's index (a dropped _asm_release skips it)")
+        self.assertNotIn("k-release", em._ASM_CACHE, "and pops the entry")
+        # the label loop calls it per ending (the call site): both caches stay flat over a real corpus, not one-per-ending
+        dest, m = self._corpus(name="evictloop")
+        em._JSONL_CACHE.clear(); em._ASM_CACHE.clear()
+        self.je.label(dest, os.path.join(self.td, "lbl-evict"), str(self.state), claude_bin=self.fake)
+        self.assertLessEqual(len(em._ASM_CACHE), 1, "the label loop evicts each ending: assembly cache flat, not %d of %d" % (len(em._ASM_CACHE), len(m["endings"])))
+
+    def test_an_excused_ending_is_still_scored_and_a_strict_subset_silence_is_not_comparable(self):
+        """The cross-arm rule as REVERSED by the manager (2026-09-24): an ending unplanned in EVERY arm whose own turn had no
+        planner unit (plannableUnits 0) is excused from the COMPARABILITY verdict only, never from the metrics. Its scored top
+        still counts a leak and a flap: every excused ending sits in every arm's results, so the arms compare on one set without
+        a skip, and the skip would drop the closer's verdicts the candidates exist to change. An ending unplanned in a STRICT
+        SUBSET of arms still marks that arm not comparable."""
+        dest, m = self._corpus(name="xarm")
+        e_leak = self._ending(m, SIDS[0], 0)["id"]           # the excused ending; its top is completed then re-opened -> a leak
+        e_one = self._ending(m, SIDS[1], 0)["id"]            # unplanned in A only -> a strict-subset silence
+        el = self._ending(m, SIDS[0], 0)
+        self._live_store_with_done(SIDS[0], float(el["startT"]), float(el["cutT"]),
+                                   [{"node": SIDS[0] + ":g1", "op": "followup", "t": float(el["cutT"]) + 7200}])   # a re-open after the cut
+        leak_builds = [{"g1": {"column": "completed", "scored": True}},   # majority completed (a leak) with a per-build disagreement (a flap)
+                       {"g1": {"column": "completed", "scored": True}},
+                       {"g1": {"column": "needs_input", "scored": True}}]
+        run_root = os.path.join(self.td, "runs-xarm")
+        os.makedirs(run_root)
+        Path(run_root, "arms.json").write_text(json.dumps({"arms": ["A", "B", "C"]}))
+        def write_arm(arm, unplanned, leak=False):
+            os.makedirs(os.path.join(run_root, arm))
+            endings = {}
+            for x in m["endings"]:
+                d = {"class": x["class"], "builds": [{}] * 3}
+                if x["id"] == e_leak:
+                    d["plannableUnits"] = 0                  # the own turn had nothing for the planner: excused (comparability only)
+                    if leak:
+                        d["builds"] = leak_builds
+                        d["retry"] = {"firstAttemptKills": 1, "retryAttempts": 1, "recoveredCalls": 1, "killedCalls": 1}   # a per-ending retry record: the measure carries it into the attribution row (PR 2122 review point 4)
+                endings[x["id"]] = d
+            Path(run_root, arm, "results.json").write_text(json.dumps(
+                {"arm": arm, "failures": 0, "buildsPerCard": 3, "finished": True, "callsByJudge": {"planner": 5, "closer": 5},
+                 "endingsUnplanned": unplanned, "endings": endings}))
+        write_arm("A", [e_leak, e_one], leak=True)           # A carries the excused ending's scored, leaking, flapping top
+        write_arm("B", [e_leak])
+        write_arm("C", [e_leak])
+        rows = self.je.report(dest, run_root, str(self.state))
+        by = {r["arm"]: r for r in rows}
+        self.assertEqual(by["A"]["excusedEndings"], [e_leak], "the corpus-wide-unplanned ending with no planner unit is excused")
+        self.assertEqual((by["A"]["leaks"], by["A"]["flaps"]), (1, 1), "the excused ending is STILL scored: its re-opened top is a leak and its per-build disagreement a flap")
+        self.assertEqual(by["A"]["endings"], len(m["endings"]), "every ending is in the count; the excuse removes none")
+        self.assertFalse(by["A"]["comparable"], "A has an ending the others planned (e_one): not comparable")
+        self.assertTrue(by["B"]["comparable"] and by["C"]["comparable"], "B and C's only unplanned is the excused one: comparable")
+        arow = [a for a in by["A"]["attribution"] if a["id"] == e_leak][0]   # the measure carries the ending's per-ending retry into its attribution row (PR 2122 review point 4)
+        self.assertEqual((arow.get("retry") or {}).get("killedCalls"), 1, "the attribution row carries the ending's own retry record")
+        table = (Path(run_root) / "table.md").read_text()
+        self.assertIn("corpus-unplanned", table)
+        self.assertIn("complete: all 3 expected arms finished", table)
+
+    def test_the_excuse_needs_two_finished_arms_and_a_workless_turn(self):
+        """The excuse gates (manager 2026-09-24). It fires only over a COMPLETE run (arms.json names the expected arms, at least
+        two, every one present and finished; the intersection over the arms present excuses wrongly on a one-arm or partial run)
+        AND when the ending's own turn was GROUNDED workless (plannableUnits 0); a candidate with plannable units was silenced by
+        a seal-boundary fault or a dead planner and is NOT excused, so every arm reads not comparable."""
+        dest, m = self._corpus(name="partial")
+        e_all = m["endings"][0]["id"]
+        def build(tag, arms, expected=("A", "B"), plannable=0):   # arms: list of (name, unplanned, finished)
+            run_root = os.path.join(self.td, "runs-" + tag)
+            os.makedirs(run_root)
+            Path(run_root, "arms.json").write_text(json.dumps({"arms": list(expected)}))
+            for name, unplanned, finished in arms:
+                os.makedirs(os.path.join(run_root, name))
+                endings = {x["id"]: {"class": x["class"], "builds": [{}] * 3} for x in m["endings"]}
+                endings[e_all]["plannableUnits"] = plannable   # the recorded own-turn planner-unit count the report grounds on
+                Path(run_root, name, "results.json").write_text(json.dumps(
+                    {"arm": name, "failures": 0, "buildsPerCard": 3, "finished": finished, "callsByJudge": {"planner": 5, "closer": 5},
+                     "endingsUnplanned": unplanned, "endings": endings}))
+            return {r["arm"]: r for r in self.je.report(dest, run_root, str(self.state))}, run_root
+        # one of two expected arms present: nothing excused, not comparable, partial
+        by, run_root = build("one-present", [("A", [e_all], True)])
+        self.assertEqual(by["A"]["excusedEndings"], [], "an expected arm is missing: nothing is excused")
+        self.assertFalse(by["A"]["comparable"], "A's unplanned ending is not excused when the run is incomplete")
+        self.assertNotIn("comparableDenominator", by["A"], "no separate denominator: the metrics run over every ending")
+        self.assertIn("partial: 1 of 2 arms finished", (Path(run_root) / "table.md").read_text())
+        # both present but one unfinished: still nothing excused
+        by2, _ = build("one-unfinished", [("A", [e_all], True), ("B", [e_all], False)])
+        self.assertEqual(by2["A"]["excusedEndings"], [], "an unfinished arm blocks the excuse")
+        self.assertFalse(by2["A"]["comparable"], "the shared unplanned ending is not excused while B is unfinished")
+        # both present, finished, and the ending's own turn was workless: excused, both comparable
+        by3, _ = build("both-workless", [("A", [e_all], True), ("B", [e_all], True)], plannable=0)
+        self.assertEqual(by3["A"]["excusedEndings"], [e_all], "two finished arms and a workless turn: the shared ending is excused")
+        self.assertTrue(by3["A"]["comparable"] and by3["B"]["comparable"], "the shared workless-turn ending is excused: both comparable")
+        # both present and finished, but the shared ending's own turn HAD plannable units: a fault, not a workless turn -> not excused
+        by4, rr4 = build("both-with-units", [("A", [e_all], True), ("B", [e_all], True)], plannable=2)
+        self.assertEqual(by4["A"]["excusedEndings"], [], "a candidate with plannable units is a seal-boundary fault / dead planner: NOT excused")
+        self.assertFalse(by4["A"]["comparable"] or by4["B"]["comparable"], "an unplanned ending with plannable units marks EVERY arm not comparable")
+        self.assertIn("not excused", (Path(rr4) / "table.md").read_text())
+        # a ONE-arm expected set: no excuse at all (an excuse needs at least two arms)
+        by5, rr5 = build("one-arm", [("A", [e_all], True)], expected=("A",), plannable=0)
+        self.assertEqual(by5["A"]["excusedEndings"], [], "one expected arm: no excuse even for a workless turn")
+        self.assertFalse(by5["A"]["comparable"], "a one-arm root reads not comparable over its unplanned endings")
+        self.assertIn("one arm expected", (Path(rr5) / "table.md").read_text())
+
+    def test_run_arm_inprocess_evicts_each_ending_from_the_event_model_caches(self):
+        """Medium (manager 2026-09-24): run_arm_inprocess parses one document per ending and must evict each so the arm's
+        event-model caches stay flat instead of growing one entry per ending (the OOM the label loop hit). Wrapping load_judge
+        captures the arm's jd; after the whole corpus its em caches hold at most one document."""
+        dest, m = self._corpus(name="evictarm")
+        captured = {}
+        orig = self.je.load_judge
+        def patched(*a, **k):
+            jd = orig(*a, **k)
+            captured["jd"] = jd
+            return jd
+        self.je.load_judge = patched
+        self.addCleanup(lambda: setattr(self.je, "load_judge", orig))
+        env = {k: os.environ.get(k) for k in ("XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "ROMP_CLAUDE_BIN")}
+        self.addCleanup(lambda: [os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v) for k, v in env.items()])
+        self.je.run_arm_inprocess(dest, "current", None, os.path.join(self.td, "r-evictarm"), None, self.fake, now=T0 + 10**6)
+        em = captured["jd"].em
+        self.assertLessEqual(len(em._ASM_CACHE), 1, "run_arm_inprocess evicts each ending: assembly cache flat, not %d of %d" % (len(em._ASM_CACHE), len(m["endings"])))
+        self.assertLessEqual(len(em._JSONL_CACHE), 1, "run_arm_inprocess evicts each ending: record cache flat, not %d of %d" % (len(em._JSONL_CACHE), len(m["endings"])))
+
+    def test_a_nudge_only_unplanned_ending_reads_arms_comparable_via_the_parse(self):
+        """The excuse fix (PR 2143), report level: a run whose only unplanned-in-every-arm ending is NUDGE-ONLY (its own turn a romp
+        Nudge, which drives no planner model call on an absent/resolved goal) reads all arms COMPARABLE through the parse
+        fallback. The pre-fix count treated the nudge as a plannable unit and read every arm not comparable."""
+        nsid = "11111111-2222-4444-8888-00000000abcd"
+        g = nsid + ":g1"
+        recs = [uline(nsid, T0, "add a retry to the uploader", "nu0", None),
+                aline(nsid, T0 + 30, "Added the retry.", "na0", "nu0"),
+                uline(nsid, T0 + 600, "<!-- romp-injected --><!-- romp-goal-id: %s --> where does this stand?" % g, "nu1", "na0"),
+                aline(nsid, T0 + 630, "Still going.", "na1", "nu1")]
+        (self.pdir / (nsid + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in recs))
+        (self.state / "names" / nsid).write_text("web\t%s\t#abcdef\n" % self.cwd)
+        dest, m = self._corpus(name="nudgecorpus")
+        ne = self._ending(m, nsid, 1)                        # the turn-1 ending: its own turn is the romp Nudge
+        run_root = os.path.join(self.td, "runs-nudge")
+        env = {k: os.environ.get(k) for k in ("XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "ROMP_CLAUDE_BIN")}
+        self.addCleanup(lambda: [os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v) for k, v in env.items()])
+        for arm in ("A", "B"):
+            self.je.run_arm_inprocess(dest, arm, None, run_root, None, self.fake, now=T0 + 10**6)
+        Path(run_root, "arms.json").write_text(json.dumps({"arms": ["A", "B"]}))
+        for arm in ("A", "B"):                               # the nudge ending planned nothing (its goal-id resolves to no node in the fresh seed -> the kernel's no-resolvable-target road, one of its three no-call roads); strip the recorded count to force the PARSE fallback (as the launch-head arms had none)
+            rp = Path(run_root, arm, "results.json"); r = json.loads(rp.read_text())
+            self.assertIn(ne["id"], r["endingsUnplanned"], "the nudge ending is unplanned in arm %s: %r" % (arm, r["endingsUnplanned"]))
+            for e in r["endings"].values():
+                e.pop("plannableUnits", None)
+            rp.write_text(json.dumps(r))
+        by = {r["arm"]: r for r in self.je.report(dest, run_root, str(self.state))}
+        self.assertIn(ne["id"], by["A"]["excusedEndings"], "the nudge-only ending is excused (own-turn nudge counts 0 plannable units, via the parse): %r" % by["A"]["excusedEndings"])
+        self.assertTrue(by["A"]["comparable"] and by["B"]["comparable"], "both arms read comparable: the only unplanned ending is a no-call nudge (a no-resolvable-target road)")
+
+    def test_a_seal_boundary_fault_is_not_excused_and_marks_every_arm_not_comparable(self):
+        """The grounded excuse's key case (the contributor's fixture, manager 2026-09-24): with the seed boundary set PAST the
+        cut on some endings, the seal seals the ending's OWN turn, so the planner is silent in every arm with no failure row.
+        The intersection alone would excuse these and read every arm comparable (the prior head did); grounding the excuse in
+        the ending's own turn (plannable units counted from the cut, not the seed boundary) keeps them NOT excused, so every arm
+        reads not comparable. The report re-derives the count when the arm did not record it (the launch-head arms)."""
+        dest, m = self._corpus(name="sealfault")
+        mf = Path(dest, "manifest.json")
+        man = json.loads(mf.read_text())
+        faulted = [e["id"] for e in man["endings"][:2]]
+        for e in man["endings"]:
+            if e["id"] in faulted:
+                e["seedStart"] = float(e["cutT"]) + 1        # the seed boundary past the cut: the seal seals the ending's own turn
+        mf.write_text(json.dumps(man))
+        run_root = os.path.join(self.td, "runs-sealfault")
+        env = {k: os.environ.get(k) for k in ("XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "ROMP_CLAUDE_BIN")}
+        self.addCleanup(lambda: [os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v) for k, v in env.items()])
+        for arm in ("A", "B"):
+            self.je.run_arm_inprocess(dest, arm, None, run_root, None, self.fake, now=T0 + 10**6)
+        Path(run_root, "arms.json").write_text(json.dumps({"arms": ["A", "B"]}))
+        # the faulted endings recorded plannable units > 0 (their own turn had work the seal wrongly sealed)
+        resA = json.loads(Path(run_root, "A", "results.json").read_text())
+        self.assertTrue(all(resA["endings"][eid].get("plannableUnits") for eid in faulted),
+                        "the fixture's faulted endings must carry work in their own turn: %r" % {eid: resA["endings"][eid].get("plannableUnits") for eid in faulted})
+        by = {r["arm"]: r for r in self.je.report(dest, run_root, str(self.state))}
+        for arm in ("A", "B"):
+            self.assertTrue(set(faulted) <= set(by[arm]["endingsUnplanned"]), "the seal silenced the planner on the faulted endings in %s: %r" % (arm, by[arm]["endingsUnplanned"]))
+            self.assertEqual([e for e in faulted if e in by[arm]["excusedEndings"]], [], "a faulted ending is not excused in %s" % arm)
+            self.assertFalse(by[arm]["comparable"], "%s reads not comparable over the faulted endings" % arm)
+        # the report-time PARSE fallback: strip the recorded counts (as the launch-head arms lack them) and re-report -> same verdict
+        for arm in ("A", "B"):
+            rp = Path(run_root, arm, "results.json"); r = json.loads(rp.read_text())
+            for eid in r["endings"]:
+                r["endings"][eid].pop("plannableUnits", None)
+            rp.write_text(json.dumps(r))
+        by2 = {r["arm"]: r for r in self.je.report(dest, run_root, str(self.state))}
+        for arm in ("A", "B"):
+            self.assertEqual([e for e in faulted if e in by2[arm]["excusedEndings"]], [], "the parse fallback keeps a faulted ending not excused in %s" % arm)
+            self.assertFalse(by2[arm]["comparable"], "the parse fallback keeps %s not comparable" % arm)
+
+    def test_run_refuses_a_second_launch_with_a_different_arm_set(self):
+        """The expected-arms record is written ONCE per run root (manager 2026-09-24): a later `run` with a different arm set
+        would silently change what "every arm" means for the excuse, so it is refused before any arm runs; the same set is a
+        no-op re-launch."""
+        dest, _ = self._corpus(name="armset")
+        run_root = os.path.join(self.td, "runs-armset")
+        os.makedirs(run_root)
+        Path(run_root, "arms.json").write_text(json.dumps({"arms": ["baseline", "candidate"]}))
+        with self.assertRaises(SystemExit):
+            self.je.main(["run", "--corpus", dest, "--run-root", run_root, "--claude-bin", self.fake,
+                          "--budget-usd", "inf", "--arm", "baseline", "--arm", "other"])
+        self.assertEqual(json.loads(Path(run_root, "arms.json").read_text())["arms"], ["baseline", "candidate"],
+                         "the record is unchanged after the refusal, and no arm ran")
+        self.assertFalse(list(Path(run_root).glob("*/results.json")), "no arm results were written")
+
+    def test_a_crashed_ending_is_named_in_endings_crashed_from_a_real_run(self):
+        """Round-four low: endingsCrashed is populated by a REAL crashed pass (not only measure's pass-through). A planner that
+        raises for one ending files pass-crash, and that ending is named in endingsCrashed and the arm reads not comparable."""
+        self._judge_written_stores()
+        dest, m = self._corpus(name="crash")
+        target = [x for x in m["endings"] if x.get("startT") is not None][0]["id"]
+        orig = self.je.load_judge
+        def patched(*a, **k):
+            jd = orig(*a, **k)
+            real = jd._plan_session
+            def boom(fsid, *aa, **kk):
+                if fsid == target:
+                    raise RuntimeError("boom in planner")
+                return real(fsid, *aa, **kk)
+            jd._plan_session = boom
+            return jd
+        self.je.load_judge = patched
+        self.addCleanup(lambda: setattr(self.je, "load_judge", orig))
+        env = {k: os.environ.get(k) for k in ("XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "ROMP_CLAUDE_BIN")}
+        def _restore():
+            for k, v in env.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        self.addCleanup(_restore)
+        res = self.je.run_arm_inprocess(dest, "current", None, os.path.join(self.td, "r-crash"), None, self.fake, now=T0 + 10**6)
+        self.assertIn(target, res.get("endingsCrashed") or [], "a crashed ending is named in endingsCrashed: %r" % res.get("endingsCrashed"))
+        self.assertFalse(self.je.measure(m, res, self.state)["comparable"], "a crashed ending marks the arm not comparable")
+
     def _add_node_log(self, sid, suffix, ev):
         """Append an event to a live top-level node's log (a helper for the unblocker-ruling pins)."""
         p = self.state / "goals" / (sid + ".json")
@@ -627,6 +1160,10 @@ class Harness(unittest.TestCase):
                     ctx.last_call_fail = None; return "ok"
                 if verdict == "pause":
                     ctx.paused = True; ctx.last_call_fail = None; return ""
+                if verdict == "serve_empty":
+                    ctx.last_call_fail = None; return ""              # a legitimate EMPTY reply, no failure: returned at once, never retried
+                if verdict == "pause_stale":
+                    ctx.paused = True; return ""                      # a pause that LEAVES last_call_fail set (stale), as the real pause paths do: the `paused` conjunct must return
                 with ep.open("a", encoding="utf-8") as f:                 # a real transient call failure files one `call` row
                     f.write(json.dumps({"judge": judge, "err": "call", "note": "timeout"}) + "\n")
                 ctx.last_call_fail = {"note": "timeout"}; return ""
@@ -656,11 +1193,28 @@ class Harness(unittest.TestCase):
         ep.write_text(""); c4 = {}
         jd = fake_jd(lambda n: "fail" if n == 0 else "serve", judge="gister")
         self.je.install_call_retry(jd, ep, c4, attempts=3)
-        self.assertEqual((jd._judge_run_impl(judge="gister"), c4["firstAttemptKills"]), ("ok", 0), "a non-arm recovery is not an arm kill")
+        self.assertEqual((jd._judge_run_impl(judge="gister"), c4["firstAttemptKills"], c4["killedCalls"]), ("ok", 0, 0), "a non-arm recovery is not an arm kill and not counted in killedCalls (the arm-only guard; `if True` would count it) (PR 2122 review medium 3)")
         ep.write_text(""); c5 = {}
         jd = fake_jd(lambda n: "pause")
         self.je.install_call_retry(jd, ep, c5, attempts=3)
         self.assertEqual((jd._judge_run_impl(judge="planner"), self.je.count_failure_rows(ep), c5["firstAttemptKills"]), ("", 0, 0), "a pause is a skip, not a failure to retry")
+        # a served EMPTY reply (no failure): returned at once, never a first-attempt kill
+        ep.write_text(""); c6 = {}
+        jd = fake_jd(lambda n: "serve_empty")
+        self.je.install_call_retry(jd, ep, c6, attempts=3)
+        self.assertEqual((jd._judge_run_impl(judge="planner"), c6["firstAttemptKills"], c6["retryAttempts"]), ("", 0, 0), "a served empty reply is not a failure to retry")
+        # a pause AFTER a failure with last_call_fail left STALE: the `paused` conjunct RETURNS (ending the retry), but a pause is
+        # a stand-down, NOT a recovery (a recovery is a non-empty served reply, PR 2122 review medium 2)
+        ep.write_text(""); c7 = {}
+        jd = fake_jd(lambda n: "fail" if n == 0 else "pause_stale")
+        self.je.install_call_retry(jd, ep, c7, attempts=3)
+        self.assertEqual((jd._judge_run_impl(judge="planner"), c7["firstAttemptKills"], c7["recoveredCalls"]), ("", 1, 0), "a pause after a kill ends the retry via the paused conjunct but is NOT counted a recovery")
+        self.assertEqual(c7["killedCalls"], 1, "ONE genuine kill: the wrapper counts kills directly, so a pause after a kill is not a second kill (fak+retry-rec would over-count it as 2) (PR 2122 review point 7)")
+        self.assertEqual(self.je.count_failure_rows(ep), 0, "the earlier kill's row is still tagged out when the pause returns (not a final failure)")
+        # a tagged (retried) row is skipped by BOTH counters, arm and non-arm
+        ep.write_text(json.dumps({"judge": "planner", "err": "call", "note": "timeout", "retried": True}) + "\n"
+                      + json.dumps({"judge": "gister", "err": "call", "note": "timeout", "retried": True}) + "\n")
+        self.assertEqual((self.je.count_failure_rows(ep), self.je.count_non_arm_failure_rows(ep)), (0, 0), "a tagged row is skipped by both count_failure_rows and count_non_arm_failure_rows")
 
     def test_install_call_retry_refuses_a_concurrent_entry(self):
         """The by-line-range tag-and-count is correct only single-threaded (the arm's construction); the guard makes that an
@@ -682,6 +1236,318 @@ class Harness(unittest.TestCase):
         self.assertEqual(jd._judge_run_impl(judge="planner"), "ok")
         self.assertIsInstance(box.get("e"), RuntimeError, "a concurrent entry is refused, not silently raced")
 
+    def _restore_arm_env(self, extra=()):   # snapshot + addCleanup the process env load_judge / the kill knob mutate
+        keys = ("XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "ROMP_CLAUDE_BIN", "ROMP_STATE_DIR") + tuple(extra)
+        snap = {k: os.environ.get(k) for k in keys}
+        self.addCleanup(lambda: [os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v) for k, v in snap.items()])
+
+    def test_the_arm_retry_wiring_recovers_kills_and_restores(self):
+        """Arm-level wiring of the retry (PR 2092 review point 1): the kill-first knob kills each arm's first planner and closer
+        call, which the retry re-samples to a served reply, so a two-arm one-build run reads failures 0 with the counters filled
+        and both arms comparable; the module's _judge_run_impl and its 120s alarm are RESTORED after the arm (a removed install
+        or a dropped restore red the restore assertions), and the fake observed the arm's 240s alarm (the alarm-raise)."""
+        dest, m = self._corpus(name="retrywire")
+        run_root = os.path.join(self.td, "runs-retrywire")
+        killdir = os.path.join(self.td, "killdir"); os.makedirs(killdir)
+        alarmlog = os.path.join(self.td, "alarm.log")
+        caps = []
+        orig = self.je.load_judge
+        def patched(*a, **k):
+            jd = orig(*a, **k)
+            caps.append({"jd": jd, "origImpl": jd._judge_run_impl, "alarm": jd.CALL_ALARM_S})   # captured BEFORE run_arm_inprocess installs the retry / raises the alarm
+            return jd
+        self.je.load_judge = patched
+        self.addCleanup(lambda: setattr(self.je, "load_judge", orig))
+        self._restore_arm_env(("JE_TEST_KILL_FIRST", "JE_TEST_KILL_FIRST_PLANNER", "JE_TEST_ALARM_LOG"))
+        os.environ["JE_TEST_KILL_FIRST"] = killdir
+        os.environ["JE_TEST_KILL_FIRST_PLANNER"] = "2"   # kill the first PLANNER call on its first TWO attempts (closer once), so the counters DIFFER: 2/3/2 (PR 2122 review point 6)
+        os.environ["JE_TEST_ALARM_LOG"] = alarmlog
+        res = []
+        for arm in ("A", "B"):
+            for f in os.listdir(killdir):
+                os.unlink(os.path.join(killdir, f))   # clear the markers so each arm kills its OWN first planner and closer call
+            res.append(self.je.run_arm_inprocess(dest, arm, None, run_root, None, self.fake, now=T0 + 10**6, builds=1))
+        for r in res:
+            self.assertEqual(r["failures"], 0, "the first-call kills recovered on re-sample: no failure (%r)" % r.get("failuresByKind"))
+            self.assertEqual((r["retry"]["firstAttemptKills"], r["retry"]["retryAttempts"], r["retry"]["recoveredCalls"]), (2, 3, 2),
+                             "planner killed twice + closer once, each recovered: fak/retry/rec = 2/3/2 (%r)" % r["retry"])
+            self.assertEqual(r["retry"]["killedCalls"], 3, "three genuine kills (2 planner + 1 closer), the wrapper's direct tally: %r" % r["retry"])
+            self.assertEqual(r["failuresByKind"], {}, "nothing failed every attempt")
+            # the per-ending retry record: exactly one ending (the arm's first) carries the whole delta, and the endings sum to the arm total (PR 2122 review point 4)
+            per = [e.get("retry") or {} for e in r["endings"].values()]
+            self.assertEqual(sum(p.get("firstAttemptKills", 0) for p in per), 2, "the per-ending retry records sum to the arm's kills: %r" % per)
+            self.assertEqual(sum(p.get("retryAttempts", 0) for p in per), 3, "the per-ending re-samples sum to the arm total")
+        Path(run_root, "arms.json").write_text(json.dumps({"arms": ["A", "B"]}))
+        rows = self.je.report(dest, run_root, str(self.state))
+        self.assertTrue(all(x["comparable"] for x in rows), "both arms recovered and read comparable")
+        # the three retry columns are asserted against counters that DIFFER (2/3/2), so a transposed or repeated print reds (PR 2122 review point 6)
+        table = (Path(run_root) / "table.md").read_text()
+        row = [l for l in table.splitlines() if l.startswith("| A |")][0]
+        cells = [c.strip() for c in row.strip("|").split("|")]
+        self.assertEqual((cells[-4], cells[-3], cells[-2]), ("2", "3", "2"), "the table prints first-attempt kills / re-samples / recovered = 2/3/2 for the arm: %r" % row)
+        self.assertEqual(cells[-1], "0", "the failures cell reads 0 (comparable after recovery): %r" % row)
+        for c in caps:
+            self.assertEqual(c["jd"]._judge_run_impl.__name__, "_judge_run_impl", "the retry wrapper (_retrying) is restored to the module's original _judge_run_impl after the arm")
+            self.assertEqual(c["jd"].CALL_ALARM_S, c["alarm"], "the module alarm is restored to its pre-arm value (120s)")
+            self.assertEqual(c["alarm"], 120, "the module alarm before the arm is the production 120s")
+        observed = [int(l.split()[1]) for l in Path(alarmlog).read_text().splitlines() if l.strip()]
+        # Linux alarm() rounds the remaining seconds, so a fake reached >0.5s after perl's alarm reads 239: assert each value is
+        # in (120, 240], which still reds without the alarm raise (that would read 120), without flaking on a loaded runner (PR 2122 review point 1)
+        self.assertTrue(observed and all(120 < v <= 240 for v in observed), "each killed call ran under the arm's HARNESS_ALARM_S (>120, <=240); the alarm-raise mutant reads 120: %r" % observed)
+
+    def test_the_budget_stop_counts_killed_attempts_from_a_floor_when_no_row_landed(self):
+        """PR 2122 review medium 3: a killed attempt writes no usage row, so with the ledger EMPTY the mean-cost estimate is 0
+        and the stop would never fire. The floor prices a killed attempt when no row landed, so a kill-heavy arm with an empty
+        ledger still stops at the 1.2x bound. Killing every arm call leaves the ledger empty, yet the arm stops."""
+        dest, m = self._corpus(name="killbudget")
+        self._restore_arm_env(("JE_TEST_KILL_ALL",))
+        os.environ["JE_TEST_KILL_ALL"] = "1"
+        res = self.je.run_arm_inprocess(dest, "A", None, os.path.join(self.td, "r-killbudget"), 0.05, self.fake, now=T0 + 10**6, builds=1)
+        self.assertEqual(res.get("calls"), 0, "every arm call was killed: no usage row landed, so the mean cost is undefined")
+        self.assertIsNotNone(res.get("stopped"), "the arm STOPS on the killed-attempt floor estimate though the ledger is empty")
+        self.assertGreater(res["stopped"].get("killedAttempts", 0), 0, "the stop names the killed attempts it counted at the floor")
+
+    @unittest.skipIf(os.geteuid() == 0, "chmod-based unreadable/unwritable path does not stop root, so the assertRaises would fail")
+    def test_tag_surfaces_a_read_failure_and_never_overwrites_the_ledger(self):
+        """PR 2122 review low a: _tag's read path must SURFACE a read failure, never swallow it to an empty list and then write
+        that over the ledger, destroying rows. With the errors file unreadable when the recovery tag reads it, the tag raises
+        and the ledger's rows are preserved (pre-fix: the read swallowed, the ledger truncated to 0, the call returned ok)."""
+        ep = Path(self.td) / "tagfail.jsonl"
+        ep.write_text(json.dumps({"judge": "planner", "err": "x", "note": "one"}) + "\n"
+                      + json.dumps({"judge": "planner", "err": "x", "note": "two"}) + "\n")
+        ctx = types.SimpleNamespace(paused=False, last_call_fail=None)
+        jd = types.SimpleNamespace(_judge_ctx=ctx)
+        calls = {"n": 0}
+        def impl(*a, **k):
+            n = calls["n"]; calls["n"] += 1
+            if n == 0:
+                with ep.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps({"judge": "planner", "err": "call", "note": "kill"}) + "\n")   # a kill: a row written, the range captured
+                ctx.last_call_fail = {"note": "kill"}; return ""
+            os.chmod(ep, 0)                                       # the recovery tag will now READ this file and fail
+            ctx.last_call_fail = None; return "ok"
+        jd._judge_run_impl = impl
+        self.je.install_call_retry(jd, ep, {}, attempts=3)
+        try:
+            with self.assertRaises(OSError):
+                jd._judge_run_impl(judge="planner")              # the recovery tag reads the unreadable ledger and SURFACES the failure
+        finally:
+            os.chmod(ep, 0o644)
+        self.assertEqual(len(ep.read_text().splitlines()), 3, "the ledger's rows are preserved, never overwritten with an empty list on a failed read")
+
+    @unittest.skipIf(os.geteuid() == 0, "chmod-based unreadable/unwritable path does not stop root, so the assertRaises would fail")
+    def test_tag_surfaces_a_write_failure_and_leaves_the_ledger_intact(self):
+        """PR 2122 review point 5: _tag's WRITE half. An unwritable directory makes the temp write fail; _tag surfaces it
+        (raises) rather than swallowing it, and never truncates the ledger with an in-place rewrite. A swallowed or in-place
+        write reds this."""
+        d = Path(self.td) / "tagwrite"; d.mkdir()
+        ep = d / "e.jsonl"
+        ep.write_text(json.dumps({"judge": "planner", "err": "x", "note": "one"}) + "\n")
+        ctx = types.SimpleNamespace(paused=False, last_call_fail=None)
+        jd = types.SimpleNamespace(_judge_ctx=ctx)
+        calls = {"n": 0}
+        def impl(*a, **k):
+            n = calls["n"]; calls["n"] += 1
+            if n == 0:
+                with ep.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps({"judge": "planner", "err": "call", "note": "kill"}) + "\n")
+                ctx.last_call_fail = {"note": "kill"}; return ""
+            os.chmod(d, 0o555)                                   # the recovery tag's temp WRITE into this dir will now fail
+            ctx.last_call_fail = None; return "ok"
+        jd._judge_run_impl = impl
+        self.je.install_call_retry(jd, ep, {}, attempts=3)
+        try:
+            with self.assertRaises(OSError):
+                jd._judge_run_impl(judge="planner")
+        finally:
+            os.chmod(d, 0o755)
+        self.assertEqual(len(ep.read_text().splitlines()), 2, "the ledger is intact (the kill row + the original), never truncated by a failed write")
+
+    def test_an_opener_less_minted_top_is_scored_by_the_boundary_at_the_call_site(self):
+        """PR 2122 review point 2: pin the SCORED rule at its CALL SITE, not only top_scored's unit test. For an opener-less
+        ending (startT None) whose own turn mints a top the arm files no verdict on, that top reads scored by the seedStart
+        boundary the call site passes; passing the turn start (None) there would drop it. Kill nothing; mint every planner call
+        and no-op the closer, so the only scored tops are the own-turn mints scored purely by the boundary."""
+        self._judge_written_stores()
+        dest, m = self._corpus(name="openerscore")
+        mp = Path(dest, "manifest.json"); mm = json.loads(mp.read_text())
+        for e in mm["endings"]:
+            e["startT"] = None                                   # read them as opener-less continuations; seedStart keeps the value build_corpus recorded (in this 2-turn fixture the turn's own start, e.g. T0+600, not the previous turn's end)
+        mp.write_text(json.dumps(mm))
+        self._restore_arm_env(("JE_TEST_PLANNER_MINT", "JE_TEST_CLOSER_NOOP"))
+        os.environ["JE_TEST_PLANNER_MINT"] = "1"; os.environ["JE_TEST_CLOSER_NOOP"] = "1"
+        res = self.je.run_arm_inprocess(dest, "current", None, os.path.join(self.td, "r-openerscore"), None, self.fake, now=T0 + 10**6, builds=1)
+        scored = [(eid, sfx) for eid, e in res["endings"].items() for b in e["builds"] for sfx, v in b.items() if v.get("scored")]
+        self.assertTrue(scored, "an opener-less ending's minted-no-verdict top scores by the seedStart boundary at the call site (the None-boundary revert reds this): %r"
+                        % {eid: e["builds"] for eid, e in res["endings"].items()})
+
+    def test_the_killed_count_ignores_a_served_empty_reply_after_a_kill(self):
+        """PR 2122 review medium 2: the budget's killed count is the wrapper's DIRECT tally, not firstAttemptKills +
+        retryAttempts - recoveredCalls. A kill followed by a served-EMPTY reply (not a kill, not a recovery) is ONE kill; the
+        old formula reads two. An arm-level run with that scenario and a tiny budget stops with killedAttempts == 1."""
+        dest, m = self._corpus(name="killempty")
+        kdir = os.path.join(self.td, "kte"); os.makedirs(kdir)
+        self._restore_arm_env(("JE_TEST_KILL_PLANNER_THEN_EMPTY",))
+        os.environ["JE_TEST_KILL_PLANNER_THEN_EMPTY"] = kdir
+        res = self.je.run_arm_inprocess(dest, "A", None, os.path.join(self.td, "r-killempty"), 0.001, self.fake, now=T0 + 10**6, builds=1)
+        st = res.get("stopped")
+        self.assertIsNotNone(st, "the tiny budget stops the arm after the first ending")
+        self.assertEqual(st["killedAttempts"], 1, "one real kill: a served-empty reply after the kill is NOT a second kill (the old fak+retry-rec formula reads 2)")
+
+    def test_the_budget_stop_prices_kills_at_the_mean_when_rows_landed(self):
+        """PR 2122 review point 3: the budget stop's MEAN-COST branch (rows landed) is pinned, not only the floor. A kill-first
+        run with landed rows adds the killed attempts at the mean call cost, so the stop's estimate EXCEEDS the ledger cost;
+        pricing kills at zero when a row landed would leave estCost == cost, which this reds."""
+        dest, m = self._corpus(name="killmean")
+        killdir = os.path.join(self.td, "killdir-mean"); os.makedirs(killdir)
+        self._restore_arm_env(("JE_TEST_KILL_FIRST", "JE_TEST_KILL_FIRST_PLANNER"))
+        os.environ["JE_TEST_KILL_FIRST"] = killdir
+        os.environ["JE_TEST_KILL_FIRST_PLANNER"] = "2"           # 3 kills over the first ending (planner x2 + closer x1), all recovered, with landed rows
+        res = self.je.run_arm_inprocess(dest, "A", None, os.path.join(self.td, "r-killmean"), 0.001, self.fake, now=T0 + 10**6, builds=1)
+        st = res.get("stopped")
+        self.assertIsNotNone(st, "the tiny budget stops the arm after the first ending")
+        self.assertGreater(res.get("calls") or 0, 0, "rows landed (the recovered calls), so the mean-cost branch is exercised, not the floor")
+        self.assertGreater(st["killedAttempts"], 0, "killed attempts were counted at the stop")
+        self.assertEqual(st["estCost"], round(st["cost"] + st["killedAttempts"] * res["cost"] / res["calls"], 4),
+                         "the estimate prices each killed attempt at the MEAN landed call cost (cost/calls), not the floor and not zero: %r" % st)
+
+    def test_a_partial_run_report_names_the_candidate_count_it_would_excuse(self):
+        """PR 2122 review point 9: on a PARTIAL run the corpus-unplanned line prints the candidate set (what WOULD be excused
+        once complete), not a false 0. Two expected arms, one present: the line names the 1 ending unplanned in every present
+        arm and that 1 would be a candidate once complete."""
+        dest, m = self._corpus(name="partialline")
+        e0 = m["endings"][0]["id"]
+        run_root = os.path.join(self.td, "runs-partialline"); os.makedirs(run_root)
+        Path(run_root, "arms.json").write_text(json.dumps({"arms": ["A", "B"]}))   # two expected; only A present -> incomplete
+        os.makedirs(os.path.join(run_root, "A"))
+        Path(run_root, "A", "results.json").write_text(json.dumps(
+            {"arm": "A", "failures": 0, "buildsPerCard": 3, "finished": True, "callsByJudge": {"planner": 5, "closer": 5},
+             "endingsUnplanned": [e0], "endings": {x["id"]: {"class": x["class"], "builds": [{}] * 3} for x in m["endings"]}}))
+        self.je.report(dest, run_root, str(self.state))
+        line = [l for l in (Path(run_root) / "table.md").read_text().splitlines() if l.startswith("corpus-unplanned")][0]
+        self.assertIn("1 ending(s) planned nothing in EVERY present arm", line, "the partial line names the candidate count, not a false 0: %r" % line)
+        self.assertIn("1 would be candidates", line)
+
+    def test_a_crashed_ending_is_evicted_from_the_event_model_caches(self):
+        """Verifier low (a): the crash-path eviction (the finally around the build) drops a crashed ending's document from both
+        caches, not only a successful one. A planner that raises for one ending still leaves the arm's caches flat; moving the
+        evict out of the finally would leave the crashed ending's entries cached."""
+        self._judge_written_stores()
+        dest, m = self._corpus(name="crashevict")
+        target = [x for x in m["endings"] if x.get("startT") is not None][0]["id"]
+        caps = {}
+        orig = self.je.load_judge
+        def patched(*a, **k):
+            jd = orig(*a, **k)
+            real = jd._plan_session
+            def boom(fsid, *aa, **kk):
+                if fsid == target:
+                    raise RuntimeError("boom in planner")
+                return real(fsid, *aa, **kk)
+            jd._plan_session = boom
+            caps["jd"] = jd
+            return jd
+        self.je.load_judge = patched
+        self.addCleanup(lambda: setattr(self.je, "load_judge", orig))
+        self._restore_arm_env()
+        res = self.je.run_arm_inprocess(dest, "current", None, os.path.join(self.td, "r-crashevict"), None, self.fake, now=T0 + 10**6)
+        self.assertIn(target, res.get("endingsCrashed") or [], "the fixture crashed one ending")
+        em = caps["jd"].em
+        # every ending, the CRASHED one included, is evicted in the finally, so both caches are EMPTY after the run; an evict on
+        # the success path only would leave the crashed ending's document cached (== 1), which this pins out
+        self.assertEqual((len(em._ASM_CACHE), len(em._JSONL_CACHE)), (0, 0), "the crashed ending is evicted too (the finally): both caches empty, not %d/%d" % (len(em._ASM_CACHE), len(em._JSONL_CACHE)))
+
+    def test_a_budget_stopped_arm_is_not_finished(self):
+        """Verifier low (d): finished is set only when the loop ran EVERY manifest ending; a budget stop leaves the run partial,
+        so the report does not read it complete and excuses nothing."""
+        dest, m = self._corpus(name="budgetstop")
+        self._restore_arm_env()
+        res = self.je.run_arm_inprocess(dest, "A", None, os.path.join(self.td, "r-budget"), 0.001, self.fake, now=T0 + 10**6)   # a tiny budget: stops after the first ending
+        self.assertIsNotNone(res.get("stopped"), "the tiny budget stopped the arm")
+        self.assertFalse(res.get("finished"), "a budget-stopped arm is NOT finished (it did not run every ending)")
+
+    def test_the_prompt_hashes_and_judge_commit_are_stamped(self):
+        """Queued stamp (PR 2092): results record the sha256 of each prompt key's EFFECTIVE text after apply_prompts and the
+        harness commit, so a results file identifies which text ran where the prompt KEYS alone could not; a candidate's swapped
+        key hashes differently from the baseline's shipped text."""
+        dest, m = self._corpus(name="phash")
+        self._restore_arm_env()
+        base = self.je.run_arm_inprocess(dest, "baseline", None, os.path.join(self.td, "r-pb"), None, self.fake, now=T0 + 10**6)
+        self.assertEqual(set(base["promptHashes"]), {"PLAN_SYS", "CLOSER_SYS", "UNBLOCK_SYS"}, "every prompt key's effective text is hashed")
+        self.assertIn("judgePyCommit", base, "the harness/judge.py commit is recorded (a sha or None off a checkout)")
+        cand_f = os.path.join(self.td, "cand.json"); Path(cand_f).write_text(json.dumps({"CLOSER_SYS": "CANDIDATE-MARK a different closer prompt"}))
+        cand = self.je.run_arm_inprocess(dest, "candidate", cand_f, os.path.join(self.td, "r-pc"), None, self.fake, now=T0 + 10**6)
+        self.assertNotEqual(cand["promptHashes"]["CLOSER_SYS"], base["promptHashes"]["CLOSER_SYS"], "the swapped candidate text hashes differently from the shipped closer")
+        self.assertEqual(cand["promptHashes"]["PLAN_SYS"], base["promptHashes"]["PLAN_SYS"], "a key the candidate did not swap keeps the shipped hash")
+
+    def test_the_report_parse_restores_the_process_environment(self):
+        """Verifier low (c) + PR 2122 review: the report-time parse loads a judge against a scratch state root (load_judge sets
+        XDG_STATE_HOME, CLAUDE_CONFIG_DIR, ROMP_CLAUDE_BIN, pops ROMP_STATE_DIR, DEFAULTS ROMP_POSTAL_CLIENT_ONLY, grows sys.path
+        and loads the judge module against the scratch root), then removes the scratch dir; it must restore ALL of that so an
+        in-process caller (the tests) is left with nothing pointed at the deleted root."""
+        dest, m = self._corpus(name="envrestore")
+        import sys as _sys
+        keys = ("XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "ROMP_CLAUDE_BIN", "ROMP_STATE_DIR", "ROMP_POSTAL_CLIENT_ONLY")
+        self._restore_arm_env(("ROMP_POSTAL_CLIENT_ONLY",))
+        for k in keys:
+            os.environ.pop(k, None)                              # start with all UNSET so a leftover set-value is visible
+        for name in ("romp_judge_experiment_arm", "romp_logins", "secrets", "concurrent.futures"):
+            _sys.modules.pop(name, None)                         # load/pull these FRESH so they enter the difference set: the repo modules to pop, the stdlib pair (secrets, concurrent.futures) to LEAVE
+        before_env = {k: os.environ.get(k) for k in keys}
+        before_path = list(_sys.path); before_mods = set(_sys.modules)
+        self.je.plannable_units_from_corpus(dest, m, [e["id"] for e in m["endings"][:2]])
+        self.assertEqual({k: os.environ.get(k) for k in keys}, before_env, "the parse restores every env var it set or defaulted (ROMP_POSTAL_CLIENT_ONLY included), leaving nothing pointed at the deleted scratch root")
+        self.assertEqual(_sys.path, before_path, "the parse restores sys.path (load_judge inserts ROOT/tests)")
+        # only the REPOSITORY's own modules the parse loaded are popped; never a stdlib module (whose identity a pop breaks)
+        root = os.path.abspath(str(self.je.ROOT)) + os.sep
+        left_repo = {k for k in set(_sys.modules) - before_mods
+                     if (getattr(_sys.modules.get(k), "__file__", None) or "") and os.path.abspath(_sys.modules[k].__file__).startswith(root)}
+        self.assertEqual(left_repo, set(), "every repository module the parse loaded is popped: %r" % left_repo)
+        self.assertNotIn("romp_judge_experiment_arm", _sys.modules, "the arm judge module loaded against the scratch root is popped")
+        for std in ("secrets", "concurrent.futures"):           # freshly pulled by the parse (popped above), so they ARE in the difference set: a broad pop removes them and reds this
+            self.assertIn(std, _sys.modules, "a stdlib module the parse pulled in is NOT popped: %s (a broad pop would remove it, breaking its identity for later code)" % std)
+        # a caller that HELD set values must get them BACK, not popped: four keys to sentinels, ROMP_POSTAL_CLIENT_ONLY unset (PR 2134 review pin 2)
+        sentinels = {"XDG_STATE_HOME": "/sentinel/state", "CLAUDE_CONFIG_DIR": "/sentinel/claude", "ROMP_CLAUDE_BIN": "/sentinel/bin", "ROMP_STATE_DIR": "/sentinel/rompstate"}
+        for k, v in sentinels.items():
+            os.environ[k] = v
+        os.environ.pop("ROMP_POSTAL_CLIENT_ONLY", None)
+        self.je.plannable_units_from_corpus(dest, m, [e["id"] for e in m["endings"][:2]])
+        self.assertEqual({k: os.environ.get(k) for k in sentinels}, sentinels, "a caller's SET env values are restored, not popped (a pop-every-key restore reds this)")
+        self.assertIsNone(os.environ.get("ROMP_POSTAL_CLIENT_ONLY"), "an unset key stays unset")
+
+    def test_the_report_parse_does_not_disturb_a_caller_held_judge_module(self):
+        """PR 2134 review pin 3: a caller (run_arm_inprocess) already holds the judge module in sys.modules, bound to its own
+        state root. The parse must not RE-EXECUTE that module in place against the scratch root: after the parse the caller's
+        judge module is the SAME object with its state-root bindings (ERRORS) unchanged, not pointing into the deleted dir."""
+        import sys as _sys
+        dest, m = self._corpus(name="holdjudge")
+        self._restore_arm_env()
+        self.je.run_arm_inprocess(dest, "A", None, os.path.join(self.td, "r-hold"), None, self.fake, now=T0 + 10**6, builds=1)
+        held = _sys.modules.get("romp_judge_experiment_arm")
+        self.assertIsNotNone(held, "run_arm_inprocess leaves its judge module in sys.modules (the caller holds it)")
+        errors_before = held.ERRORS
+        self.je.plannable_units_from_corpus(dest, m, [e["id"] for e in m["endings"][:2]])
+        self.assertIs(_sys.modules.get("romp_judge_experiment_arm"), held, "the caller's judge module is the SAME object after the parse")
+        self.assertEqual(held.ERRORS, errors_before, "its state root is unchanged: the parse did not re-execute it in place against the (now deleted) scratch root")
+
+    def test_the_failures_cell_names_the_unnamed_remainder_and_the_columns_read_not_recorded(self):
+        """PR 2092/2099 lows: the failures cell names the remainder when the kinds sum to less than the count ('N unnamed', the
+        closer's cap road files a failure without a row), a no-per-judge-record run prints 'not recorded' for the measured-calls
+        column, and an absent retry tally prints 'not recorded' (never a false 0), while a recorded zero stays 0."""
+        dest, m = self._corpus(name="cells")
+        run_root = os.path.join(self.td, "runs-cells"); os.makedirs(run_root)
+        eids = {x["id"]: {"class": x["class"], "builds": [{}] * 3} for x in m["endings"]}
+        # an old/withdrawn record: no callsByJudge and no retry; two failures, one named by kind, one rowless (the closer's cap road)
+        Path(run_root, "old").mkdir()
+        Path(run_root, "old", "results.json").write_text(json.dumps(
+            {"arm": "old", "failures": 2, "buildsPerCard": 3, "failuresByKind": {"parse": 1}, "endings": eids}))
+        self.je.report(dest, run_root, str(self.state))
+        table = (Path(run_root) / "table.md").read_text()
+        self.assertIn("parse 1", table); self.assertIn("1 unnamed", table)   # the rowless remainder is named, the count no longer dropped
+        self.assertIn("not comparable", table)
+        row = [l for l in table.splitlines() if l.startswith("| old |")][0]
+        self.assertIn("| not recorded |", row, "no per-judge record prints 'not recorded' for the measured-calls column, not 0/0/0/0")
+        self.assertEqual(row.count("not recorded"), 4, "measured-calls plus the three retry columns all read 'not recorded' for this record: %r" % row)
     def test_a_plainly_cleared_completed_top_is_no_leak_and_a_reopened_needs_input_is_no_false_interrupt(self):
         """The plan's negatives (round three): a completed top the user plainly cleared (no re-open) is NOT a leak; a
         needs_input top the user re-opened, even if later cleared, is NOT a false interrupt (the re-open short-circuits)."""
@@ -1431,6 +2297,8 @@ class Harness(unittest.TestCase):
         (self.state / "names" / sid).write_text("boom\t%s\t#abcdef\n" % self.cwd)
         real = self.je._event_model()
         class _Boom:
+            def __getattr__(self, n):
+                return getattr(real, n)            # delegate everything else (evict_document, etc.) to the real event model
             def parse_session(self, path, **k):
                 if sid in str(path):
                     raise ValueError("a transcript the fold cannot read")
@@ -1609,6 +2477,8 @@ class Harness(unittest.TestCase):
         class _Boom:
             def parse_session(self, *a, **k):
                 raise ValueError("synthetic parse boom")
+            def evict_document(self, *a):
+                pass
         saved = self.je._EM[0]
         self.je._EM[0] = _Boom()
         try:
@@ -2257,7 +3127,7 @@ class Harness(unittest.TestCase):
         e = self._ending(m, SIDS[0], 0)
         manifest = {"endings": [e]}
         results = {"arm": "baseline", "failures": 0, "nonArmFailures": 2, "buildsPerCard": 3,
-                   "endings": {e["id"]: {"builds": [{}] * 3}}}
+                   "callsByJudge": {"planner": 3, "closer": 3}, "endings": {e["id"]: {"builds": [{}] * 3}}}
         mm = self.je.measure(manifest, results, self.state)
         self.assertEqual((mm["failures"], mm.get("nonArmFailures"), mm["comparable"]), (0, 2, True),
                          "the excluded failures ride the record beside the comparable count: %r" % mm)

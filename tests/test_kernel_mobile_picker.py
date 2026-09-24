@@ -51,7 +51,7 @@ class MobilePickerClickSafe(unittest.TestCase):
     def test_the_list_mirrors_the_strips_children_headings_and_the_trails_divider_included(self):
         """The phone listed the sessions in another order than the desktop strip once the tabs were grouped
         by tag (the user 2026-09-16): the plan flattened on the phone and the picker scraped that flat strip.
-        Now the plan sections there too (tab-groups.ts planStrip; nothing folds on the phone) and the picker
+        Now the plan sections there too (tab-groups.ts planStrip; since 2026-09-23 it folds there too) and the picker
         walks the strip's children in order — a heading per group header, a row per tab copy, a divider where
         the untagged trail begins — keyed the strip's way. tests/test_mobile_picker_order_browser.py executes
         it in a real browser against the desktop strip."""
@@ -62,11 +62,56 @@ class MobilePickerClickSafe(unittest.TestCase):
         self.assertIn("if(t.classList.contains('tab-group-sep')){out.push({key:'sep'});return;}", js, "a divider where the trail begins")
         self.assertIn("key:'t:'+id+'/'+(copy===null?'':copy)", js, "a row per COPY: a session under two tags is a row under each")
         self.assertIn("row.appendChild(s.chip.cloneNode(true))", js, "the header's own chip, cloned: one tag treatment")
-        self.assertNotIn("tab-group-caret", js, "no caret: the phone folds nothing, and a chevron would promise a fold")
         self.assertIn("if(!ts[i].id)continue;", js, "the current chip falls back to the first SESSION row, never a heading")
         self.assertIn(".mhead{", css)
         self.assertIn(".msep{", css)
         self.assertNotIn("list.querySelector(", js, "rows are found by key through a map, never a selector (a tag name needs no escaping)")
+
+    def test_a_heading_is_the_fold_control_through_the_strips_own_header(self):
+        """The user asked to fold groups on the phone too, the folds shared with the desktop (2026-09-23). That supersedes
+        the picker's earlier rule that a heading is a label and nothing folds (#1770, whose reason was that the list is the
+        phone's only switcher); the reach is kept by making the heading the control, one tap from the members. The tap
+        clicks the strip's own hidden header, the ONE fold path (render.ts toggle-group, which reads the state that header
+        rendered), found by walking the strip rather than a selector, and acknowledges at once; the list stays open.
+        tests/test_shared_folds_browser.py executes it in a real browser across two devices."""
+        js, css = km._CHAT_MOBILE_JS, km._CHAT_MOBILE_CSS
+        click = js[js.index("list.addEventListener('click',function(e){"):js.index("list.addEventListener('pointerdown'")]
+        self.assertIn("var hd=e.target&&e.target.closest?e.target.closest('.mhead'):null;", click)
+        self.assertIn("if(hd){e.stopPropagation();acted(hd);var rh=realHead(hd.getAttribute('data-group'));if(rh){forwarding=true;try{rh.click();}finally{forwarding=false;}}return;}", click,
+                      "the strip's header clicked, the tap acknowledged, and propagation stopped: the sync the fold triggers rebuilds "
+                      "the heading's contents, and the outside-click check would find the tapped node detached and close the list")
+        self.assertIn("document.addEventListener('click',function(e){if(forwarding)return;", js,
+                      "…nor may the forwarded click, which bubbles from the hidden strip, outside the list (a real browser caught it)")
+        self.assertLess(click.index("'.mhead'"), click.index("'.mrow'"), "the heading is answered before the row lookup")
+        self.assertIn("function realHead(g){var hs=tabs.children;", js, "the real header found by walking the strip")
+        self.assertNotIn("tabs.querySelector('.tab-group-head", js, "never a selector built from a tag name")
+        self.assertIn("el.addEventListener('animationend',function f(){el.classList.remove('romp-acted');", js,
+                      "the shared press pulse, cleared on its own end: no timer")
+        self.assertIn("if(hd&&(e.key==='Enter'||e.key===' ')){e.preventDefault();hd.click();}", js, "a button to the keyboard too")
+        # the heading reads as the desktop header does: chip, caret, count, and folded, the member-state pip
+        head = js[js.index("function headUpdate(row,s){"):js.index("function headMake(s){")]
+        self.assertLess(head.index("s.chip.cloneNode(true)"), head.index("cv.className='mcaret'"))
+        self.assertLess(head.index("cv.className='mcaret'"), head.index("c.className='mcount'"))
+        self.assertIn("if(s.folded&&s.pip)row.appendChild(s.pip.cloneNode(true));", head, "a fold hides no needs-you here either")
+        self.assertIn("row.setAttribute('aria-expanded',s.folded?'false':'true')", head)
+        self.assertIn("if(s.holds)row.setAttribute('aria-current','true');else row.removeAttribute('aria-current');", head,
+                      "the heading holding the active session is marked current, as the desktop header is")
+        self.assertIn("folded:t.getAttribute('data-folded')==='1'", js, "the fold state the strip's header rendered")
+        self.assertIn(".mhead:not(.folded) .mcaret{transform:rotate(90deg)}", css, "the caret turns down while open")
+        self.assertIn("min-height:40px", css[css.index(".mhead{"):css.index(".mhead .mcount")], "a tap target a finger lands on")
+        self.assertIn("cursor:pointer", css[css.index(".mhead{"):css.index(".mhead .mcount")])
+
+    def test_the_current_session_chip_still_names_a_session_folded_away(self):
+        """The active session's group folds like any other (the desktop's rule), so its tab leaves the strip; render.ts
+        paints it once more as a hidden `.tab-away` node (tab-groups.ts phoneStandIns) that the current-session chip
+        mirrors, and the list never lists it (its group shows the heading alone). Without it the chip fell back to the
+        first session in the list: the user must never lose sight of the session they are in."""
+        js, css = km._CHAT_MOBILE_JS, km._CHAT_MOBILE_CSS
+        self.assertIn("away:t.classList.contains('tab-away')", js)
+        self.assertIn("var rows=ts.filter(function(s){return !s.away;});", js, "never a row")
+        self.assertIn("rows.forEach(function(s,i){var row=have[s.key];", js, "the list is built from the rows alone")
+        self.assertIn("if(ts[i].active){act=ts[i];break;}", js, "the chip reads the active tab, the away node included")
+        self.assertIn("#tabs .tab.tab-away{display:none}", css, "never displayed, whatever the layout")
 
     def test_one_delegated_listener_on_the_stable_list(self):
         self.assertIn("list.addEventListener('click',function(e){", km._CHAT_MOBILE_JS)

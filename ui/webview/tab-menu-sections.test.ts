@@ -7,7 +7,9 @@
 //      system know about; the column item left with the drag, 2026-09-11: a tab is placed by dragging it)
 //   3. What reaches you: the feed, mail and bell switches; Billing (how the session takes part in the
 //      dashboard's surfaces, and who pays)
-//   4. Files: Browse files (a different kind of thing: it opens another surface; web only, alone, last)
+//   4. The session's process: Restart session (2026-09-23) — the one row that acts on the running program
+//      rather than on how the session shows, where it belongs or what reaches you
+//   5. Files: Browse files (a different kind of thing: it opens another surface; web only, alone, last)
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -26,6 +28,7 @@ const MARKERS: Record<string, string> = {
   mail: 'toggle("mail"',
   bell: 'toggle("bell"',
   Billing: 'l.textContent = "Billing"',
+  Restart: "addRestartRow(menu, id, {",
   Browse: 'label: "Browse files"',
 };
 
@@ -46,8 +49,8 @@ function membersOf(part: string): string[] {
     .map((x) => x.name);
 }
 
-test("exactly three dividers cut the menu into four sections", () => {
-  assert.equal(sections().length, 4, "three `ctx-sep` appends to the menu, no more, no fewer");
+test("exactly four dividers cut the menu into five sections", () => {
+  assert.equal(sections().length, 5, "four `ctx-sep` appends to the menu, no more, no fewer");
 });
 
 test("section 1, how it shows: Rename, then the colour swatches", () => {
@@ -62,8 +65,12 @@ test("section 3, what reaches you: the feed, mail and bell switches, then Billin
   assert.deepEqual(membersOf(sections()[2]), ["feed", "mail", "bell", "Billing"]);
 });
 
-test("section 4, files: Browse files alone, last, behind its own divider (web only)", () => {
-  const last = sections()[3];
+test("section 4, the session's process: Restart session alone (the user 2026-09-23)", () => {
+  assert.deepEqual(membersOf(sections()[3]), ["Restart"]);
+});
+
+test("section 5, files: Browse files alone, last, behind its own divider (web only)", () => {
+  const last = sections()[4];
   assert.deepEqual(membersOf(last), ["Browse"]);
   // the divider rides inside the web-only gate with the item, so a VS Code menu ends on Billing without a trailing rule
   const gate = RENDER.lastIndexOf('if (location.protocol === "http:" || location.protocol === "https:") {', RENDER.indexOf(MARKERS.Browse));

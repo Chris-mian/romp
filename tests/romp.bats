@@ -2401,6 +2401,60 @@ PY
     [ "$_applied_line" = "romp new: applied model claude-fable-5" ]
 }
 
+@test "new --model: a kernel that REFUSES the model names the model, not effort, and does not report --model as dropped" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    touch "$MOCK_LOG"
+    mkdir -p "$XDG_STATE_HOME/romp"
+    printf 'tok-test' > "$XDG_STATE_HOME/romp/serve-token"
+    # fake kernel whose model pick was refused (a gateway model the extra-models switch no longer offers): the echo
+    # carries `refused` and NO `model` key, while the effort it took is echoed. Before, the CLI knew only the effort
+    # refusal: it printed "effort  refused" for a refused model and then reported --model as dropped by an older kernel.
+    python3 - "$TEST_DIR/port" "$TEST_DIR/req.log" <<'PY' &
+import sys, json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+portfile, log = sys.argv[1], sys.argv[2]
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        with open(log, "w") as f:
+            json.dump({"path": self.path, "body": body}, f)
+        out = json.dumps({"ok": True, "id": "11111111-2222-3333-4444-555555555555",
+                          "effort": body.get("effort"),
+                          "refused": "Couldn't switch to 'gw-6-astra': it isn't a model this kernel offers right now."}).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out))); self.end_headers()
+        self.wfile.write(out)
+    def log_message(self, *a): pass
+class _Bound(HTTPServer):
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+srv = _Bound(("127.0.0.1", 0), H)
+with open(portfile, "w") as f:
+    f.write(str(srv.server_address[1]))
+srv.handle_request()
+PY
+    local srv=$!
+    until [ -s "$TEST_DIR/port" ]; do sleep 0.05; done
+    local _out _err _st=0
+    _out="$(ROMP_KERNEL_PORT="$(cat "$TEST_DIR/port")" "$ROMP_SCRIPT" new --model gw-6-astra --effort high opt 2>"$TEST_DIR/err")" || _st=$?
+    kill "$srv" 2>/dev/null || true
+    _err="$(cat "$TEST_DIR/err")"
+    [ "$_st" -eq 0 ]
+    [[ "$_out" == *"started \"opt\""* ]]
+    grep -q '"model": "gw-6-astra"' "$TEST_DIR/req.log"
+    # one stderr line names the refused MODEL and the kernel's reason; effort is not blamed
+    [ "$(grep -c 'refused' "$TEST_DIR/err")" -eq 1 ]
+    [[ "$_err" == *"romp new: model gw-6-astra refused: Couldn't switch to 'gw-6-astra'"* ]]
+    [[ "$_err" != *"effort high refused"* ]]
+    [[ "$_out" != *"refused"* ]]
+    # the kernel ANSWERED the model ask: no dropped-ask warning about --model, and the effort it took is reported
+    [[ "$_out$_err" != *"did not acknowledge"* ]]
+    [[ "$_out$_err" != *"older kernel"* ]]
+    [ "$(printf '%s\n' "$_out" | grep 'romp new: applied')" = "romp new: applied effort high" ]
+}
+
 @test "new --model + --env: a kernel that acks model but drops env warns about --env specifically" {
     command -v python3 >/dev/null 2>&1 || skip "python3 not available"
     touch "$MOCK_LOG"

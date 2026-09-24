@@ -10,7 +10,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const ui = (...p: string[]) => fs.readFileSync(path.resolve(process.cwd(), "..", "ui", ...p), "utf8");
-const FEED = ui("webview", "feed.ts");
+const FEED = ui("webview", "feed.ts") + ui("webview", "card-sections.ts");   // the badges and the swirl moved to card-sections.ts (round two of the box content PR: one builder for the card and the Needs you row)
 const RENDER = ui("webview", "render.ts");
 const CSS = ui("webview", "styles.css");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
@@ -19,7 +19,7 @@ test("the feed box's peer chips are the standard session chip — click opens th
   const box = FEED.slice(FEED.indexOf("const awPeers ="), FEED.indexOf("a._awaitSpin.title"));
   assert.match(box, /hostPartsNodes\(p\.host, p\.name\)/, "quiet host: prefix, the ↪ from treatment");
   assert.match(box, /nm\.style\.color = p\.color\.bg/, "identity colour");
-  assert.match(box, /postMessage\(\{ type: "openSession", id: p\.sid \}\)/, "the handoffTo click idiom");
+  assert.match(box, /nm\.dataset\.act = "sec-open-session"; nm\.dataset\.sid = p\.sid;/, "the handoffTo click idiom, delegated (card-sections.ts applySpin, sectionActs)");
   assert.match(box, /nm\.style\.cursor = "pointer"/);
 });
 

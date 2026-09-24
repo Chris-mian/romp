@@ -8,6 +8,7 @@
    engine takes woff2 first, so the .woff/.ttf fallback urls are deliberately left external
    and never fetched). */
 @import "katex/dist/katex.min.css";
+@import "./card-sections.css";   /* the card's sections, shared with the chat page's Needs you row (plans/needs-you.md) */
 
 /* A wide display formula scrolls inside its own box instead of stretching the bubble. */
 .katex-display { overflow-x: auto; overflow-y: hidden; }
@@ -486,6 +487,15 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
 .tab-group-head.snap-shown { color: var(--fg); background: var(--tab-active-bg); box-shadow: inset 0 0 0 1.5px var(--chip-bg, transparent); }
 .tab-group-head.dragging { opacity: 0.45; }
 .tab-group-head.drop-target { box-shadow: inset 2px 0 0 var(--accent); }
+/* DRAGGING A TAB INTO THIS GROUP (the user 2026-09-23): the group a release would put the session in
+   wears the accent — the inset ring the selected row wears (.snap-shown above), in var(--accent) rather
+   than the tag's own colour, over the faint accent wash every accent-lit control uses. A class over the
+   header's existing box: no border, no padding, no size of its own, so the strip cannot shift under the
+   drag. Distinct from .drop-target above, which is a HEADER drag's insertion cue (a left edge, not a
+   target box) — the two gestures are told apart by what is being dragged, so they never both show. The
+   other half of the gesture, a tab dragged OUT to the ungrouped row, has no header to ring and says
+   which tag comes off in the floating .tab-drag-cue line (with the tooltip family below). */
+.tab-group-head.join-target { color: var(--fg); background: var(--accent-wash); box-shadow: inset 0 0 0 1.5px var(--accent); }
 /* the disclosure chevron: ▸ folded, turned down while open — the fold-caret idiom (a CSS transition on
    the flip, no timer). Right after the chip with the count after it (T284), the feed's grouped headers'
    order; the header is content-sized, so the DOM order alone places them. */
@@ -503,7 +513,7 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
    meaning). Not the header's own status: the header wears no state class. */
 .tab-group-pip { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--st-working-bg); }
 .tab-group-pip.blocked { background: var(--st-blocked-bg); }
-.tab-group-pip.retrying { background: var(--st-retrying-bg); }
+.tab-group-pip.retrying { background: transparent; box-shadow: inset 0 0 0 1.5px var(--st-retrying-bg); }   /* HOLLOW amber ring (2026-09-24): the same shape cue as the tab dot and the overview pip, so retrying reads apart from the filled working gold header pip under a red-green deficiency (theme-parity.test.ts) */
 .tab-group-pip.ask { background: var(--st-needs-bg); }   /* the Needs you magenta: a hidden member has a card that needs you (plans/needs-you.md) */
 /* ONE GROUP PER LINE (T264, the user 2026-09-08: the grouped strip read as one long concatenation).
    A break is a zero-height flex item spanning the whole row, so the item after it — a group's header,
@@ -628,14 +638,20 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
 .tab-badge:not(:empty) { width: auto; min-width: 14px; height: 14px; border-radius: 7px; padding: 0 3px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; color: #000; font-weight: 700; font-size: 9px; line-height: 1; }
 /* the digit is 9px bold TEXT, so the 4.5:1 floor: black clears on the dark magenta (~6.07:1); on the lighter light-theme magenta (#a21caf) black is 3.32:1, short, so the state's own light-theme foreground (white) rides there (~6.32:1). The user chose black in dark; theme-parity.test.ts pins 4.5:1 in BOTH themes (plans/tab-state-badge.md). */
 body.theme-light .tab-badge:not(:empty) { color: var(--st-needs-fg); }
-/* WIDEN FOR A KEYCAP UNDER THE BADGE (the user 2026-09-23, who wanted the tab widened when the keycap shows): a tab
-   carrying BOTH the hot-key keycap (.tab-key, a right-end in-flow flex item) AND a non-empty count badge (the absolute
-   top-right corner above) would let the badge overpaint the run's right end. Reserve the badge's box at the right so the
-   whole in-flow run (the gauge, the keycap, the ✕) sits LEFT of it: 3px inset + the 14px min-width box + a 4px gap
-   (the tab's own gap) = 21px of right padding, over the tab's 7px. Fires ONLY with a keycap present, so a plain badge
-   tab is unchanged; the badge stays anchored to the padding box, so its corner does not move. Pinned by
-   test_tab_badge_browser.py (the keycap and the ✕ stay left of the badge box). */
-.tab:has(.tab-key):has(.tab-badge:not(:empty)) { padding-right: 21px; }
+/* WIDEN FOR A KEYCAP UNDER THE BADGE (the user 2026-09-23, who wanted the tab widened when the keycap shows; the
+   keycap-width fix 2026-09-24): a tab carrying the hot-key keycap (.tab-key, a right-end in-flow flex item) would let
+   the top-right count badge overpaint the run's right end. Reserve the badge's box at the right so the whole in-flow run
+   (the gauge, the keycap, the ✕) sits LEFT of it: 3px inset + the 14px min-width box + a 4px gap (the tab's own gap) =
+   21px of right padding, over the tab's 7px. The reserve is on the KEYCAP ALONE, NOT gated on a non-empty badge: it fires
+   under the strip-level .badge-keycap-room class, which the strip carries only in badge mode with the Needs-you widget on
+   (render.ts renderTabs, following applyTabBadgeMode's own gate). So a keycap tab's width changes ONLY on a user action
+   (assigning a hot key, switching the mode or the widget), NEVER as a Needs-you count appears or clears: a tab's width
+   must not change with its state (T262g), or the strip's row count flaps at a wrap boundary and the transcript slides
+   under the reader. Ring mode and the widget off carry NO reserved room, so the pre-badge strip stays the lab's reference.
+   The badge stays anchored to the padding box, so its corner does not move. Pinned by test_tab_badge_browser.py (the
+   keycap and the ✕ stay left of the badge box; a count flip on a keycap tab moves nothing; ring mode and the widget off
+   read the bare 7px). */
+#tabs.badge-keycap-room .tab:has(.tab-key) { padding-right: 21px; }
 /* the slot with no dot to show (idle, blocked, closed…): laid out, invisible — a tab's width must not change with its
    state, or the strip's row count flaps at a wrap boundary and the transcript slides under the reader (T262g, 2026-09-08) */
 .tab-dot.none { visibility: hidden; }
@@ -863,6 +879,11 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 .ctx-item-body { display: flex; flex-direction: column; line-height: 1.25; }
 .ctx-item-sub { font-size: 0.82em; opacity: 0.6; }
 .ctx-item-danger .ctx-item-label { color: var(--vscode-errorForeground, #f48771); }   /* a destructive row wears the confirm button's danger colour (the Sessions pane's Delete) */
+/* a row that ACTS IN PLACE while its post is in flight (the menus' Restart session, 2026-09-23: the label reads
+   "Restarting…" until the kernel answers, and the row takes no second click) wears the same dim-and-no-hover an
+   inert flyout choice does, so "not right now" looks the same wherever a menu says it */
+.ctx-item[aria-disabled="true"] { opacity: 0.45; cursor: default; }
+.ctx-item[aria-disabled="true"]:hover { background: transparent; color: inherit; }
 /* identity-color swatches (the user 2026-06-29): the romp palette as circles, the current one ringed. A grid
    so 9 colors wrap to a tidy block instead of one long row. */
 /* Billing submenu (the user 2026-08-09: the login/API-key switch lives here now, not the statusline).
@@ -939,6 +960,16 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
   box-shadow: var(--shadow-toast); font-size: 0.86em; line-height: 1.45;
   max-width: min(440px, 92vw);
 }
+/* THE TAB DRAG's leave cue (the user 2026-09-23; render.ts paintDragCue): while a group's tab hovers the
+   ungrouped row, the line under it names the tag the release would take off and the groups the session
+   STAYS in — a session that keeps another tag never appears in the trail, so the drop would otherwise
+   look like it did nothing. It wears the shared tooltip dress above (a floating annotation IS a tip, so
+   it cannot drift from the others) plus the bits a drag cue needs: the tags as their chips on one line,
+   never a pointer target (it must not eat the drag's own events), and position:fixed from .romp-tip, so
+   it takes no space and the strip cannot shift. Shown and hidden by the gesture alone — no timer, no
+   toast. The join half wears the accent ring on the target header instead (.tab-group-head.join-target). */
+.tab-drag-cue { display: none; align-items: center; gap: 5px; white-space: nowrap; pointer-events: none;
+  padding: 4px 8px; color: var(--dim); }
 .tab-close:hover { opacity: 1; background: rgba(255, 255, 255, 0.12); }
 .tab-add { color: var(--dim); font-size: 1.1em; padding: 6px 10px; border-radius: 6px; line-height: 18px; }
 /* the tag controls reserve the + tab's EXACT vertical box — 18px line + 12px padding + 1px border
@@ -1125,16 +1156,28 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 #notices { flex: 0 0 auto; min-height: 0; max-height: min(40vh, 280px); overflow: auto; box-sizing: border-box; margin: 8px 10px 0;
   border: 1px solid var(--st-needs-bg); border-radius: 8px; background: var(--box-bg);
   display: flex; flex-direction: column; }
-.ntc-head { flex: 0 0 auto; display: flex; align-items: center; gap: 7px; padding: 7px 11px; font-size: 0.92em; user-select: none;
+.ntc-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 0; cursor: pointer;
   border-bottom: 1px solid var(--box-border); position: sticky; top: 0; z-index: 1;
-  background: linear-gradient(var(--box-bg), var(--box-bg)), var(--bg); }   /* an opaque ground under the box's wash, above the rows: a row scrolled under the header no longer prints through it (the second contributor's review, 2026-09-22) */
+  background: linear-gradient(var(--box-bg), var(--box-bg)), var(--bg); }   /* the BAR (the box arc's round three): the header and the gear side by side, never a button inside the role=button header; the bar carries the sticky place, the rule, the fold action (every strip of it toggles the level; the padding is the header's, so the click target and the focus ring are the header's whole line) and an opaque ground under the box's wash, above the rows: a row scrolled under the header no longer prints through it (the second contributor's review, 2026-09-22) */
+.ntc-head { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 7px 11px; font-size: 0.92em; user-select: none; }   /* the padding is the header's, not the bar's (the second contributor's review of PR 2120: on the bar it shrank the click target to the text line) */
 .ntc-head { cursor: pointer; }   /* the header line is the fold control (the user 2026-09-23): the box opens in steps, collapsed by default like the awaiting box */
+.ntc-head:focus-visible, .bg-fold-head:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }   /* the keyboard's focus on either header (the box arc's round three): the boxes' overflow clips the browser's ring, and the accent reads 9.54:1 dark and 4.06:1 light; -2px draws the ring inside the header's padding, clear of its glyphs (the Needs you header's rule is the bar's now, below the ring) */
 .ntc-head .ntc-caret { flex: 0 0 auto; color: var(--dim); font-size: 0.72em; width: 10px; opacity: 0.7; }   /* the awaiting box's caret (.bg-caret): closed points right, the last level down */
-#notices.ntc-l0 .ntc-head { border-bottom-color: transparent; }   /* collapsed: the header line alone, no rule under it */
+#notices.ntc-l0 .ntc-bar { border-bottom-color: transparent; }   /* collapsed: the header line alone, no rule under it */
 #notices.ntc-l0 .ntc-row { display: none; }   /* level 0: the items hidden */
-#notices:not(.ntc-l2) .ntc-body, #notices:not(.ntc-l2) .ntc-attach, #notices:not(.ntc-l2) .ntc-more { display: none; }   /* below level 2: the background paragraph, its disclosure and the attachment hidden; the title and the buttons stand */
+#notices:not(.ntc-l2) .ntc-body, #notices:not(.ntc-l2) .ntc-attach { display: none; }
+#notices.ntc-l0 .ntc-more { display: none; }   /* the disclosure shows wherever its line does: at the items level the distill line is clamped and More opens it (plans/needs-you.md, the row carries what the card carries) */
+#notices:not(.ntc-l2) .ntc-row .ntc-secs-row { display: none; }   /* the card's section toggles at the full context only; at the items level the open section's body shows under the title */
+.ntc-row .ntc-secs-row { margin-top: 2px; }
+.ntc-row .ntc-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }   /* no size of its own: the chips size themselves (card-sections.css), and a size here made the row's 14 percent smaller than the card's */
+.ntc-row .ntc-distill { font-size: 0.86em; opacity: 0.85; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }   /* the card's line, clamped in the box like the brief was (the box is a strip; the card has the pane), More past it at either level */
+.ntc-row.ntc-open .ntc-distill { display: block; -webkit-line-clamp: unset; overflow: visible; }   /* the disclosure open: the clamp lifted */
+#notices:not(.ntc-l2) .ntc-row.ntc-fault .ntc-body { display: -webkit-box; }   /* the credential row's body, the fault's explanation, shows at the items too (the box arc's round three: it hid with every body) */
 .ntc-head .ntc-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--st-needs-bg); }
 .ntc-head .ntc-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.ntc-bar .ntc-gear { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; margin: 0 11px 0 0; padding: 2px 4px; cursor: pointer;
+  font-size: 15px; line-height: 1; border: none; border-radius: 5px; background: transparent; color: var(--dim); transition: color 0.1s, background 0.1s; }   /* the box's own gear at the bar's right end, beside the header: the strip gear's shape at the header's size, its colours the box's tokens (css-vocab.test.ts: no literal in a .ntc- rule); its right margin is the bar's 11px edge, and that margin is the bar's own click target */
+.ntc-bar .ntc-gear:hover { color: var(--fg); background: color-mix(in srgb, var(--fg) 8%, transparent); }
 .ntc-row { padding: 8px 10px; display: flex; flex-direction: column; gap: 5px; }
 .ntc-row + .ntc-row { border-top: 1px solid var(--box-border); }
 .ntc-title { font-weight: 600; font-size: 0.92em; }
@@ -1526,7 +1569,7 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .snap-pip.working { background: var(--st-working-bg); }
 .snap-pip.blocked { background: var(--st-blocked-bg); }
 .snap-pip.awaiting { background: var(--st-awaiting-bg); }
-.snap-pip.retrying { background: var(--st-retrying-bg); }
+.snap-pip.retrying { background: transparent; box-shadow: inset 0 0 0 1.5px var(--st-retrying-bg); }   /* HOLLOW amber ring (2026-09-24): a distinct SHAPE tells retrying from the filled working gold / awaiting green / waiting green pips, whose amber cannot clear the red-green deficiency floor by colour alone (the tab dot's shape cue extended to this overview pip; theme-parity.test.ts) */
 .snap-pip.compacting { background: var(--st-compacting-bg); }
 .snap-pip.waiting { background: var(--st-awaitbg-bg); }
 .snap-pip.unknown { box-shadow: inset 0 0 0 1.5px var(--dim); }
@@ -4689,13 +4732,15 @@ body.filebrowse-open { overflow: hidden; }
    (kernel.py _CHAT_MOBILE_CSS) the bar holds the session picker, not the strip, so on a phone only the panel
    tightens. */
 body.dense-chrome .tab { gap: 3px; padding: 3px 5px; font-size: 0.86em; }              /* 4px; 6px 7px; 0.92em */
-/* the Needs-you count pill on a dense ~25px tab sits a hair smaller and higher into the corner, so the hover-lifted
-   close glyph (z 4, above the badge) overpaints less of the digits (the second contributor on PR 2017, 2026-09-22). */
-body.dense-chrome .tab-badge { top: 2px; right: 2px; }                                 /* 3px; 3px */
+/* the Needs-you count pill on a dense ~25px tab sits a hair smaller and tucked to the very corner (1px inset), so the
+   hover-lifted close glyph (z 4, above the badge) overpaints less of the digits: about 7% of the digit ink on a dense
+   "12" at 1px against about 11% at 2px (PR 2023's measured reason; the 2px of 2026-09-22 partly undid it, restored 2026-09-24). */
+body.dense-chrome .tab-badge { top: 1px; right: 1px; }                                 /* 3px; 3px */
 body.dense-chrome .tab-badge:not(:empty) { min-width: 12px; height: 12px; border-radius: 6px; }   /* 14px; 14px; 7px */
-/* the keycap-widen (above) in dense chrome: the dense badge box is smaller (2px inset + 12px min-width) and the dense gap
-   is 3px, so 17px of right padding over the dense tab's 5px keeps the run left of the badge (the user 2026-09-23) */
-body.dense-chrome .tab:has(.tab-key):has(.tab-badge:not(:empty)) { padding-right: 17px; }
+/* the keycap-widen (above) in dense chrome, under the same strip-level .badge-keycap-room gate, on the keycap alone: 17px
+   of right padding over the dense tab's 5px keeps the run left of the dense badge box (a 12px min-width box a 1px inset
+   from the right, cleared with the 3px gap and a pixel to spare) (the user 2026-09-23) */
+body.dense-chrome #tabs.badge-keycap-room .tab:has(.tab-key) { padding-right: 17px; }
 /* a federated tab's host prefix is a 0.86em child of the label (host-prefix.ts hostNameNodes), so under the 0.86em tab
    it would compound to 9.6px (0.86 x 0.86 x 13), under the 10px floor; 0.92em (on the ladder) puts it back at the
    default's rendered 10.3px. The tab's other em child, .tab-close at 1.1em, stays above the floor on its own. */
@@ -4731,7 +4776,7 @@ body.dense-chrome .bg-list { padding: 2px 2px; }                                
 body.dense-chrome .bg-list:not(:has(.bg-task.open)) { max-height: 100px; }              /* no cap of its own; the panel's min(50vh, 340px) bounds it */
 body.dense-chrome .bg-group-head { padding: 3px 9px 1px; }                              /* 6px 9px 2px */
 body.dense-chrome .bg-head { gap: 6px; padding: 3px 9px; line-height: 1.3; }            /* 8px; 5px 9px; the body's 1.6 */
-body.dense-chrome .ntc-head { padding: 5px 11px; }                                      /* 7px 11px; the Needs you box's header compacts with the background box's (the second contributor's review) */
+body.dense-chrome .ntc-head { padding: 5px 11px; }                                     /* 7px 11px; the Needs you box's header compacts with the background box's (the second contributor's review) */
 body.dense-chrome .bg-sum { font-size: 11px; }                                          /* 0.92em */
 body.dense-chrome .bg-since { font-size: 10px; }                                        /* 0.82em */
 /* the trailing status word goes where the dot already says it: a row's caption IS its status (taskRowSpec and

@@ -94,6 +94,8 @@ const measure = ({ names, web }) => ({
   connector: (() => { const p = document.querySelector('path[data-tl-to="' + web + '"]'); if (!p) return null;
     const nums = (p.getAttribute("d") || "").match(/-?[\d.]+/g).map(Number); return { endY: nums[nums.length - 1], from: p.getAttribute("data-tl-from") }; })(),
   blob: (() => { try { return JSON.parse(localStorage.getItem("romp:tabgroups") || "null"); } catch (e) { return "unparseable"; } })(),
+  // the FOLDS, every device's since 2026-09-23: the kernel keeps them, and this browser's copy is here (tab-groups.ts TabFolds)
+  folds: (() => { try { return JSON.parse(localStorage.getItem("romp:tabgroups:shared") || "null"); } catch (e) { return "unparseable"; } })(),
 });
 const results = {};
 for (const pass of [{ name: "dark", theme: "dark", on: true }, { name: "light", theme: "light", on: true }, { name: "off", theme: "dark", on: false }]) {
@@ -136,6 +138,10 @@ for (const pass of [{ name: "dark", theme: "dark", on: true }, { name: "light", 
       await page.click('.tl-group-head[data-group="archived"] rect');
       await page.waitForFunction(foldedIs, { name: "archived", folded: false }, { timeout: 20000 });
       r.archivedOpen = await page.evaluate(measure, { names: NAMES, web: cfg.web });
+      // …and folded again: the folds are the kernel's since 2026-09-23, served to every later context, so the passes after
+      // this one start from the defaults only if this one leaves them there
+      await page.click('.tl-group-head[data-group="archived"] rect');
+      await page.waitForFunction(foldedIs, { name: "archived", folded: true }, { timeout: 20000 });
     }
   }
   results[pass.name] = r;
@@ -278,14 +284,16 @@ class ServedGroupByTag(unittest.TestCase):
         f = r["folded"]
         self.assertEqual([(h["name"], h["folded"]) for h in f["heads"]], [("backend", True), ("frontend", False), ("archived", True)])
         self.assertEqual([l["name"] for l in f["lanes"]], ["docs", "web", "infra", "tests"], "backend's lanes gone, web's frontend copy stays")
-        self.assertEqual(f["blob"], {"on": True, "collapsed": ["backend"], "expanded": [], "pinned": [], "timeline": True},
-                         "the strip's shape: collapsed names the fold, everything else carried (tab-groups.ts setSectionCollapsed)")
+        self.assertEqual(f["folds"], {"collapsed": ["backend"], "expanded": [], "pinned": []},
+                         "the strip's shape: collapsed names the fold, everything else carried (tab-groups.ts setSectionCollapsed), in the "
+                         "folds every device shares (2026-09-23)")
+        self.assertEqual((f["blob"]["on"], f["blob"]["timeline"]), (True, True), "the switches stay this browser's, in its own blob")
         o = r["reopened"]
         self.assertEqual([(h["name"], h["folded"]) for h in o["heads"]], [("backend", False), ("frontend", False), ("archived", True)])
-        self.assertEqual(o["blob"]["collapsed"], [], "opening drops the name: minimal storage, as the strip")
+        self.assertEqual(o["folds"]["collapsed"], [], "opening drops the name: minimal storage, as the strip")
         a = r["archivedOpen"]
         self.assertEqual([(h["name"], h["folded"]) for h in a["heads"]][2], ("archived", False))
-        self.assertEqual(a["blob"]["expanded"], ["archived"], "a default-folded section opened is remembered under expanded")
+        self.assertEqual(a["folds"]["expanded"], ["archived"], "a default-folded section opened is remembered under expanded")
         self.assertEqual([l["name"] for l in a["lanes"]], ["api", "web", "docs", "web", "old-notes", "infra", "tests"])
 
     def test_with_the_switch_off_the_pane_is_as_it_was(self):

@@ -196,7 +196,8 @@ class TheWiring(unittest.TestCase):
         self.assertIn('"summaryAnchorUuid": _nsa_u,', src, "every tree row carries the brief line's own landing")
         self.assertIn('"summaryAnchorQuote": _nsa_q,', src)
         self.assertIn("else (_sa_q or None)),", src, "the card's quote falls to the text-atom tier's span")
-        ts = open(os.path.join(ROOT, "ui", "webview", "feed.ts"), encoding="utf-8").read()
+        # the card's tree node type and its renderer live in card-sections.ts since the box content round (one builder with the Needs you row); the modal's rows stay in feed.ts
+        ts = open(os.path.join(ROOT, "ui", "webview", "feed.ts"), encoding="utf-8").read() + open(os.path.join(ROOT, "ui", "webview", "card-sections.ts"), encoding="utf-8").read()
         self.assertIn("if (!repeat && node.summaryAnchorUuid) {", ts, "the modal's brief line prefers the brief's own landing")
         self.assertIn("anchorUuid: su, quote: sq", ts, "…and sends its span as the click's quote")
         self.assertIn("ss = navSidOf(it, node);", ts, "the click names the ROW's session (a serving-folded worker row), never the card's")

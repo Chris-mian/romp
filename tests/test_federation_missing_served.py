@@ -1,7 +1,8 @@
 """A kernel-served chat pane whose federation manager never came up fails LOUDLY and never writes the arrangement
 (2026-09-10). The duplicate-id fix (adoptArrival) is a prerequisite for the driver to reach the federation legs: without it the
 healthy leg's first drag writes a doubled arrangement and the wait for the reverse dies naming what was written. The real page in a real browser: federation.js is aborted for the chat frame, the pane retries once,
-then shows the banner, refuses drags and writes nothing to the browser's arrangement (romp:vieworder), and the kernel's
+then shows the banner, refuses drags and writes nothing to the arrangement (romp:vieworder:shared, the key the kernel's
+arrangement is cached under since 2026-09-23), and the kernel's
 client-diag.jsonl gains one federation-missing row carrying the load entry. With the bundle served the same page shows the
 arrangement, not the kernel's seed, and a drag persists exactly one copy of every id (the duplicate-id fix). Skips LOUDLY
 when the extension deps or a playwright browser are absent. The lab kernel's environment is kernel_env's list of
@@ -91,7 +92,7 @@ const out = { t0: Date.now(), fedRequests: 0 };
 const die = async (why) => {
   out.ms = Date.now() - out.t0;
   try { out.atDeath = await page.evaluate(() => { const w = document.getElementById("f-chat") && document.getElementById("f-chat").contentWindow;
-    return { arrangement: localStorage.getItem("romp:vieworder"), sessionList: w && w.__rompSessionList ? w.__rompSessionList().map((r) => String(r.id)) : null }; }); } catch (e) { /* page gone */ }
+    return { arrangement: localStorage.getItem("romp:vieworder:shared"), sessionList: w && w.__rompSessionList ? w.__rompSessionList().map((r) => String(r.id)) : null }; }); } catch (e) { /* page gone */ }
   fs.writeSync(1, "RESULT:" + JSON.stringify({ ...out, died: why }) + "\n"); await browser.close(); process.exit(0); };
 const T = 20000;
 const waitFn = async (fn, arg, why) => page.waitForFunction(fn, arg, { timeout: T }).catch(async (e) => { await die(why + " (" + String(e).split("\n")[0] + ")"); });
@@ -101,7 +102,7 @@ const waitTabs = (sids) => waitFn((sids) => { const d = document.getElementById(
 const strip = () => page.evaluate(() => Array.from(document.getElementById("f-chat").contentDocument.querySelectorAll("#tabs .tab[data-id]")).map((t) => ({ id: t.dataset.id, draggable: t.draggable })));
 const paneState = () => page.evaluate(() => { const w = document.getElementById("f-chat").contentWindow; const d = w.document; const bar = d.getElementById("rfed");
   return { fed: !!w.__rompFed, banner: bar ? bar.textContent : null, bannerButton: !!(bar && bar.querySelector("button")), retryMarker: w.sessionStorage.getItem("romp:fed-retry") }; });
-const arrangement = () => page.evaluate(() => JSON.parse(localStorage.getItem("romp:vieworder") || "null"));
+const arrangement = () => page.evaluate(() => JSON.parse(localStorage.getItem("romp:vieworder:shared") || "null"));
 const chatFrame = async () => { const h = await page.$("#f-chat"); return h.contentFrame(); };
 // a real HTML5 drag of one tab onto another, inside the chat frame (the strip's dragstart/dragover/drop)
 const dragTab = async (from, to) => { const fr = await chatFrame(); await fr.dragAndDrop('#tabs .tab[data-id="' + from + '"]', '#tabs .tab[data-id="' + to + '"]'); };
@@ -112,7 +113,7 @@ const syntheticDrag = (from, to) => page.evaluate(([from, to]) => {
   const w = document.getElementById("f-chat").contentWindow, d = w.document;
   const src = d.querySelector('#tabs .tab[data-id="' + from + '"]'), dst = d.querySelector('#tabs .tab[data-id="' + to + '"]');
   let writes = 0; const orig = w.Storage.prototype.setItem;
-  w.Storage.prototype.setItem = function (k, v) { if (k === "romp:vieworder") writes++; return orig.call(this, k, v); };
+  w.Storage.prototype.setItem = function (k, v) { if (k === "romp:vieworder:shared") writes++; return orig.call(this, k, v); };
   const dt = new w.DataTransfer(); const r = dst.getBoundingClientRect();
   const fire = (type, target, x) => target.dispatchEvent(new w.DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt, clientX: x, clientY: r.top + r.height / 2 }));
   const started = fire("dragstart", src, src.getBoundingClientRect().left + 4);
@@ -147,7 +148,7 @@ const REV = K.slice().reverse();
 out.healthy = { ...(await paneState()), K, arrangementBefore: await arrangement(),
                 sessionList: await page.evaluate(() => document.getElementById("f-chat").contentWindow.__rompSessionList().map((r) => String(r.id))) };
 out.healthy.drag = await syntheticDrag(K[0], K[1]);   // a tab dropped on another lands AFTER it: the first onto the second reverses the pair
-await waitFn((rev) => JSON.stringify(JSON.parse(localStorage.getItem("romp:vieworder") || "[]")) === JSON.stringify(rev), REV, "the healthy pane's drag never persisted");
+await waitFn((rev) => JSON.stringify(JSON.parse(localStorage.getItem("romp:vieworder:shared") || "[]")) === JSON.stringify(rev), REV, "the healthy pane's drag never persisted");
 out.healthy.arrangement = await arrangement();
 out.healthy.stripAfterDrag = (await strip()).map((t) => t.id);
 // ---- 2. the manager's bundle stops arriving: a reload → the pane retries ONCE → the banner; the strip shows K, not the arrangement ----
@@ -206,7 +207,7 @@ await waitTabs([cfg.sidA, cfg.sidB, cfg.sidC]);
 await waitFn((c) => { const w = document.getElementById("f-chat").contentWindow; const ls = w.__rompSessionList ? w.__rompSessionList() : []; return ls.some((r) => String(r.id) === c); }, cfg.sidC, "the third session never landed in the pane");
 out.third = { before: (await strip()).map((t) => t.id) };
 await dragTab(cfg.sidC, REV[0]);   // the newcomer (last) dropped on the first tab: it lands second
-await waitFn((c) => { const v = JSON.parse(localStorage.getItem("romp:vieworder") || "[]"); return v.includes(c) && v[v.length - 1] !== c; }, cfg.sidC, "the drag of the new tab never persisted");
+await waitFn((c) => { const v = JSON.parse(localStorage.getItem("romp:vieworder:shared") || "[]"); return v.includes(c) && v[v.length - 1] !== c; }, cfg.sidC, "the drag of the new tab never persisted");
 out.third = { ...out.third, arrangement: await arrangement(), strip: (await strip()).map((t) => t.id),
               sessionList: await page.evaluate(() => { const w = document.getElementById("f-chat").contentWindow; return (w.__rompSessionList ? w.__rompSessionList() : []).map((r) => String(r.id)); }) };
 out.ms = Date.now() - out.t0;

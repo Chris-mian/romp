@@ -9,15 +9,15 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
-const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
+const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.css"), "utf8");   // the badge and paragraph rules moved to the sheet both pages import (plans/needs-you.md)
 
 test("the follow-up-failed chip is built once and rides the wrapping chip row", () => {
-  assert.match(FEED, /const nfBadge = el\("span", "fask-nudgefailed"\)/);
-  assert.match(FEED, /nfBadge\.textContent = "follow-up failed"/,
-    "the label is 'follow-up failed' (the user 2026-07-23) — 'stalled' is the yellow section's word; no emoji/glyph");
-  assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge\)/);
-  assert.match(FEED, /a\._nudgeFailed = nfBadge;/);
+  assert.match(FEED, /const b = badge\("fask-nudgefailed", BADGE_WORDS\.nudgeFailed\.text, BADGE_WORDS\.nudgeFailed\.title\);/);   // the badges moved to card-sections.ts (round two of the box content PR: one builder for the card and the Needs you row)
+  assert.match(FEED, /nudgeFailed: \{ text: "follow-up failed", title: /,
+    "the label is 'follow-up failed' (the user 2026-07-23): 'stalled' is the yellow section's word; no emoji/glyph (the words in card-sections.ts, worn by the Needs you row too)");
+  assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, badges\)/);
+  assert.match(FEED, /a\._badges = badges;/);
 });
 
 test("the chip and the Stalled section never share a word — one word per meaning", () => {
@@ -28,7 +28,7 @@ test("the chip and the Stalled section never share a word — one word per meani
 });
 
 test("it.nudgeFailed toggles the chip (the stalled FLOOR retired 2026-07-07: a failed nudge records a real block)", () => {
-  assert.match(FEED, /a\._nudgeFailed\.style\.display = it\.nudgeFailed \? "" : "none";/);
+  assert.match(FEED, /if \(it\.nudgeFailed\) \{\s*\n\s*const b = badge\("fask-nudgefailed"/);
   // the '⏸ stalled' badge + the blocked.state "stalled" three-way went with the floor: the card now
   // reaches Needs-you via the normal ladder (block verdict + decision brief), wearing only the chip
   assert.doesNotMatch(FEED, /⏸ stalled/);
@@ -44,9 +44,9 @@ test("the chip has its own red pill style (waiting on the human now)", () => {
 // like romp never tried.
 test("the card carries the auto-nudge history and the chip tooltip cites it", () => {
   assert.match(FEED, /nudged\?: \{ count: number; times: number\[\] \} \| null;/);
-  assert.match(FEED, /a\._nudgeFailed\.title = it\.nudged && it\.nudged\.times\.length/,
+  assert.match(FEED, /if \(it\.nudged && it\.nudged\.times && it\.nudged\.times\.length\) b\.title = `romp followed up/,
     "with history the tooltip is dynamic…");
-  assert.match(FEED, /romp followed up \$\{it\.nudged\.count\}× \(\$\{it\.nudged\.times\.map\(clockHM\)\.join\(", "\)\}\)/);
+  assert.match(FEED, /romp followed up \$\{it\.nudged\.count\}× \(\$\{it\.nudged\.times\.map\(env\.clockHM\)\.join\(", "\)\}\)/);
   assert.match(FEED, /: "romp followed up once; the response didn't resolve it/,
     "…and the static wording stays as the no-history floor");
 });

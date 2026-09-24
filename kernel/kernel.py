@@ -496,6 +496,10 @@ class _PerfStats:
     # signature could not be taken
     CHAT_MISS = _CHAT_SIG_LABELS + ("cold", "nosig")
     SEND_KINDS = ("full", "delta", "deduped")
+    # parses.byRoad: the road a kernel parse-store miss took (em._assemble's mode_out), and the roads among them that walk
+    # the transcript from its first record, the only ones whose leaf size parses.wholeBytes adds (see parse)
+    PARSE_ROADS = ("serve", "fold", "restore", "full", "bypass", "fallback")
+    WHOLE_ROADS = ("full", "bypass", "fallback")
 
     def __init__(self):
         self.lock = threading.Lock()
@@ -558,9 +562,11 @@ class _PerfStats:
             #                                 consecutive lost spawns, orphans of a dead kernel swept at boot, its workers' CPU (also
             #                                 folded into cpu_ms_sum, as the in-process workers' is) and its last done line   # tierStarts: judge tier threads started (T404: 0 while tracking is off)
             # cold event-model parses this kernel ran (T323 stage 1): the kernel's own _parse misses, per session
-            # (sid8) and in total, plus the bytes of the files parsed; the judges' misses ride the snapshot from
-            # jd.parse_misses(). The acceptance number of the lazy-transcript work: a boot with no client parses zero.
-            self.parses = {"kernel": 0, "hits": 0, "bytes": 0, "bySid": {}}   # kernel-asked cold parses; total/judge from jd
+            # (sid8) and in total; the judges' misses ride the snapshot from jd.parse_misses(). The acceptance number of the
+            # lazy-transcript work: a boot with no client parses zero. A miss is not a whole parse (2026-09-24): byRoad
+            # splits the misses by the road the parse took, and wholeBytes adds the leaf's size on the WHOLE_ROADS only.
+            self.parses = {"kernel": 0, "hits": 0, "wholeBytes": 0, "byRoad": dict.fromkeys(self.PARSE_ROADS, 0),
+                           "bySid": {}}                    # kernel-asked cold parses; total/judge from jd
             self.http = {}
             # the file preview popover's slice cache (T351): hits and misses of GET /file?slice=1, the bytes it served,
             # and the entries the pusher's path warmed ahead of a hover
@@ -882,12 +888,19 @@ class _PerfStats:
         with self.lock:
             self.parses["hits"] += 1
 
-    def parse(self, sid, nbytes=0):
-        """One COLD parse the kernel's _parse asked for (a shared-store miss that ran em.parse_session)."""
+    def parse(self, sid, nbytes=0, road="full"):
+        """One COLD parse the kernel's _parse asked for (a shared-store miss that ran em.parse_session), under the road
+        em._assemble took. Until 2026-09-24 every miss added the leaf's whole size to parses.bytes, so a fold that read
+        one appended record of a 100 MB leaf was booked as 100 MB parsed, and /perf read as whole re-parses what were
+        mostly folds (a synthetic lab kernel: 69 misses booked as 7.18 GB, 6 of the 84 misses in all whole parses).
+        `nbytes` (the leaf's size) counts toward wholeBytes on a WHOLE_ROADS road only, whatever the caller passed."""
         with self.lock:
             p = self.parses
             p["kernel"] += 1
-            p["bytes"] += int(nbytes or 0)
+            r = p["byRoad"]
+            r[road] = r.get(road, 0) + 1              # a road outside PARSE_ROADS is named too: _assemble's modes are few
+            if road in self.WHOLE_ROADS:
+                p["wholeBytes"] += int(nbytes or 0)
             k = str(sid or "")[:8]
             if len(p["bySid"]) < 1024 or k in p["bySid"]:
                 p["bySid"][k] = p["bySid"].get(k, 0) + 1
@@ -1100,8 +1113,8 @@ class _PerfStats:
             builds["chat"]["bySession"] = sorted(              # the per-session timer, sids only, the largest max first
                 ({"sid": sid, **row} for sid, row in self.chat_by_session.items()),
                 key=lambda r: -(r["max"] or 0.0))
-            parses = {"kernel": self.parses["kernel"], "hits": self.parses["hits"], "bytes": self.parses["bytes"],
-                      "bySid": dict(self.parses["bySid"])}
+            parses = {"kernel": self.parses["kernel"], "hits": self.parses["hits"], "wholeBytes": self.parses["wholeBytes"],
+                      "byRoad": dict(self.parses["byRoad"]), "bySid": dict(self.parses["bySid"])}
             sends = {k: {sl: {"count": e[0], "bytes": e[1]} for sl, e in d.items()}
                      for k, d in self.sends.items()}
             judge = dict(self.judge)
@@ -1210,8 +1223,9 @@ class _PerfStats:
                 "fileSlice": file_slice,                   # T351: the preview popover's slice cache (hit / miss / bytes / warm)
                 "glossary": glossary_stats,                # T351 stage 2: files parsed, frames / terms / bytes BUILT per cycle, entries cut, files refused
                 # T323: cold parses through the ONE parse store (stage 2): total = every miss (whoever asked), kernel =
-                # the display's asks among them, judge = the rest, hits = the display's asks served from the store,
-                # sharedHits = every hit. A boot with no client reads kernel 0.
+                # the display's asks among them (byRoad: by the road each took; wholeBytes: the leaf sizes of the whole
+                # ones, 2026-09-24), judge = the rest, hits = the display's asks served from the store, sharedHits =
+                # every hit. A boot with no client reads kernel 0.
                 "parses": dict(parses, total=int(getattr(jd, "parse_misses", lambda: 0)()),
                                judge=max(0, int(getattr(jd, "parse_misses", lambda: 0)()) - parses["kernel"]),
                                sharedHits=int(getattr(jd, "parse_hits", lambda: 0)())),
@@ -2278,6 +2292,8 @@ def _version_info(authed=False):
             # in the "settings" sub-dict below, whose mixed marks promise a cross-machine write this never makes
             "thinkingSummaries": _thinking_summaries_on(),
             "wholeChatFrames": _whole_chat_frames_on(),   # the Whole chat frames switch (2026-09-15): per-install, the gear's row reads it
+            "routerModels": _router_models_on(),   # the Extra models switch: per-install, the gear's row reads it; the declared list
+            #                                        and the gateway bit ride the AUTHED /models `router` section, never this route
             "taskTracking": _mv["taskTracking"],   # the master switch (T404): the gear's row and the shell's rail read it; one snapshot with its stamp
             "updateMode": _update_mode(),    # ask|auto|off (the boot release check) → the gear dropdown
             "updateAvail": _UPDATE_AVAIL[0],   # newer release the boot check found ("" = none/unknown)
@@ -3119,6 +3135,552 @@ def _note_unknown_model(mid):
     if started:
         _catalog_asked.add(mid)
     return started
+
+
+# ── extra model families from the operator's API gateway: an OPT-IN switch ────────────────────────────
+# A loopback gateway set as Claude Code's ANTHROPIC_BASE_URL (a model-router) forwards a first-party pick to
+# Anthropic byte-exact and re-routes any other id it knows to that id's provider, so a Claude Code session
+# can pick one of the gateway's families exactly as it picks a first-party one, effort riding the same axis.
+# OFF by default: stock romp offers the first-party families alone. While the Extra models switch is on,
+# the families the OPERATOR DECLARED (ROMP_ROUTER_MODELS in service.env — a service knob, never a key; read
+# when the service starts, so a change needs a service restart while the switch itself applies live;
+# optionally ROMP_ROUTER_MODELS_URL for a gateway that lists models) install as TOP-LEVEL MODEL_CHOICES:
+# their own picker rows, not versions of a first-party family (the version catalog above is first-party by
+# grammar, _MODEL_ID_RE), a gateway id IS its choice value. Nothing here keys on a vendor prefix: membership
+# in the declared set is the test everywhere. Add-only and exactly reversible: _ROUTER_INSTALLED records what
+# the switch added, so turning it off removes that and nothing else. No sdk_backend _MODEL_TIERS entry and no
+# colour rank for a gateway id carrying no first-party family word: a swap between such an id and a first-party
+# family is a cross-provider change on an explicit pick, never a capacity fallback, and the id wears no capability
+# tint (the colour, tone and rank helpers all match a family word wherever it appears, so an id that carries one
+# ranks and tints as that family, and a swap to it can read as one). A gateway's presence is an ADVISORY (the authed
+# /models `router` section, one stderr line when the switch is on without one), never a gate: the switch is
+# the operator's explicit intent, and a silent gate is the detect-and-override this design replaces.
+ROUTER_MODELS_FILE = "router-models.json"    # the Extra models switch: {"enabled": bool, "gt": epoch-ms}; per-install
+_ROUTER_INSTALLED = set()                    # the ids THIS switch added to MODEL_CHOICES — the exact undo set
+_ROUTER_INSTALLED_BY_SET = {"_MODEL_VALUES": set(), "_JUDGE_MODEL_VALUES": set()}   # per set, only what the apply ADDED to it: an id a
+#                                              set already held (a version id in the judge tiers' allowed set) is never stripped on off
+_ROUTER_EVER = set()                         # every id installed this kernel life, declared or listed: what the backend's badge is told,
+#                                              monotonic on purpose (a session still running a removed id keeps its badge verbatim)
+_ROUTER_GEN = [0]                            # the switch's generation: bumped under _SETTINGS_LOCK at every applied flip and at boot; an
+#                                              apply or remove carrying an older generation is stale (a listing fetch that lands after an
+#                                              off flip, a declared apply delayed past a concurrent off) and is discarded, never installed
+_router_status_note = [None]                 # the standing EVENT-sourced advisory (the off flip's live sessions and tiers on a removed
+#                                              model; a listing that failed): written only through _router_set_note (a flip's word) and
+#                                              _router_swap_note (the fetch thread filing a failure over an empty note), each under
+#                                              _catalog_lock at the writer's own generation. The probe-shaped advisories (nothing
+#                                              declared, no gateway, a settings fault) are derived LIVE in _router_status, never frozen
+#                                              here (verify find, 2026-09-22)
+_ROUTER_FETCH_GEN = [None]                   # the generation whose listing fetch is in flight (None when none): the create door reads it
+_ROUTER_SEEN_ON = [False]                    # the LAST flip this kernel life applied was ON (assigned at every applied flip, and by a
+#                                              boot that reads the switch on): a read fault of the switch file holds a create's seed
+#                                              only then; after an off, or with the switch never on, a fault reads as off, as the boot
+#                                              and the payload read it (review rounds fifteen and sixteen)
+_ROUTER_FETCH_FAILED_GEN = [None]            # the generation whose listing fetch FAILED (None when none, or once a later flip owns the
+#                                              catalog): a remembered listing-sourced pick is not a removal while this is the current
+#                                              generation, nothing retrying a failed listing (the second reviewer's note, 2026-09-22)
+_router_probe_said = [None]                  # the settings-read fault last said on stderr (once per distinct fault; the payload carries a
+#                                              static phrase, never the file's path)
+# The advisories the authed /models `router` section carries (the gear's status line prints them): static phrases, never a
+# stderr sentence with a path or a traceback in it. The live-session and tier phrases carry their counts and names.
+ROUTER_NOTE_NOTHING_DECLARED = "Nothing declared: set ROMP_ROUTER_MODELS in service.env and restart the service"
+ROUTER_NOTE_NO_GATEWAY = "No gateway configured: ANTHROPIC_BASE_URL is unset or points at Anthropic, so a pick would be refused"
+ROUTER_NOTE_LISTING_FAILED = "The gateway's model list could not be fetched; the declared models are offered"
+ROUTER_NOTE_LISTING_FAILED_NONE = "The gateway's model list could not be fetched and nothing is declared; no gateway model is offered"
+ROUTER_NOTE_COUNT_UNKNOWN = "The live sessions could not be counted; one may still run a removed model"
+ROUTER_NOTE_SWITCH_FAULT = ("The extra models switch file could not be read; the models already offered stay until it can be "
+                            "read or the switch is flipped")
+
+
+def _parse_router_models(raw):
+    """ROMP_ROUTER_MODELS -> the declared ids: comma-separated, order kept, whitespace stripped, duplicates and
+    empties dropped. sdk_backend._parse_router_models is the byte-for-byte twin (the badge reads the same variable
+    in-process, and the kernel must run without the SDK module); tests/test_router_models.py pins them equal."""
+    out, seen = [], set()
+    for part in str(raw or "").split(","):
+        p = part.strip()
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
+def _router_declared_families():
+    """The ids the operator declared for THIS service: ROMP_ROUTER_MODELS from the environment the manager handed
+    the kernel at start (systemd's EnvironmentFile), so a change needs a service restart; the switch applies live."""
+    return _parse_router_models(os.environ.get("ROMP_ROUTER_MODELS"))
+
+
+def _router_label(mid):
+    """A gateway id's PICKER label: the id itself. One name per model everywhere (the badge shows the raw id too,
+    sdk_backend.pretty_model): a derived label ('GPT-6 Astra' from gpt-6-astra) upper-cased vendors it had never
+    heard of and split from the badge, and the pickers' current-model tick compares the badge with the row's value
+    (exactly, or on a space boundary), so the two must read the same (review find, 2026-09-21)."""
+    return str(mid or "")
+
+
+ROUTER_SETTINGS_FAULT = "Claude Code settings could not be read"   # the advisory's static phrase for a read fault: never the path
+
+
+def _router_gateway_configured():
+    """(configured, error): whether ANTHROPIC_BASE_URL points somewhere other than Anthropic, the sign a gateway is in
+    place. The kernel's own environment first (sessions inherit it, and service.env is where the docs send the operator),
+    then the operator's Claude Code settings through the credentials module the kernel already holds (managed settings,
+    then the user's, under CLAUDE_CONFIG_DIR: Claude Code's own precedence), never a hand-rolled home-directory read. A
+    read fault is a STATIC phrase in the advisory (the payload reaches every authed viewer; a file's path does not belong
+    there) with the detail on stderr once per distinct fault."""
+    def _gateway(base):
+        host = (urlparse(base).hostname or "").lower()
+        return bool(host) and not (host == "anthropic.com" or host.endswith(".anthropic.com"))   # notanthropic.com is a gateway
+    base = (os.environ.get("ANTHROPIC_BASE_URL") or "").strip()
+    if base:
+        return (_gateway(base), None)
+    try:
+        for path in jd._cred.settings_files(None, operator_only=True):
+            d = jd._cred._read_settings(path)
+            env = d.get("env") if isinstance(d, dict) else None
+            base = str((env or {}).get("ANTHROPIC_BASE_URL") or "").strip() if isinstance(env, dict) else ""
+            if base:
+                return (_gateway(base), None)
+        return (False, None)
+    except Exception as e:
+        detail = "%s: %s" % (type(e).__name__, e)
+        if _router_probe_said[0] != detail:
+            _router_probe_said[0] = detail
+            sys.stderr.write("extra models: %s (%s)\n" % (ROUTER_SETTINGS_FAULT, detail))
+        return (False, ROUTER_SETTINGS_FAULT)
+
+
+def _fetch_router_models(url, timeout=4):
+    """The ids a model-listing endpoint serves ({data:[{id}]}), for a gateway that lists models (most loopback
+    gateways forward /v1/messages only, which is why this rides ROMP_ROUTER_MODELS_URL alone). An id the
+    first-party grammar recognises is skipped: a gateway mirroring Anthropic's own list must not install
+    duplicate first-party rows. Raises on any failure; the caller owns the loudness."""
+    import urllib.request
+    with urllib.request.urlopen(urllib.request.Request(url), timeout=timeout) as r:
+        d = json.loads(r.read().decode("utf-8", "replace"))
+    data = d.get("data") if isinstance(d, dict) else d
+    out = []
+    for m in (data or []):
+        mid = str(m.get("id") or "") if isinstance(m, dict) else ""
+        if mid and not _catalog_family(mid) and not _MODEL_ID_RE.match(mid) and mid not in out:
+            out.append(mid)
+    return out
+
+
+def _router_first_party(mid):
+    """True for an id the first-party grammar owns (a family alias such as opus, a family's version id, or an id the
+    catalog files under a family): such an id is never a gateway row, on either road (the declared list, the
+    gateway's listing). sdk_backend._router_first_party is the twin (the regex and the shipped family names)."""
+    mid = _model_id_clean(mid)   # lower-cased, a [1m]-style tag stripped: 'Opus' or 'claude-opus-4-8[1m]' is first-party too
+    return mid in MODEL_VERSIONS or bool(_catalog_family(mid)) or bool(_MODEL_ID_RE.match(mid))
+
+
+def _router_tell_backend():
+    """The backend's badge is told every id installed this kernel life (declared or listed): sdk_backend reads
+    ROMP_ROUTER_MODELS itself, so a URL-sourced id would otherwise be unknown to pretty_model, the served-model learn
+    and the live count. Only a module already loaded is told (a box without the SDK dependency has none)."""
+    m = sys.modules.get("romp_sdk_backend")
+    fn = getattr(m, "set_router_ids", None) if m is not None else None
+    if fn is not None:
+        try:
+            fn(sorted(_ROUTER_EVER))
+        except Exception:
+            sys.stderr.write("extra models: the backend could not be told the installed ids: %s" % traceback.format_exc())
+
+
+def _apply_router_families(ids, gen=None, reason=""):
+    """Install gateway ids as top-level picker choices, ADD-ONLY, after the first-party families. Mutates
+    MODEL_CHOICES in place and updates the pick vouch's _MODEL_VALUES and the judge's allowed set, so every
+    picker, _vouched_model and the judge follow with no re-import; records what it added in _ROUTER_INSTALLED
+    and, per set, in _ROUTER_INSTALLED_BY_SET (only the ids the set did not already hold). A first-party id on
+    either road is skipped, said once on stderr: it would install a duplicate tinted row and its removal would
+    strip a version id from the judge tiers' allowed set. `gen`, when given, is the switch generation the caller
+    captured; under _catalog_lock an older generation than the current one is stale (a later flip happened) and
+    nothing is installed: None, distinct from [] for nothing new. No colour rank. Returns the ids newly added. The
+    caller sends the models frame OUTSIDE _catalog_lock."""
+    skipped = [g for g in ids if g and _router_first_party(g)]
+    if skipped:
+        sys.stderr.write("extra models%s: %d first-party id(s) skipped (never a gateway row): %s\n"
+                         % (" (%s)" % reason if reason else "", len(skipped), ", ".join(skipped)))
+    with _catalog_lock:
+        if gen is not None and gen != _ROUTER_GEN[0]:
+            sys.stderr.write("extra models%s: a stale apply (switch generation %d, now %d) discarded; nothing installed\n"
+                             % (" (%s)" % reason if reason else "", gen, _ROUTER_GEN[0]))
+            return None      # STALE, distinct from nothing-to-do: the caller writes no note and starts no fetch on it (review find, 2026-09-21)
+        have = {m["value"] for m in MODEL_CHOICES}
+        added = [g for g in ids if g and g not in have and not _router_first_party(g)]
+        if added:
+            MODEL_CHOICES.extend({"value": g, "label": _router_label(g)} for g in added)
+            for name in ("_MODEL_VALUES", "_JUDGE_MODEL_VALUES"):
+                st = globals().get(name)
+                if isinstance(st, set):
+                    fresh = [g for g in added if g not in st]
+                    st.update(fresh)
+                    _ROUTER_INSTALLED_BY_SET[name].update(fresh)
+            _ROUTER_INSTALLED.update(added)
+            _ROUTER_EVER.update(added)
+    _router_tell_backend()   # in every case, added or not: the told set is the kernel's whole _ROUTER_EVER, and a module that
+    #                          registered since the last apply learns it here (the boot's own tell covers the boot road)
+    return added
+
+
+def _remove_router_families(gen=None):
+    """The exact reverse of every apply: only the ids THIS switch installed leave MODEL_CHOICES, and each value set
+    loses only what the apply added to IT (_ROUTER_INSTALLED_BY_SET), never anything the first-party catalog holds. A
+    session already running a removed id keeps running it (the pick just stops being offered; a later pick of it is
+    refused by _vouched_model). `gen` as for the apply: an older generation than the current one is a remove delayed
+    past a later flip, discarded (None, distinct from [] for nothing installed; the caller then writes no advisory,
+    and frames as every applied flip does). Returns the ids removed; the caller sends the models frame OUTSIDE
+    _catalog_lock."""
+    with _catalog_lock:
+        if gen is not None and gen != _ROUTER_GEN[0]:
+            sys.stderr.write("extra models: a stale remove (switch generation %d, now %d) discarded\n" % (gen, _ROUTER_GEN[0]))
+            return None      # STALE: the caller writes no advisory on it (the flip's frame goes out regardless)
+        gone = sorted(_ROUTER_INSTALLED)
+        if not gone:
+            return []
+        gs = set(gone)
+        MODEL_CHOICES[:] = [m for m in MODEL_CHOICES if m["value"] not in gs]
+        for name in ("_MODEL_VALUES", "_JUDGE_MODEL_VALUES"):
+            st = globals().get(name)
+            if isinstance(st, set):
+                st.difference_update(_ROUTER_INSTALLED_BY_SET[name])
+            _ROUTER_INSTALLED_BY_SET[name].clear()
+        _ROUTER_INSTALLED.clear()
+    _router_tell_backend()
+    return gone
+
+
+def _router_live_on(ids):
+    """How many live sessions run one of `ids` right now (the switch-off advisory), read off the liveness snapshot
+    the kernel already holds — never a registry file of its own. The row's `model` is the badge's label, which for
+    a gateway id the backend has been told (_router_tell_backend) is the raw id, so the match is on the id. None,
+    loud on stderr, when the snapshot cannot be read: the advisory then says the count is unknown rather than 0."""
+    try:
+        rows = _live_map() or {}
+        return sum(1 for r in rows.values() if isinstance(r, dict) and str(r.get("model") or "") in ids)
+    except Exception:
+        sys.stderr.write("extra models: the live sessions could not be counted: %s" % traceback.format_exc())
+        return None
+
+
+def _router_models_on():
+    """The Extra models switch: OFF unless this install's file says yes — absent, unreadable or malformed all read
+    False, never raise, never create the file (the Whole chat frames shape). Per-install on purpose: the gateway
+    is a property of this machine (its Claude Code settings, its service.env), so the switch never follows to a
+    peer that may have no gateway to route a pick through."""
+    try:
+        d = json.loads((jd.STATE / ROUTER_MODELS_FILE).read_text())
+    except Exception:
+        return False
+    return isinstance(d, dict) and d.get("enabled") is True
+
+
+def _router_switch_state():
+    """(on, fault): the switch as the file reads, and whether it could not be READ. _router_models_on folds every fault
+    into off (a setting's documented contract: junk reads off), which is right for the pickers and wrong for the create
+    door's holds: a read fault at the moment of the re-read is not evidence the operator turned the switch off, so the
+    door holds and says so (review round fourteen). Absent and malformed both read off with no fault; an OS error
+    other than absence is the fault."""
+    try:
+        d = json.loads((jd.STATE / ROUTER_MODELS_FILE).read_text())
+    except FileNotFoundError:
+        return (False, None)
+    except OSError as e:
+        return (False, "%s: %s" % (type(e).__name__, e))
+    except Exception:
+        return (False, None)
+    return (isinstance(d, dict) and d.get("enabled") is True, None)
+
+
+def _router_models_gt():
+    """The switch's last applied gesture stamp; 0 for an absent, unreadable or garbled store."""
+    try:
+        d = json.loads((jd.STATE / ROUTER_MODELS_FILE).read_text())
+    except Exception:
+        return 0
+    return _gt_int(d.get("gt")) if isinstance(d, dict) else 0
+
+
+def _router_set_note(gen, text):
+    """One of the standing advisory's two writers (the other, _router_swap_note, is the compare-and-swap the fetch
+    thread uses): a flip's plain write, under _catalog_lock, and only when `gen` is still the current switch
+    generation. A slower earlier flip's note must not land over a later flip's: before this, the note was written after
+    the apply or remove with no check, so two overlapping flips could leave an on switch showing the off flip's
+    advisory, or an off switch showing none (verify find, 2026-09-22). Returns whether the write landed; a caller that
+    reads False leaves the later flip's word standing (the models frame goes out on every applied flip regardless)."""
+    with _catalog_lock:
+        if gen is not None and gen != _ROUTER_GEN[0]:
+            return False
+        _router_status_note[0] = text
+        return True
+
+
+def _router_swap_note(gen, expected, text):
+    """The note's other writer: a compare-and-swap, under _catalog_lock at the writer's own generation, from `expected`
+    to `text` alone. Its one caller is the fetch thread, filing a failed listing only over an empty note (a flip's word
+    since is not overwritten; an applied off rewrites the note by recount, so no other clear is needed). Returns whether
+    the swap landed. Together with _router_set_note these are the note's only writers (review round five, 2026-09-22:
+    an audit of one helper's callers missed the in-line writes these replace)."""
+    with _catalog_lock:
+        if gen is not None and gen != _ROUTER_GEN[0]:
+            return False
+        if _router_status_note[0] != expected:
+            return False
+        _router_status_note[0] = text
+        return True
+
+
+def _router_listing_inflight():
+    """Whether a listing fetch for the CURRENT generation is still running (the create door leaves an unvouched seed
+    alone while one is: the seed may be one of the ids the listing is about to install)."""
+    with _catalog_lock:
+        return _ROUTER_FETCH_GEN[0] is not None and _ROUTER_FETCH_GEN[0] == _ROUTER_GEN[0]
+
+
+def _router_listing_failed_now():
+    """Whether the CURRENT generation's listing fetch failed: an unvouched seed is then no evidence of a removal (the id
+    may be one the listing would have installed), and the create door keeps the store while launching that one row on
+    the account default."""
+    with _catalog_lock:
+        return _ROUTER_FETCH_FAILED_GEN[0] is not None and _ROUTER_FETCH_FAILED_GEN[0] == _ROUTER_GEN[0]
+
+
+def _router_listing_state():
+    """(in_flight, failed, generation) for the CURRENT generation's listing, read as ONE snapshot under _SETTINGS_LOCK
+    and _catalog_lock in that order: a flip writes its store, bumps the generation and publishes the in-flight mark under
+    the same two holds, so a reader never sees the new generation without its mark, and a reader holding the settings
+    lock waits out a flip in progress (review round twelve). A reader that took the fields in turn could see a listing
+    land between them and word its line by a state that no longer held. The generation rides along so the reader can
+    tell whether a flip moved it after the snapshot; the switch itself is re-read then, under the same locks."""
+    with _SETTINGS_LOCK:
+        with _catalog_lock:
+            cur = _ROUTER_GEN[0]
+            return (_ROUTER_FETCH_GEN[0] is not None and _ROUTER_FETCH_GEN[0] == cur,
+                    _ROUTER_FETCH_FAILED_GEN[0] is not None and _ROUTER_FETCH_FAILED_GEN[0] == cur,
+                    cur)
+
+
+def _router_declared_effective():
+    """The declared list AFTER the first-party skip: what the payload reports as declared and what the pickers can
+    gain (a declared Claude version id or family alias is never a gateway row; the apply says the skip)."""
+    return [d for d in _router_declared_families() if not _router_first_party(d)]
+
+
+def _router_tiers_on(ids):
+    """The judge tiers whose EFFECTIVE model is one of `ids`, read off the four tier stores (never the judge's value
+    set, which the removal edits): the distill tier's 'triage' follows the triage pick, the comment tier's 'session'
+    and 'default' are no gateway id. The stores are left as they are (a reset would write an ungestured setting);
+    the off flip names them so the operator knows the judges keep calling a removed model."""
+    judge = jd._state_str("judge-model", "")
+    eff = {"triage": judge, "index": jd._state_str("index-model", ""),
+           "distill": jd._state_str("distill-model", "triage"), "comment": jd._state_str("comment-model", "session")}
+    if eff["distill"] == "triage":
+        eff["distill"] = judge
+    if eff["comment"] in ("session", "default"):
+        eff["comment"] = ""
+    return [t for t, m in eff.items() if m and m in ids]
+
+
+def _router_fetch_allowed():
+    """Whether the gateway's listing may be fetched: not under ROMP_MODEL_CATALOG=off, the hermetic lab's no-network
+    knob. The declared install is network-free and is never gated by it, on the boot road or the live one."""
+    return (os.environ.get("ROMP_MODEL_CATALOG") or "").strip().lower() != "off"
+
+
+def _router_apply_declared(reason, gen=None):
+    """Install the declared list now (synchronous and network-free), and when ROMP_ROUTER_MODELS_URL names a
+    gateway that lists models, fetch that list on a thread and union it in — never on the caller's thread (the
+    WS reader, the boot path). `gen` is the switch generation the caller captured under _SETTINGS_LOCK; both the
+    synchronous apply and the fetch thread's apply carry it, so a flip that happens meanwhile makes them stale
+    (nothing installs under an off store). Refreshes the advisory. Returns the ids the declared list added."""
+    started = [False]
+    try:
+        return _router_apply_declared_inner(reason, gen, started)
+    finally:
+        if not started[0]:
+            # any exit that started no fetch thread (a stale apply, no URL, the knob, a raise anywhere on the road: a
+            # malformed base URL makes the gateway probe raise) takes the published mark back at its generation, else
+            # every create would hold on a listing nothing fetches until the next flip (review round twelve)
+            with _catalog_lock:
+                if _ROUTER_FETCH_GEN[0] == gen:
+                    _ROUTER_FETCH_GEN[0] = None
+
+
+def _router_apply_declared_inner(reason, gen, started):
+    """_router_apply_declared's road; `started[0]` is set once the fetch thread is running (the caller's finally reads it)."""
+    raw = _router_declared_families()
+    added = _apply_router_families(raw, gen=gen, reason=reason)   # first: a stale apply does no bookkeeping at all
+    if added is None:
+        return None
+    declared = [d for d in raw if not _router_first_party(d)]
+    url = (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip()
+    gw, gerr = _router_gateway_configured()
+    # the flip's own word on stderr; the payload's advisory for these states is derived live in _router_status
+    if not declared and not url:
+        sys.stderr.write("extra models (%s): the switch is on but ROMP_ROUTER_MODELS declares nothing; nothing to offer\n" % reason)
+    elif not gw:
+        sys.stderr.write("extra models (%s): %s\n" % (reason, gerr or ROUTER_NOTE_NO_GATEWAY))
+    if not _router_set_note(gen, None):      # an on flip clears the off flip's note, at its own generation only
+        return None
+    if added:
+        sys.stderr.write("extra models (%s): %d joined the pickers: %s\n" % (reason, len(added), ", ".join(added)))
+    if url and not _router_fetch_allowed():
+        sys.stderr.write("extra models (%s): ROMP_MODEL_CATALOG=off, the gateway's model list is not fetched; the declared "
+                         "list is offered\n" % reason)
+    elif url:
+        with _catalog_lock:
+            if gen == _ROUTER_GEN[0]:      # the boot road's mark (the flip published its own); guarded on the current
+                _ROUTER_FETCH_GEN[0] = gen  # generation so a slower earlier apply never overwrites a later flip's mark
+
+        def go():
+            try:
+                more = _apply_router_families(_fetch_router_models(url), gen=gen, reason=reason)
+                if more is None:
+                    return       # stale: the apply said so; no frame, no note
+                if more:
+                    sys.stderr.write("extra models (%s): %d more from the gateway's list: %s\n"
+                                     % (reason, len(more), ", ".join(more)))
+                    _models_changed()
+            except Exception as e:
+                sys.stderr.write("extra models (%s): the gateway's model list failed (%s: %s) — serving the "
+                                 "declared list\n" % (reason, type(e).__name__, str(e)[:160]))
+                with _catalog_lock:
+                    if gen == _ROUTER_GEN[0]:
+                        _ROUTER_FETCH_FAILED_GEN[0] = gen      # the create door reads it: no seed reset over a failed listing
+                    if _ROUTER_FETCH_GEN[0] == gen:
+                        _ROUTER_FETCH_GEN[0] = None            # in the same hold: a reader never sees "failed" and "in flight" at once
+                if _router_swap_note(gen, None, ROUTER_NOTE_LISTING_FAILED):   # at THIS generation, over an empty note only
+                    _models_changed()        # the gear's line repaints from the models frame alone (verify find, 2026-09-22)
+            finally:
+                with _catalog_lock:
+                    if _ROUTER_FETCH_GEN[0] == gen:
+                        _ROUTER_FETCH_GEN[0] = None
+        threading.Thread(target=go, name="router-models", daemon=True).start()
+        started[0] = True
+    return added
+
+
+def _set_router_models(enabled, gt=None):
+    """Returns the applied gesture stamp (epoch ms), or None when the gesture was its own echo, a stale `gt` stood
+    down, or the store write failed (OSError: loud on stderr, nothing applied). Read-check-write under
+    _SETTINGS_LOCK like its siblings; the live apply or remove and the models frame run OUTSIDE the lock."""
+    with _SETTINGS_LOCK:
+        try:
+            prev = json.loads((jd.STATE / ROUTER_MODELS_FILE).read_text())
+        except Exception:
+            prev = None
+        prev_gt = _gt_int(prev.get("gt")) if isinstance(prev, dict) else 0
+        if _gesture_echo(gt, prev_gt, isinstance(prev, dict) and bool(prev.get("enabled")) == bool(enabled)):
+            return None
+        if _setting_stale("router-models", gt, prev_gt):
+            return None
+        stamp = gt if gt is not None else int(time.time() * 1000)
+        try:
+            _atomic_write(jd.STATE / ROUTER_MODELS_FILE, json.dumps({"enabled": bool(enabled), "gt": stamp}))
+        except OSError as e:
+            sys.stderr.write("romp-kernel: the extra models switch could not be written (%s); nothing applied\n" % e)
+            return None
+        lists = bool((os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip()) and _router_fetch_allowed()   # read before the hold
+        with _catalog_lock:                 # the bump and the mark in ONE hold, nested in the settings hold: a create's
+            _ROUTER_GEN[0] += 1             # snapshot (the same two locks) never sees the new generation without its mark
+            gen = _ROUTER_GEN[0]            # (review rounds eleven and twelve)
+            if enabled and lists:
+                _ROUTER_FETCH_GEN[0] = gen
+            _ROUTER_SEEN_ON[0] = bool(enabled)   # the last applied flip's direction, on or off
+    # The models frame goes out on EVERY applied flip, the stale paths included (the second reviewer's note, 2026-09-22): the gear's line and
+    # the pickers redraw from that frame alone, and a flip whose catalog work a later flip superseded still changed the
+    # store the frame's readers consult.
+    if enabled:
+        _router_apply_declared("switch on", gen=gen)    # None when stale: a later flip owns the catalog and the note
+    else:
+        gone = _remove_router_families(gen=gen)
+        if gone is not None:
+            # Every applied off recounts against EVERY id this kernel ever installed (_ROUTER_EVER), whatever this
+            # remove found: a second off landing during the first's count found nothing installed and used to return
+            # unrecounted while the first's note write was refused as stale, so the sessions still on the removed rows
+            # were named nowhere and the log carried no removal (the second reviewer's note, 2026-09-22). The stderr summary, gated on the
+            # removed set, is written BEFORE the note write, which a later flip may refuse.
+            ids = set(_ROUTER_EVER) | set(gone)
+            live = _router_live_on(ids) if ids else 0
+            tiers = _router_tiers_on(ids) if ids else []
+            judges = [t for t in tiers if t != "comment"]
+            parts = []
+            if live is None:
+                parts.append(ROUTER_NOTE_COUNT_UNKNOWN)
+            elif live:
+                parts.append("%d live session(s) still run a removed model; a later pick of one is refused" % live)
+            if judges:
+                parts.append("the %s judge tier(s) keep a removed model" % ", ".join(judges))
+            if "comment" in tiers:
+                parts.append("the default for new comment threads is a removed model; new threads inherit their parent until it is changed")
+            if gone:
+                tail = ""
+                if live or live is None:
+                    tail += " — %s live session(s) keep running one" % ("?" if live is None else live)
+                if judges:
+                    tail += " — the %s judge tier(s) keep one" % ", ".join(judges)
+                if "comment" in tiers:
+                    tail += " — the default for new comment threads is one (new threads inherit their parent)"
+                sys.stderr.write("extra models (switch off): %d left the pickers: %s%s\n" % (len(gone), ", ".join(gone), tail))
+            _router_set_note(gen, "; ".join(parts) if parts else None)   # refused when a later flip landed first: its word stands
+    _models_changed()
+    return stamp
+
+
+def _router_status():
+    """The authed /models payload's `router` section, what the gear's status line reads: the switch, the ids THIS
+    kernel parsed at start (after the first-party skip), whether a gateway is configured (null while off: not
+    probed), and the standing advisory (or null)."""
+    on, sfault = _router_switch_state()
+    gw, gerr = _router_gateway_configured() if on else (None, None)   # not probed while off: null, and no fault line for a
+    #                                                                   feature never turned on (review find, 2026-09-21)
+    declared = _router_declared_effective()
+    live = ROUTER_NOTE_SWITCH_FAULT if sfault else None   # the switch file could not be read: said in the gear whatever the switch
+    if on and not live:
+        # the probe-shaped advisories, LIVE from this call's probe and declaration, never a note frozen at flip time: an
+        # operator who fixes the gateway or the declaration sees the line clear on the next read (verify find, 2026-09-22).
+        # Composed AHEAD of the event note: a failed listing must not hide that no gateway is configured (review round
+        # three, 2026-09-22); the gear prints one line, and the one the operator must act on comes first.
+        if not declared and not (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip():
+            live = ROUTER_NOTE_NOTHING_DECLARED
+        elif not gw:
+            live = gerr or ROUTER_NOTE_NO_GATEWAY
+    note = _router_status_note[0]            # the event-sourced note whatever the switch (the off flip writes it while off)
+    if note == ROUTER_NOTE_LISTING_FAILED and not declared:
+        note = ROUTER_NOTE_LISTING_FAILED_NONE   # worded by the declared count: URL-only, nothing is offered
+    return {"enabled": on, "declared": declared, "gateway": gw, "error": live or note}
+
+
+def _router_models_boot():
+    """The switch at kernel boot: install the declared families when it is on. The store read and the generation
+    bump are one step under _SETTINGS_LOCK (an off flip between the two would otherwise install under an off store).
+    ROMP_MODEL_CATALOG=off (the hermetic lab's no-network knob) gates the gateway's listing alone, never the
+    network-free declared install (see _router_fetch_allowed). The backend is told the installed set whatever
+    happened, so a module registered before this point knows it. Returns the ids installed."""
+    with _SETTINGS_LOCK:
+        on, sfault = _router_switch_state()
+        if sfault:
+            sys.stderr.write("extra models (boot): the switch file could not be read (%s); the switch reads as off until it can\n"
+                             % sfault)   # the fault's one log line: a create's reset names it too (review round sixteen)
+        with _catalog_lock:
+            _ROUTER_SEEN_ON[0] = bool(on)   # the boot assigns the flag in BOTH directions, so its starting value never decides
+            #                                 anything (review round seventeen): a kernel booted with the switch off reads a
+            #                                 fault as off, whatever the module's initial value
+            if on:
+                _ROUTER_GEN[0] += 1
+                gen = _ROUTER_GEN[0]
+            # no early mark here: every create door passes _sdk_ready(), which holds _sdk_lock while this boot runs, so
+            # the apply's own guarded write below is in place before a create can read (review round twelve)
+    if not on:
+        _router_tell_backend()
+        return []
+    added = _router_apply_declared("boot", gen=gen)
+    _router_tell_backend()
+    if added:
+        _models_changed()   # a page whose /models read landed before this boot's install keeps the stock list otherwise:
+        #                     the frame reaches every client bound by now, and the reconnect re-read covers the rest (the second reviewer's note)
+    return added or []
 
 
 def _catalog_public_status():
@@ -5813,6 +6375,154 @@ def _gc_session_order(known):
                 _write_session_order(kept)
             except _StateUnwritable:
                 pass                                 # filed once per episode by the write door; the next pass retries
+
+
+# ── the VIEWER'S arrangement, kept here as OPAQUE DATA (the user 2026-09-23) ───────────────────────
+# The order sessions are SHOWN in is computed in the browser and always will be: it spans every kernel
+# the dashboard has attached, and no kernel can order sids belonging to a machine it has never heard of
+# (the 2026-07-31 ruling, commit e9870995, which is why session-order.json below is only this kernel's
+# arrival-order SEED). What changed on 2026-09-23 is where the finished list LIVES. It used to live in
+# one browser's localStorage, so a phone and a desktop looking at the same sessions showed them in
+# different orders with no way to reconcile. Now the kernel the browser is talking to persists it,
+# serves it on connect and pushes it when it changes, and every viewer of this kernel converges.
+#
+# Storing it is not ordering it, and the distinction is the whole point. This file is a list of STRINGS
+# this kernel never interprets: they are viewer-relative, host-prefixed ids ("gpu1:<uuid>" for a session
+# on an attached machine, a bare uuid for one of ours), and nothing here parses a prefix, matches an
+# entry against a live session, reorders, prunes or gc's them. The VIEWER owns all of that — it is the
+# only party that can see every host at once — and republishes the result. Read as JSON, written back as
+# JSON, bounded, and otherwise untouched.
+#
+# Last write wins, deliberately: two devices dragging at the same moment is not a case worth a merge
+# protocol, and the browsers each hold a full list, so the loser's next drag re-establishes its own.
+_view_order_lock = threading.Lock()      # read-modify-write from many threads, like _order_lock above
+_VIEW_ORDER_CAP = 2000                   # the browser's own backstop (view-order.ts VIEW_ORDER_CAP), mirrored
+#                                          so a client bug cannot grow this file without bound
+_view_order_lkg = [None]                 # last known good: served over a transient read fault, never persisted
+_VIEW_ORDER_NO_PROOF = object()          # the write path's "the store could not be read" marker (below)
+
+
+def _view_order_path():
+    return jd.STATE / "view-order.json"
+
+
+def _view_order_served():
+    """(order, stored) for the wire: the arrangement to serve and whether this kernel HAS one at all --
+    or None when it cannot say, in which case the caller sends NO frame.
+
+    `stored` is the migration's whole signal (view-order.ts viewOrderToPublish): a browser that holds an
+    arrangement and meets a kernel with none publishes its own, so nobody's existing order is lost in the
+    move -- while a kernel whose arrangement is legitimately EMPTY (every session gone, or a viewer who
+    arranged nothing) must not be refilled from some other browser's stale local key. Absent file -> no
+    arrangement.
+
+    The DISPLAY read never raises. A transient fault over a store we HAVE read serves the last known good
+    and says stored, since a file we could not read is not a file that is missing -- answering "no
+    arrangement" under an EIO would invite the next browser to publish its own over an order that is
+    still sitting there. A fault with NO last known good (this kernel has never read the file) is the
+    honest silence: [] would have every viewer adopt an empty arrangement over the one they are showing,
+    and "stored" would be a claim about a file we have not read. The fault itself is loud once per
+    episode (_note_state_fault), as every state read's is."""
+    p = _view_order_path()
+    try:
+        raw = _read_state_json(p, expect=list)
+    except _StateUnreadable as e:
+        _note_state_fault(e)
+        lkg = _view_order_lkg[0]
+        return (list(lkg), True) if lkg is not None else None
+    _clear_state_fault(p)
+    if raw is None:
+        return [], False
+    order = [x for x in raw if isinstance(x, str)]
+    _view_order_lkg[0] = list(order)
+    return order, True
+
+
+def _write_view_order(order):
+    """Publish the viewer's arrangement. Raises _StateUnwritable on a failed publish, so the gesture is
+    refused loudly rather than silently dropped. Returns whether anything CHANGED: a viewer republishing
+    the list it was just served (every viewer of this kernel does, the moment a host's report makes them
+    all adopt the same arrival) is not a change, and a change is the only thing worth pushing."""
+    new = [x for x in order if isinstance(x, str)][-_VIEW_ORDER_CAP:]
+    with _view_order_lock:                           # the read and the publish as one step (_order_lock's rule)
+        try:
+            raw = _read_state_json(_view_order_path(), expect=list)
+        except _StateUnreadable:
+            raw = _VIEW_ORDER_NO_PROOF               # cannot prove it unchanged -> publish. Safe here and only
+            #                                          here: this write REPLACES the list whole, so unlike the
+            #                                          session order's merge it never splices against a
+            #                                          fabricated read. The push that follows is the honest one.
+        if raw is not _VIEW_ORDER_NO_PROOF and isinstance(raw, list) and [x for x in raw if isinstance(x, str)] == new:
+            return False
+        _write_state_json(_view_order_path(), json.dumps(new))
+        _view_order_lkg[0] = new
+    return True
+
+
+# ── …and the viewer's FOLDS, kept beside it the same way (the user 2026-09-23) ─────────────────────────
+# Which tag groups are folded, which default-folded ones were opened, and which members show through a fold
+# lived in each browser's romp:tabgroups, so a group folded on the desktop was open on the phone (where,
+# until that day, nothing folded at all). The user asked for folding on the phone with the state synced
+# like the arrangement, so it rides this store's frame and push: the viewOrder frame carries `folds` beside
+# `order`, one push serves both, and view-folds.json sits beside view-order.json. A sibling FILE rather
+# than a reshaped one so view-order.json keeps the shape its readers (and a revert) expect.
+#
+# The same opaque-data contract. The object is the browser's (tab-groups.ts TabFolds: collapsed, expanded,
+# pinned, and the rename memory the pins rest on); this kernel checks that it IS an object and that it is
+# bounded, and reads nothing inside it. Tag names, session ids and host prefixes are all the viewer's to
+# interpret, exactly as the arrangement's are. Last write wins, as there.
+_VIEW_FOLDS_CAP = 256 * 1024             # bytes of JSON: the browser's own state is a few hundred; this only stops a
+#                                          client bug growing the file without limit, and it REFUSES rather than trims
+#                                          (a cut object is not a smaller fold state, it is a different one)
+_view_folds_lkg = [None]                 # last known good, as _view_order_lkg
+_VIEW_FOLDS_UNKNOWN = object()           # _view_folds_served's "cannot say": the frame then carries no folds half
+
+
+def _view_folds_path():
+    return jd.STATE / "view-folds.json"
+
+
+def _view_folds_served():
+    """The fold state to serve: the stored object, None when this kernel has NONE (absent file -- the
+    browser's migration publishes its own against exactly that, tab-groups.ts foldsToPublish), or
+    _VIEW_FOLDS_UNKNOWN when the file could not be read and nothing is known-good. The same reasoning as
+    _view_order_served: a fault over a store we have read serves the last known good, since answering "none"
+    under an EIO would invite a browser to publish its folds over the ones sitting there, and a fault with
+    nothing known-good says nothing at all rather than a guess."""
+    p = _view_folds_path()
+    try:
+        raw = _read_state_json(p, expect=dict)
+    except _StateUnreadable as e:
+        _note_state_fault(e)
+        lkg = _view_folds_lkg[0]
+        return dict(lkg) if lkg is not None else _VIEW_FOLDS_UNKNOWN
+    _clear_state_fault(p)
+    if raw is None:
+        return None
+    _view_folds_lkg[0] = dict(raw)
+    return raw
+
+
+def _write_view_folds(folds):
+    """Publish the viewer's fold state. Raises _StateUnwritable on a failed publish (and on an object over the
+    cap, which is refused whole rather than cut), so the gesture is refused loudly. Returns whether anything
+    CHANGED: every browser of this kernel republishes the state it was just served when a rename moves a pin
+    the same way on each, and an unchanged state is not worth a push."""
+    if not isinstance(folds, dict):
+        raise _StateUnwritable(_view_folds_path(), "not an object")
+    text = json.dumps(folds, sort_keys=True)
+    if len(text) > _VIEW_FOLDS_CAP:
+        raise _StateUnwritable(_view_folds_path(), "%d bytes, over the %d cap" % (len(text), _VIEW_FOLDS_CAP))
+    with _view_order_lock:                           # one lock for the viewer's store, both files
+        try:
+            raw = _read_state_json(_view_folds_path(), expect=dict)
+        except _StateUnreadable:
+            raw = _VIEW_ORDER_NO_PROOF               # cannot prove it unchanged -> publish (a whole replace, as the order's)
+        if raw is not _VIEW_ORDER_NO_PROOF and raw == folds:
+            return False
+        _write_state_json(_view_folds_path(), text)
+        _view_folds_lkg[0] = json.loads(text)
+    return True
 
 
 def _merge_session_order(incoming):
@@ -16924,8 +17634,16 @@ def _apply_new_session_prefs(sid, body):
     if be is None:
         return out
     if m:
-        _set_model_or_park(be, str(sid), m)
-        out["model"] = m
+        if _pick_vouched(m, be):
+            _set_model_or_park(be, str(sid), m)
+            out["model"] = m
+        else:
+            # refused (a value the kernel cannot vouch for: an extra gateway model whose switch is off, a typo)
+            # AHEAD of the setter, so nothing latches; echoed as `refused` in place of the model, as a refused
+            # effort is below, so `romp new --model` is loud instead of applying a removed id to the fresh row
+            # (review find, 2026-09-21)
+            out["refused"] = _model_refusal(m)
+            sys.stderr.write("model %r for %s refused (POST /new): not a model this kernel offers\n" % (m, sid))
     if e:
         took, _parked = _set_effort_or_park(be, str(sid), e)
         if took:
@@ -16934,7 +17652,7 @@ def _apply_new_session_prefs(sid, body):
             # refused (a Codex model whose catalog does not offer the level or a catalog the backend could not
             # read, an SDK level outside its list): the echo carries the refusal in place of the level, so the
             # caller is loud, and stderr says so once, as the typed route does, with the door named
-            out["refused"] = _effort_refusal(be, e)
+            out["refused"] = " ".join(x for x in (out.get("refused"), _effort_refusal(be, e)) if x)   # after a model refusal, both
             sys.stderr.write("effort %r for %s refused by %s (POST /new)\n" % (e, sid, type(be).__name__))
     if ev is not None and hasattr(be, "set_env"):
         _set_env_or_park(be, str(sid), dict(ev))
@@ -16959,6 +17677,102 @@ def _create_sdk_session(nm, cwd, auth="", prefs=None, client=None, env=None, par
                                          parent=parent, tags=tags)
     finally:
         _release_name(nm)
+
+
+def _sdk_defaults_module():
+    """sdk_backend's read_sdk_defaults / write_sdk_default: the seed file's ONE contract (atomic write, the
+    modelTok every writer of `model` stamps). The module the SDK backend was built from when one is loaded
+    (sys.modules, as _router_tell_backend reads it); loaded by path otherwise, so a caller ahead of the first
+    _sdk() still reads the real thing and never the raw file."""
+    m = sys.modules.get("romp_sdk_backend")
+    return m if m is not None else load_source("romp_sdk_backend", HERE / "sdk_backend.py")
+
+
+def _reset_unvouched_seed():
+    """A remembered sdk-defaults `model` the kernel can no longer vouch for is reset to the account default,
+    LOUDLY, before a spawn copies it into a new row. A dormant pick writes the seed (SdkBackend.set_model's
+    dormant arm), and spawn seeds every new registry row from it unchecked, so a pick of an extra gateway model
+    outlived the switch being turned off — every new session launched on the removed id, with nothing said
+    (review find, 2026-09-21). Read at the create rather than reset at the off flip alone: a kernel restarted
+    under a shorter declaration never saw a flip. Through reset_sdk_default_model_if (a compare-and-swap under the
+    defaults lock, minting a fresh modelTok as write_sdk_default does), never a raw write: the fresh modelTok tells
+    a live pick's pending write it is no longer the store's head, so its later refusal stands down
+    (_seed_write_refused). _vouched_model alone, not the Codex exception: the seed feeds SDK sessions."""
+    sbmod = _sdk_defaults_module()
+    seed = str(sbmod.read_sdk_defaults(jd.STATE).get("model") or "")
+    if not seed or seed == "default":
+        return
+    in_flight, failed, gen = _router_listing_state()   # one snapshot, taken BEFORE the vouch: a listing that lands in
+    #                                                        between installs the id before it clears its mark, so the
+    #                                                        vouch below sees it (the other order reset a pick offered at
+    #                                                        that moment; review round ten)
+    if _vouched_model(seed):
+        return
+    with _SETTINGS_LOCK:
+        with _catalog_lock:
+            moved = _ROUTER_GEN[0] != gen
+            on_now, fault = _router_switch_state()   # the switch as it reads NOW, before ANY hold: an off flip in the window
+    #                                                  is a removal whatever the listing was doing (review round thirteen),
+    #                                                  so every hold below is conditioned on the switch reading on
+    discarded = None
+    if fault and not _ROUTER_SEEN_ON[0]:
+        discarded, fault = fault, None      # the last applied flip was off (or the switch was never on): a fault reads as off, as
+        #                                     the boot and the payload read it; holding here would hold every create forever. The
+        #                                     fault is still NAMED in the reset's cause below (review round sixteen)
+    if fault and not _router_first_party(seed):
+        # the file could not be READ (an OS fault, not an off) after this kernel saw the switch on: no evidence of a
+        # removal, and a reset would name an untrue cause. Held, said so; this row starts on the account default (review
+        # rounds fourteen and fifteen)
+        sys.stderr.write("sdk-defaults model %r is not offered yet; the extra models switch could not be read (%s), so the seed "
+                         "is kept and this session starts on the account default\n" % (seed, fault))
+        return "hold"
+    if not on_now:
+        in_flight = failed = False         # the holds are for a switch that is on; off falls through to the cause read
+    if not _router_first_party(seed) and not (in_flight or failed):
+        moved_on = moved and on_now
+        if moved_on:
+            # an ON flip landed between the snapshot and the vouch: its listing may yet vouch the seed, and the cause
+            # read below would blame the gateway's list for a state one flip old. Held, said so; this row starts on the
+            # account default like the other holds (review round eleven). An OFF flip in the same window is a removal
+            # and falls through to the cause read (review round twelve).
+            sys.stderr.write("sdk-defaults model %r is not offered yet; the extra models switch changed while this session "
+                             "was being created, so the seed is kept and this session starts on the account default\n" % seed)
+            return "hold"
+        if on_now and seed in _router_declared_effective():
+            # the switch is on NOW and the seed IS declared: a create between the flip's bump and its declared install
+            # (the install runs outside the locks, a road with no mark) would otherwise reset a declared pick as "no
+            # longer declared" (review round twelve). Held: the install is moments away. An off flip in the window
+            # reads off here and falls through to the cause read.
+            sys.stderr.write("sdk-defaults model %r is not offered yet; it is declared and its install is under way, so the "
+                             "seed is kept and this session starts on the account default\n" % seed)
+            return "hold"
+    if not _router_first_party(seed) and (in_flight or failed):
+        # the gateway's listing for the current generation has not landed (a create right after boot) or FAILED (nothing
+        # retries it until the next flip or restart): the seed may be one of the ids that listing carries, so it is no
+        # evidence of a removal, and a reset would lose a valid remembered model and name untrue causes. The store is
+        # left alone, said once with the cause established, and THIS row launches on the account default (the caller
+        # clears the reg's copied model between the spawn and the connect), so the pick survives the outage and no
+        # session launches unvouched (verify find and the second reviewer's note, 2026-09-22).
+        why = "is still being fetched" if in_flight else "could not be fetched this generation"
+        sys.stderr.write("sdk-defaults model %r is not offered yet; the gateway's model list %s, so the seed is kept and "
+                         "this session starts on the account default\n" % (seed, why))
+        return "hold"
+    # the cause, as established: the knob when it gates the listing the pick would need, the switch when it is off,
+    # else a declaration that no longer carries the id (or a listing that never did)
+    if not on_now:
+        cause = "the extra models switch is off" + (" (its file could not be read: %s)" % discarded if discarded else "")
+    elif (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip() and not _router_fetch_allowed():
+        cause = "the gateway's model list is not fetched under ROMP_MODEL_CATALOG=off"
+    elif (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip():
+        cause = "it is no longer declared, and the gateway's list does not carry it"
+    else:
+        cause = "it is no longer declared"     # no list is configured: nothing else could have offered it
+    # a compare-and-swap on the value judged: a dormant pick landing between the read and the write (a vouched alias,
+    # its own fresh modelTok) must not be overwritten by a reset aimed at the seed that preceded it (review round
+    # three, 2026-09-22)
+    if sbmod.reset_sdk_default_model_if(jd.STATE, seed):
+        sys.stderr.write("sdk-defaults model %r is not a model this kernel offers (%s); reset to the account default for the "
+                         "new session\n" % (seed, cause))
 
 
 def _create_sdk_session_inner(nm, cwd, auth="", prefs=None, client=None, env=None, parent="", tags=()):
@@ -16990,10 +17804,16 @@ def _create_sdk_session_inner(nm, cwd, auth="", prefs=None, client=None, env=Non
     push."""
     bg, fg = _pick_identity_color()   # fleet-aware: only the kernel sees BOTH backends' live sessions
     _commands_for_cwd(cwd)   # pre-warm the slash-command list — a new session predicts a composer (the user 2026-08-13)
+    hold = _reset_unvouched_seed()   # BEFORE the spawn, which copies the seed into the new row unchecked
     # env rides the SPAWN (the reg is born with it), not the prefs pass behind it: the prefs pass
     # runs pre-connect (pure reg writes), so its env leg sees the reg already carrying this env and
     # skips the set — the echo still comes back through `extra`.
     sid = _sdk().spawn(nm, cwd, bg, fg, auth=auth, env=env)
+    if hold == "hold":
+        # the seed stays for a listing still pending or failed (see _reset_unvouched_seed); this row alone starts on the
+        # account default: the reg's copied model is cleared here, between the spawn and the connect, a reg write and
+        # never set_model (which would re-seed the store)
+        _sdk()._update_reg(sid, model="", liveModel="")
     extra = _apply_new_session_prefs(sid, prefs or {})
     # `parent` (a sid) + `tags` (names) — tab groups on tags (the user 2026-09-04): the child inherits
     # the parent's tag memberships and joins the named tags BEFORE the direct push below, so the very
@@ -18239,6 +19059,20 @@ def _retry_parked_creates():
                     pass
 
 
+def _comment_default_model_effective():
+    """The default-comment model as a new thread will actually take it: the stored value when it is the
+    "session" sentinel (inherit the parent), "default" (the account default) or a model this kernel vouches for
+    (_vouched_model), else "session". A stored default this kernel no longer offers (an extra gateway model whose
+    switch is off) is what the create falls away from, so the dialog's pre-read must fall the same way: before
+    this the /models route served the raw store and the dialog showed the removed id as the default while the
+    create launched on the parent (review find, 2026-09-22). The store is left as it is (a reset would write an
+    ungestured setting); the launch prefs say so on stderr when they fall."""
+    stored = jd._state_str("comment-model", "session")
+    if stored in ("session", "default") or _vouched_model(stored):
+        return stored
+    return "session"
+
+
 def _comment_launch_prefs(model="", effort="", fast=""):
     """Resolve what a new comment thread launches on: the dialog's explicit pick wins; else the
     kernel's default-comment setting (the user 2026-08-29, who wanted every new thread on one
@@ -18252,6 +19086,16 @@ def _comment_launch_prefs(model="", effort="", fast=""):
         v = str(arg or "")
         if not v:
             stored = jd._state_str(fname, "session")
+            if fname == "comment-model":
+                effective = _comment_default_model_effective()   # the read the dialog's pre-read makes too
+                if effective != stored:
+                    # the stored default is a model this kernel no longer offers (an extra gateway model whose switch
+                    # is off): every new thread would launch on it, with nothing said. Inherit the parent instead,
+                    # loudly; the store is left as it is (a reset would write an ungestured setting) — verify find,
+                    # 2026-09-22
+                    sys.stderr.write("comment-model %r is not a model this kernel offers; new threads inherit their "
+                                     "parent until the default is changed\n" % stored)
+                stored = effective
             v = "" if stored == "session" else stored
         out.append(v)
     return tuple(out)
@@ -18330,6 +19174,17 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", eff
             if not anchor_uuid:
                 return FILE_COMMENT_NO_ANCHOR, None
     nm = str(name or "").strip()
+    # the model the thread would launch on, vouched BEFORE the name claim and the fork, like every other pick road
+    # (_pick_vouched): a removed extra gateway model picked in the dialog (a stale picker) launched a new session on
+    # it here, the one create door around the vouch (verify find, 2026-09-22). The stored default is vouched by
+    # _comment_launch_prefs itself and falls to inheriting the parent, so this bites the dialog's explicit pick.
+    launch = _comment_launch_prefs(model, effort, fast)   # resolved ONCE: the fork below reuses it (the stored default's
+    #                                                        refusal line was said twice, review round three, 2026-09-22)
+    m_launch = launch[0]
+    if m_launch and not _pick_vouched(m_launch, be):
+        sys.stderr.write("model %r for a new thread of %s refused (comment create): not a model this kernel offers\n"
+                         % (m_launch, str(parent_sid)[:8]))
+        return _model_refusal(m_launch), None
     if nm and not NAME_RE.match(nm):
         return "thread names use letters, digits, . _ - only.", None
     col = str(color or "").strip()
@@ -18385,7 +19240,7 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", eff
             _save_comments(parent_sid, data)
         if on_row is not None:
             on_row(tsid)
-        model, effort, fast = _comment_launch_prefs(model, effort, fast)
+        model, effort, fast = launch          # resolved once, above the name claim (see the vouch)
         try:
             be.fork(nm, parent_sid, cut, bg=col, fg=(pal.fg_for(col) if col else ""), sid=tsid, thread_of=parent_sid,
                     model=model, effort=effort, fast=fast)
@@ -18965,6 +19820,13 @@ def _sdk_locked():
                 _model_catalog_boot()
             except Exception:
                 sys.stderr.write("model catalog boot: %s\n" % traceback.format_exc())
+            try:
+                # the Extra models switch: the operator's declared gateway families join the pickers here when
+                # the switch is on; the declared list installs synchronously, and a gateway's listing (a URL is
+                # set) is fetched on its own thread, never on this one (see _router_models_boot)
+                _router_models_boot()
+            except Exception:
+                sys.stderr.write("extra models boot: %s\n" % traceback.format_exc())
             _sdk_backend = sbmod.SdkBackend(
                 jd.STATE, _claude_bin(), _send_to_app,
                 poke=_wake_kernel, push=_pusher_wake.set,   # poke = the turn END: judges AND parked-op delivery
@@ -20287,8 +21149,16 @@ def _drive(msg, client):
                                        "text": "Couldn't retry: the session isn't connected right now."}))
     elif t == "setModel" and msg.get("value"):
         # mid-compaction → parked as a queued command; `floating` is the version submenu's Latest row —
-        # forget the family's remembered pin and send the alias
-        if _set_model_or_park(be, sid, str(msg["value"]), floating=bool(msg.get("floating"))) is None:
+        # forget the family's remembered pin and send the alias. Vouched FIRST (_pick_vouched, the typed
+        # road's rule): a value the kernel cannot stand behind — an extra gateway model whose switch has since
+        # been turned off, offered by a picker that has not re-read the list — used to land unvouched here
+        # (registry, pending dots, pick memory), and is refused on the same settingRefused frame as setEffort
+        # below, flag model, never a bare warn (review find, 2026-09-21).
+        if not _pick_vouched(str(msg["value"]), be):
+            client["send"](json.dumps({"type": "settingRefused", "gesture": "command", "sid": sid, "flag": "model",
+                                       "text": _model_refusal(str(msg["value"]))}))
+            sys.stderr.write("model %r for %s refused (setModel): not a model this kernel offers\n" % (str(msg["value"]), sid))
+        elif _set_model_or_park(be, sid, str(msg["value"]), floating=bool(msg.get("floating"))) is None:
             # the park was refused: the session is ending (the third review, 2026-09-21); the same settingRefused frame
             # the setEffort arm answers a refusal with, so the pick's dots end with the reason and nothing reads queued
             client["send"](json.dumps({"type": "settingRefused", "gesture": "command", "sid": sid, "flag": "model",
@@ -20865,6 +21735,68 @@ def _revive_session_inner(sid, client=None):
     _push_soon()                  # surface it promptly — the woken pusher builds it off this thread
     if client is not None:        # the asker's revive loader clears on this focus; other windows stay put
         _reveal_chat_for(client, {"type": "focus", "id": sid})
+
+
+# The panes whose menus offer Restart session, and which therefore latch a row on the click and re-arm it on
+# the kernel's reply: the chat's tab menu and the Sessions pane's row menu (its pane id is the second name).
+_RESTART_VIEWS = ("chat", "fleet")
+
+
+def _restart_reply_views(client):
+    """Which panes of the asking dashboard hear a restart's answer: the ONE that asked, when it is a pane that
+    offers the row (its own socket carries its app), else both. One pane latched the row, one pane re-arms it and
+    says what happened — a second copy in the other pane would report a click that pane never saw. Narrower than
+    the revive's chat+feed pair on purpose, and possible where that one is not: a revive is answered for a dead
+    session two panes can both be showing."""
+    app = (client or {}).get("app") or ""
+    return (app,) if app in _RESTART_VIEWS else _RESTART_VIEWS
+
+
+@_stage_marked("restart")
+def _restart_session(sid, client=None):
+    """The restart door (the WS restartSession op, on its own thread): relaunch the session's own CLI
+    process in place. The session survives the action whole — same sid, same tab in the same place, same
+    name, tags, folder, model and effort, same conversation — and only the process it runs is replaced,
+    by one that resumes the newest transcript. That is what End + Revive reached in two destructive-looking
+    steps, and the reason to reach it is a CLI UPGRADE (the user 2026-09-23): a session launched before an
+    upgrade keeps the binary it launched with, so a model only the newer CLI knows is unreachable from it.
+
+    The work is the owning backend's (SessionBackend.relaunch → SdkBackend.relaunch, which rides
+    request_reconnect, the road every connect-time switch already takes), so nothing here duplicates the
+    revive's resume: the two doors reach different machinery on purpose, and only this one leaves the
+    session live throughout. Runs off the WS recv loop like the revive — the interrupt and the reconnect
+    must not block the socket.
+
+    FAILURE IS LOUD and AIMED (the per-viewer rule, as reviveFailed is): a restartFailed carrying the reason
+    goes to the pane that asked, in the window that asked (_restart_reply_views), and nowhere else. Success
+    sends restarted to the same place — the event that pane's latched row re-arms on, since a restart
+    deliberately changes nothing else it could notice. Neither frame moves the focus: the tab the user is
+    looking at is theirs (2026-07-29), and a restart of some other session must not pull them off it."""
+    sid = str(sid)
+    name = _name_of(sid) or sid
+    wid = (client or {}).get("wid") or ""
+    if not _kernel_knows(sid):
+        detail = ("this romp kernel has no session with id %s — on a board showing more than one machine, "
+                  "that means the pane addressed the wrong kernel" % sid)
+    else:
+        try:
+            be = Sessions.backend_for(sid)
+            # a backend with no relaunch primitive answers the base refusal, never an AttributeError: CodexBackend
+            # duck-types the interface without subclassing SessionBackend, so it inherits nothing (the review of
+            # #2059, 2026-09-24; the move door's hasattr guard)
+            detail = be.relaunch(sid) if hasattr(be, "relaunch") else sb.SessionBackend.relaunch(be, sid)
+        except Exception as e:
+            detail = str(e)[:200]
+    if detail:
+        sys.stderr.write("restart '%s' (%s): refused — %s\n" % (name, sid, detail))
+        failed = {"type": "restartFailed", "id": sid, "name": name, "text": detail}
+        for app in _restart_reply_views(client):
+            _send_to_view(app, failed, wid)
+        return
+    sys.stderr.write("restart: %s via restartSession WS op\n" % sid)   # the attribution the End door writes for a kill
+    for app in _restart_reply_views(client):
+        _send_to_view(app, {"type": "restarted", "id": sid, "name": name}, wid)
+    _push_soon()   # the fresh CLI's state (spawning → connected) reaches the board on the next build
 
 
 # ───────────────────── the unowned route: what answers for a sid no backend owns ─────────────────────
@@ -35163,7 +36095,17 @@ def _chat_build_sig(sess, tm=None, now=None, live_map=None, deps=None):
         # (None before the first build and 0 for no card share the no-dot value, as the boolean's None and False do).
         sig.append((_feed_needs_input_of(sid) is True, _feed_needs_input_count_of(sid) or 0))
         # notices: the approval box's rows by id (a hold posted, a decision taken), so the box and the ring move in one frame
-        sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("title") or "", n.get("body") or "", bool(n.get("cont")), n.get("fix") or "") for n in (_chat_notices(sid) or ())))   # the box's rows by id AND face (phase three): a brief landing, a Continue moving or a retitle (the judge retitles a top under its id; the second review of PR 1967, 2026-09-21) repaints the box; `t` is _NEEDS_ROW_UNKEYED; one value per label
+        sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("title") or "", n.get("body") or "", bool(n.get("cont")), n.get("fix") or "",
+                          # the card's fields the row draws since it carries what the card carries (plans/needs-you.md): each by value, the
+                          # structured ones as canonical JSON, so a brief paragraph, a stamp, a sub-goal or a badge moving repaints the row
+                          _row_field_key(n.get("summary")), _row_field_key(n.get("blockSummary")), _row_field_key(n.get("briefParts")),
+                          _row_field_key(n.get("summaryParts")), _row_field_key(n.get("distillState")), _row_field_key(n.get("summaryStale")),
+                          _row_field_key(n.get("relayNote")), _row_field_key(n.get("background")), _row_field_key(n.get("stalled")),
+                          _row_field_key(n.get("tree")), _row_field_key(n.get("awaiting")), _row_field_key(n.get("recheck")),
+                          _row_field_key(n.get("rejudging")), _row_field_key(n.get("nudgeFailed")), _row_field_key(n.get("nudged")),
+                          _row_field_key(n.get("interrupting")), _row_field_key(n.get("interrupted")), _row_field_key(n.get("waitingOn")),
+                          _row_field_key(n.get("origin")), _row_field_key(n.get("handoffTo")),
+                    _row_field_key(n.get("warns")), _row_field_key(n.get("failLog")), _row_field_key(n.get("summaryAnchorUuid")), _row_field_key(n.get("summaryAnchorQuote")), _row_field_key(n.get("summaryAnchorsPara")), _row_field_key(n.get("doneConfirming")), _row_field_key(n.get("blocked")), _row_field_key(n.get("column")), _row_field_key(n.get("judging")), _row_field_key(n.get("working")), _row_field_key(n.get("sessState")), _row_field_key(n.get("delegTracked"))) for n in (_chat_notices(sid) or ())))   # the box's rows by id AND face (phase three): a brief landing, a Continue moving or a retitle (the judge retitles a top under its id; the second review of PR 1967, 2026-09-21) repaints the box; `t` is _NEEDS_ROW_UNKEYED; one value per label
         # floor: the render floor decision (T323 stage 4b): True while a proto-1 client is connected (the pusher's
         # per-push flag), so a payload built from turn 0 is never served from the cache once the floor climbs
         sig.append(bool(getattr(_live_scope, "chat_floor0", False)))
@@ -35202,7 +36144,8 @@ def _parse(path, sid, now):
     states = str(jd.STATE / "states" / (sid + ".jsonl"))   # the kernel's states log path (the judges default to the same file)
     session = jd.parsed_session(sid, [path], now, asm_mode_out=_mode, stats=stats, states=states,
                                 sdk_human=_display_sdk_human(sid))
-    _parse_mode[path] = _mode[-1] if _mode else "full"
+    road = _mode[-1] if _mode else "full"           # a serve or a whole parse that raised appends "fallback" after it: the last ran
+    _parse_mode[path] = road
     # The fileset key this parse was SERVED under (jd.parsed_session `stats["key"]`: the [mtime, size] row of every file it
     # read, taken before the read, so the content is at least as new as the rows say), stamped on the tree for the chat
     # frame's watermark (_chat_wm, 2026-09-22). The tree is the shared cache object and the stamp is idempotent for it: one
@@ -35212,11 +36155,16 @@ def _parse(path, sid, now):
         session["_txKey"] = _tx[0]
     try:
         if stats.get("miss"):
-            try:
-                size = os.stat(path).st_size
-            except OSError:
-                size = 0
-            _PERF_STATS.parse(sid, size)             # a cold parse the KERNEL's ask ran (T323: /perf parses.kernel)
+            # a cold parse the KERNEL's ask ran (T323: /perf parses.kernel), under the road it took; the leaf's size is a
+            # parse cost only on a road that walked it from the first record (2026-09-24: a fold reads the appended bytes,
+            # a serve or a restore none of the pre-cut transcript, and booking the leaf at every miss read them as whole)
+            size = 0
+            if road in _PerfStats.WHOLE_ROADS:
+                try:
+                    size = os.stat(path).st_size
+                except OSError:
+                    size = 0
+            _PERF_STATS.parse(sid, size, road=road)
         else:
             _PERF_STATS.parse_hit()
     except Exception:
@@ -37725,8 +38673,16 @@ def _set_model_or_park(be, sid, value, floating=False):
     forgotten, so the family follows the CLI's newest again — the one picker gesture back from a pin (the
     family row sends the pin, the version rows pin, and a typed bare alias leaves the memory alone by
     design). Meaningless on a non-alias value. Returns True when the pick PARKED, False when it fired now, and None
-    when the park was REFUSED because the session is ending (_park_op_locked's latch, the third review, 2026-09-21):
-    the pick went nowhere, the pending stamp is taken back, and the caller says so instead of answering queued."""
+    when the pick was REFUSED: the session is ending (_park_op_locked's latch, the third review, 2026-09-21), or the
+    value is one no road can vouch for (_pick_vouched) — such a value latches nothing here — no pin forgotten, no
+    pending stamp, no pick memory, no park, no backend call — because the setter PERSISTS what it takes (the registry,
+    the sdk-defaults seed for every future session), and a removed gateway id that got this far used to land on all of
+    them (review find, 2026-09-21). The roads vouch ahead of the call and answer their own refusal; this is the backstop
+    for any other caller, said once on stderr. Either way the pick went nowhere and the caller says so instead of
+    answering queued."""
+    if not _pick_vouched(value, be):
+        sys.stderr.write("model %r for %s refused: not a model this kernel offers\n" % (value, sid))
+        return None
     if floating and value in _MODEL_VALUES:
         _forget_model_pick(value)
     _mark_model_pending(sid, value)
@@ -37880,10 +38836,9 @@ def _route_setter_command(be, sid, text, client=None, floating=False, state=None
     # The unowned route is vouched for the same shape: a DEAD Codex session still reports its backend (the
     # lane reads the durable row, _session_backend), so its menu still offers gpt-… while backend_for says
     # _UNOWNED (CodexBackend.owns is False once dead) — and the refusal arm below is the one place the client
-    # hears that the pick went nowhere; _UNOWNED.send refuses on stderr alone (review find, 2026-09-11).
-    model_pick = head == "/model" and (_vouched_model(value)
-                                        or (value.startswith("gpt") and be is not None
-                                            and (be is _UNOWNED or be is _codex())))
+    # hears that the pick went nowhere; _UNOWNED.send refuses on stderr alone (review find, 2026-09-11). The
+    # rule is _pick_vouched, the one the setModel op and POST /new read too (review find, 2026-09-21).
+    model_pick = head == "/model" and _pick_vouched(value, be)
     # Codex's backend validates against the selected model's advertised capabilities (2026-09-17).
     # Its effort command must never become model input just because a new level is absent from the SDK list.
     effort_pick = head == "/effort" and (value in _EFFORT_VALUES or (be is not None
@@ -38229,6 +39184,27 @@ def _vouched_model(value):
     return bool(parts and parts[0] in _MODEL_VALUES)
 
 
+def _pick_vouched(value, be):
+    """The ONE vouch every model-pick road asks before its setter latches anything: _vouched_model, or the
+    Codex exception — a gpt-… value when `be` is the Codex backend or the unowned route (a dead Codex session
+    still reports its backend, so its menu still offers gpt-…; the typed road's rule since 2026-09-11, kept
+    byte-for-byte). The typed /model road was the only reader; the setter, the WS setModel arm and the POST
+    /new body took a pick unvouched, so after the extra-models switch was turned on and then off a removed
+    gateway id still landed on all three: registry, pending dots, pick memory (review find, 2026-09-21).
+    The Codex backend is known by identity (the singleton every route hands out) or by class: the setter is
+    a reader now, and a test drives it with a CodexBackend of its own that is not the singleton."""
+    if _vouched_model(value):
+        return True
+    return bool(value.startswith("gpt") and be is not None
+                and (be is _UNOWNED or be is _codex() or type(be).__name__ == "CodexBackend"))
+
+
+def _model_refusal(value):
+    """The sentence a refused model pick is answered with, the same one on every road (the WS arm's
+    settingRefused frame, POST /new's `refused` echo, the setter's stderr line)."""
+    return "Couldn't switch to '%s': it isn't a model this kernel offers right now." % value
+
+
 def _deliver_send_batch(be, sid, run):
     """Deliver a run of consecutive parked ('send', text, echo) ops in one pass, in park order. A backend that
     forwards its own sends (SDK, Codex) enqueues each: the SDK's inputs() hands them to the CLI one message
@@ -38535,7 +39511,20 @@ def _apply_pending_ops(now=None):
                         refused = _user_send(be, sid, "/compact") is False   # a parked compact click is the user's too (T315); a
                         #                                                      backend with the verb took the native arm above (2026-09-19)
                     elif op[0] == "model":
-                        be.set_model(sid, op[1])
+                        # vouched at FIRE time, not only at the park: a pick parked while the extra-models switch was on
+                        # and drained after it went off would otherwise reach the backend unvouched, the one road left
+                        # around _pick_vouched (review round, 2026-09-22); refused the way a parked level is, below
+                        if _pick_vouched(op[1], be):
+                            be.set_model(sid, op[1])
+                        else:
+                            refused = True
+                            # the stamp the setter put up at park time rides both surfaces' dots for 20 s: taken back
+                            # when it is this pick's (a later pick's stamp is left), as _model_park_refused does
+                            # (the second reviewer's note, 2026-09-22)
+                            st = _model_switch_pending.get(str(sid))
+                            if st and st.get("target") == op[1]:
+                                _model_switch_pending.pop(str(sid), None)
+                                _mark_views_dirty()
                     elif op[0] == "effort":
                         # the verdict is READ, as the command and compact arms read theirs: a level the backend refuses
                         # at fire time (a Codex model whose catalog does not offer it after a model change under the
@@ -38597,7 +39586,7 @@ def _apply_pending_ops(now=None):
                                                           # compaction's cue is its backend's bracket, which compacting() publishes (2026-09-19)
                         _after_turn_opening(be, sid, _pending_ops.get(sid) or [])
                         break                             # its turn / compaction must end before anything behind it fires
-                    if op[0] in ("effort", "fast") and refused:
+                    if op[0] in ("model", "effort", "fast") and refused:
                         # the backend refused the parked level or toggle when it fired (a Codex model whose catalog does
                         # not offer the level, a session the backend holds no row for, a Codex session's fast toggle: it
                         # has no fast mode): the same stderr line the command and compact arms write, and the refusal
@@ -38610,6 +39599,7 @@ def _apply_pending_ops(now=None):
                         # is retried: the gate lift is still what fires the op, and it is popped once, above.
                         what = "/%s %s" % (op[0], op[1])
                         why = (_effort_refusal(be, op[1]) if op[0] == "effort"
+                               else _model_refusal(op[1]) if op[0] == "model"
                                else "Couldn't toggle fast mode: the session's backend refused it.")
                         sys.stderr.write("pending ops apply: %s refused %r for %s\n" % (type(be).__name__, what, sid[:8]))
                         _send_to_app("chat", {"type": "settingRefused", "gesture": "command", "sid": sid,
@@ -50768,6 +51758,148 @@ def _ws_accept(key):
 WS_QUEUE_BYTES = int(os.environ.get("ROMP_WS_QUEUE_BYTES", str(16 * 1024 * 1024)))
 
 
+# Per-message compression (RFC 7692 permessage-deflate, 2026-09-23). The panes' view frames are JSON, and JSON
+# deflates well: the whole feed frame of a 374-card board measured 2.53 MB plain and 0.36 MB deflated at level 6
+# (7.1x), 0.42 MB at level 3 (6.1x); the feed's steady-state deltas averaged 548 KB each over one day on the same
+# board (/perf sends.delta.feed: 20,462 frames, 11.2 GB), and every reconnect re-bases a delta client with a whole
+# frame. Over a tunnelled link (tailscale serve, an ssh -L, the phone) that traffic is what fell behind: the feed
+# client was dropped with megabytes unsent ("not acknowledging: 4183744 bytes unsent for 36s"), and until this
+# every byte crossed plain — the upgrade ignored the Sec-WebSocket-Extensions offer every browser and Node's `ws`
+# make on every dial. The kernel now takes that offer and sets RSV1 on the frames it compresses; the client
+# inflates natively, so no pane code changes. Both directions run WITHOUT context takeover (each message its own
+# deflate stream; the response says so for both sides): no compressor state per client, so the sender threads
+# share nothing and the reader inflates statelessly, at the cost of the cross-message dictionary — worth little on
+# frames far larger than the 32 KB window. Frames under _WS_DEFLATE_MIN go plain: a keepalive or a status frame
+# gains nothing from a deflate stream's header. Level 3 is the knee measured on the feed frame (17 ms per 2.5 MB;
+# level 6 took 55 ms for 14% fewer bytes), and the compress runs on the client's own sender thread with the GIL
+# released, never on the pusher's. ROMP_WS_DEFLATE=0 declines every offer; ROMP_WS_DEFLATE_LEVEL sets zlib's level.
+def _ws_deflate_env(env=None):
+    """(take offers?, zlib level) from the environment: ROMP_WS_DEFLATE=0 declines every offer; ROMP_WS_DEFLATE_LEVEL
+    picks zlib's level, clamped to 1..9, and a value that is not a number falls to the default rather than
+    failing the boot (review, 2026-09-23). One seam, so a test can read it with an environment of its own."""
+    env = os.environ if env is None else env
+    on = (env.get("ROMP_WS_DEFLATE") or "1").strip() != "0"
+    try:
+        level = int((env.get("ROMP_WS_DEFLATE_LEVEL") or "").strip() or 3)
+    except ValueError:
+        level = 3
+    return on, max(1, min(9, level))
+
+
+_WS_DEFLATE_ON, _WS_DEFLATE_LEVEL = _ws_deflate_env()
+_WS_DEFLATE_MIN = 1024                     # a message shorter than this goes plain
+_WS_DEFLATE_TAIL = b"\x00\x00\xff\xff"     # the empty stored block a sync flush ends with: stripped on the wire, restored to inflate
+_WS_DEFLATE_PARAMS = ("server_no_context_takeover", "client_no_context_takeover", "server_max_window_bits", "client_max_window_bits")
+_WS_WINDOW_RE = re.compile(r"[1-9][0-9]?")   # a window value: one or two ASCII digits, no leading zero. str.isdigit admits the
+#                                              Latin-1 superscripts and a 4,300-digit run, both of which int() then refuses — a
+#                                              500 on the upgrade where §7.1 says decline the offer and upgrade plain (review, 2026-09-23)
+_WS_INFLATE_STEP = 1024 * 1024             # inflate in pieces this size, so a message past the cap is refused one piece past it
+
+
+def _ws_deflate_offer(header):
+    """The first permessage-deflate offer in a Sec-WebSocket-Extensions header the kernel can take → its terms
+    ({"wbits": the deflate window the kernel must keep to, 15 unless the offer bounded it; "bounded": whether the
+    offer named a server window at all, which the response must then echo, at 15 too}), or None: no header, no
+    such offer, or every offer carried a parameter RFC 7692 §7.1 says a server must decline (an unknown name, a
+    repeated one, a value where none belongs, a window outside 8..15). A server window of 8 is declined too: zlib
+    will not build a raw deflate stream with a window that small (ValueError), so accepting the offer would
+    promise what cannot be sent; no browser or library offers one."""
+    if not header:
+        return None
+    for offer in str(header).split(","):
+        parts = [p.strip() for p in offer.split(";")]
+        if parts[0].lower() != "permessage-deflate":
+            continue
+        seen, wbits, ok = set(), 15, True
+        for p in parts[1:]:
+            if not p:
+                continue
+            name, _, val = p.partition("=")
+            name, val = name.strip().lower(), val.strip().strip('"')
+            if name not in _WS_DEFLATE_PARAMS or name in seen:
+                ok = False
+                break
+            seen.add(name)
+            if name.endswith("_no_context_takeover"):
+                ok = not val                                     # a flag: a value is malformed
+            elif name == "server_max_window_bits":
+                ok = bool(_WS_WINDOW_RE.fullmatch(val)) and 9 <= int(val) <= 15   # the value is required in an offer
+                wbits = int(val) if ok else wbits
+            elif val:                                            # client_max_window_bits: the value is optional
+                ok = bool(_WS_WINDOW_RE.fullmatch(val)) and 8 <= int(val) <= 15
+            if not ok:
+                break
+        if ok:
+            return {"wbits": wbits, "bounded": "server_max_window_bits" in seen}
+    return None
+
+
+def _ws_deflate_response(terms):
+    """The Sec-WebSocket-Extensions the kernel answers an accepted offer with: no context takeover on either side
+    (RFC 7692 §7.1.1 lets a server state both whether or not the offer did; the client MUST then reset its
+    compressor per message, which is what lets the reader inflate statelessly), and the kernel's window
+    whenever the offer named one — at 15 as well: §7.1.2.1 accepts such an offer only WITH the parameter in the
+    response, and a client that asked (Python's websockets, for one) refuses a response without it, which would
+    have left it unable to connect at all where declining the offer had let it connect plain (review find,
+    2026-09-23)."""
+    out = "permessage-deflate; server_no_context_takeover; client_no_context_takeover"
+    if terms.get("bounded"):
+        out += "; server_max_window_bits=%d" % terms.get("wbits", 15)
+    return out
+
+
+def _ws_deflate(data, wbits=15):
+    """One message's payload deflated for the wire (RFC 7692 §7.2.1): a fresh raw deflate stream, sync-flushed,
+    its trailing empty block removed. None when the result would not be smaller (or zlib refused): the frame
+    goes plain then, which the extension permits per message."""
+    try:
+        z = zlib.compressobj(_WS_DEFLATE_LEVEL, zlib.DEFLATED, -wbits)
+        out = z.compress(data) + z.flush(zlib.Z_SYNC_FLUSH)
+    except zlib.error:
+        return None
+    if not out.endswith(_WS_DEFLATE_TAIL):
+        return None
+    out = out[:-4]
+    return out if 0 < len(out) < len(data) else None
+
+
+def _ws_inflate(data, cap):
+    """A compressed message's payload restored (RFC 7692 §7.2.2) → (bytes, None), or (None, why) when the bytes
+    are not a deflate stream or inflate past `cap` — the reader ends the connection on either, as it does on a
+    fragmented message overrunning the same cap. The stripped tail is appended and one fresh raw inflate stream
+    run (the response demanded no context takeover of the client), in _WS_INFLATE_STEP pieces joined only once
+    the whole is known to fit: the cap then bounds what a message COSTS as well as what it returns. A single
+    decompress call bounded by max_length still held its output blocks and the joined result at once, so a
+    deflate bomb cost about twice the cap before it was refused (review, 2026-09-23; measured: a 160 KB frame
+    inflating to 160 MiB against the 80 MiB cap peaked at 160 MiB that way, 82 MiB piecewise). What the reader
+    transiently holds is therefore about the cap plus one piece plus the compressed input for a bomb, and about
+    twice its size for a legitimate message near the cap (its pieces and their join, once) — per message, per
+    connection; only a client holding the serve token reaches this reader at all."""
+    src = data + _WS_DEFLATE_TAIL
+    out, total = [], 0
+    try:
+        z = zlib.decompressobj(-15)
+        while True:
+            piece = z.decompress(src, _WS_INFLATE_STEP)
+            total += len(piece)
+            if total > cap:
+                return None, "a compressed message that inflates past %d bytes" % cap
+            out.append(piece)
+            # the stream ended, or its input is spent. A message may end in a BFINAL block (RFC 7692 §7.2.3.4), which
+            # leaves the tail appended above past the stream's end, and once an earlier piece filled the step CPython
+            # keeps such leftovers in unconsumed_tail as well as unused_data: stopping on the tail alone called again on
+            # the ended stream, got nothing, and refused a legal message as not inflating (post-merge review of #2106,
+            # 2026-09-24)
+            if z.eof or not z.unconsumed_tail:
+                break
+            if not piece:                        # no output and input left over: zlib is not moving (cannot happen with a
+                return None, "a compressed message that does not inflate"   # positive max_length, guarded so the loop cannot spin)
+            src = z.unconsumed_tail
+    except zlib.error:
+        return None, "a compressed message that is not a deflate stream"
+    return b"".join(out), None
+
+
 # Every client OWNS a queue and a sender thread, and the shared push/heartbeat loops only ever ENQUEUE.
 #
 # They used to write to the socket directly, which is the bug this fixes: a client that stops draining — a
@@ -50810,7 +51942,7 @@ def _ws_sender(q, sock, lock, client):
                 with lock:
                     sock.sendall(s)
             else:
-                _ws_send(sock, lock, s)
+                _ws_send(sock, lock, s, client.get("deflate"))   # the client's permessage-deflate terms, or None
         except OSError:
             client["alive"] = False
             return
@@ -51267,11 +52399,20 @@ def _drop_dead_ws_client(client, why):
         pass
 
 
-def _ws_send(sock, lock, text):
-    """Frame and write one text message. Called ONLY from that client's sender thread (see _ws_sender)."""
+def _ws_send(sock, lock, text, deflate=None):
+    """Frame and write one text message. Called ONLY from that client's sender thread (see _ws_sender).
+    `deflate` is the client's negotiated permessage-deflate terms (None: it offered none, or the kernel
+    declined): a message of _WS_DEFLATE_MIN bytes or more is compressed and its frame carries RSV1, the
+    extension's per-message flag (RFC 7692 §6); a shorter one, or one deflate would not shrink, goes plain
+    in the frame it always did."""
     data = text.encode("utf-8")
+    b0 = 0x81                                 # FIN + text frame
+    if deflate is not None and len(data) >= _WS_DEFLATE_MIN:
+        z = _ws_deflate(data, deflate.get("wbits", 15))
+        if z is not None:
+            data, b0 = z, 0xC1                # FIN + RSV1 (compressed) + text frame
     n = len(data)
-    hdr = bytearray([0x81])                   # FIN + text frame
+    hdr = bytearray([b0])
     if n < 126:
         hdr.append(n)
     elif n < 65536:
@@ -51293,15 +52434,44 @@ def _ws_pong(wfile, lock, payload):
         wfile.flush()
 
 
+def _ws_close(wfile, lock, code, reason):
+    """Send a Close frame (RFC 6455 §5.5.1: FIN + opcode 0x8, a two-byte status code then the reason, at most
+    125 bytes together) on this client's handler thread, the road the pongs take, before the socket is torn
+    down: the pane's wsclose row then reads the code (1002 protocol error, 1007 invalid payload, 1009 too
+    big) instead of the 1006 a bare shutdown leaves, which is the code of a network drop."""
+    data = struct.pack(">H", int(code)) + str(reason).encode("utf-8", "replace")[:123]
+    try:
+        with lock:
+            wfile.write(bytes([0x88, len(data)]) + data)
+            wfile.flush()
+    except (OSError, ValueError):
+        pass
+
+
+def _ws_fail(wfile, lock, client, code, why):
+    """A read the kernel ends (see _ws_recv_message's on_fail) is LOUD like every other drop: one stderr line in
+    _drop_dead_ws_client's voice, once per connection, and the Close frame carrying the code. A client that keeps
+    a compression context against the response's terms, or sets RSV1 where the extension forbids it, is cut off at
+    its first such message after every redial — the line names the cause each time rather than leaving a run of
+    1006s that reads as a flaky network."""
+    if not client.get("failLogged"):
+        client["failLogged"] = True
+        sys.stderr.write("ws: dropping %s client — %s (close %d)\n" % (client.get("app"), why, code))
+    _ws_close(wfile, lock, code, why)
+
+
 def _ws_recv(rfile):
     """Read one client (masked) frame → (opcode, payload bytes, fin), or (None, None, True) on
     close/EOF. One FRAME, not one message: data messages may span several frames (FIN clear until
-    the last) — _ws_recv_message below reassembles them."""
+    the last) — _ws_recv_message below reassembles them. `opcode` carries the frame's RSV1 bit (0x40)
+    above the four opcode bits: permessage-deflate's compressed-message flag, set on the FIRST frame of a
+    compressed message, which the reassembler reads and masks off before it compares the opcode (a plain
+    frame's opcode reads as it always did; the two other reserved bits are dropped, as before)."""
     b = rfile.read(2)
     if len(b) < 2:
         return None, None, True
     fin = bool(b[0] & 0x80)
-    opcode = b[0] & 0x0F
+    opcode = b[0] & 0x4F
     masked = b[1] & 0x80
     ln = b[1] & 0x7F
     if ln == 126:
@@ -51332,7 +52502,7 @@ def _ws_recv(rfile):
 _WS_MAX_MESSAGE = 80 * 1024 * 1024
 
 
-def _ws_recv_message(rfile, on_ping, on_pong=None):
+def _ws_recv_message(rfile, on_ping, on_pong=None, inflate=False, on_fail=None):
     """Read frames until one COMPLETE data message is assembled → (opcode, payload), or (None, None)
     on close/EOF/overrun. Browsers FRAGMENT large sends (RFC 6455 §5.4 — Chrome splits at ~128 KB),
     and the old per-frame loop handed each fragment straight to json.loads: a phone photo's dropFile
@@ -51340,12 +52510,40 @@ def _ws_recv_message(rfile, on_ping, on_pong=None):
     dropped continuation frames, so the 📎 pick looked like it did nothing (the user 2026-08-10,
     Chrome on a phone; small desktop files sat under the threshold, which is why it never surfaced).
     Control frames may interleave between fragments: pings are answered via on_ping, pongs go to
-    on_pong (the liveness beat's answer) or are dropped without one, close ends the read."""
-    frag_op, frag = None, None
+    on_pong (the liveness beat's answer) or are dropped without one, close ends the read.
+    `inflate`: the client negotiated permessage-deflate, so a message whose first frame carries RSV1 is
+    compressed and is inflated here, once assembled, before anything parses it (RFC 7692 §7.2.2; the
+    payload cap applies to the inflated bytes). RSV1 from a client that negotiated nothing is a protocol
+    error (RFC 6455 §5.2), and so is RSV1 on a continuation or control frame (RFC 7692 §6.1); both end the
+    read like a close. `on_fail(code, reason)` is told about every end the KERNEL decides — those two, a
+    compressed message that will not inflate (1007) or inflates past the cap (1009), a fragmented message past
+    the cap (1009) — before (None, None) comes back, so the handler can answer with a Close frame carrying the
+    code and log the reason (review, 2026-09-23: these ends left the pane a bare 1006, the code of a network
+    drop, and the log nothing). EOF and the peer's own close are the peer's doing and say nothing."""
+    frag_op, frag, frag_z = None, None, False
+
+    def fail(code, why):
+        if on_fail is not None:
+            on_fail(code, why)
+        return None, None
+
+    def message(op, data, compressed):
+        if not compressed:
+            return op, data
+        if not inflate:
+            return fail(1002, "a compressed message from a client that negotiated no compression")
+        out, why = _ws_inflate(data, _WS_MAX_MESSAGE)
+        return (op, out) if out is not None else fail(1009 if "past" in why else 1007, why)
+
     while True:
         op, payload, fin = _ws_recv(rfile)
-        if op is None or op == 0x8:            # EOF / close
+        if op is None:                         # EOF
             return None, None
+        rsv1, op = bool(op & 0x40), op & 0x0F  # RSV1 rides above the opcode (see _ws_recv)
+        if op == 0x8:                          # close
+            return None, None
+        if rsv1 and (op == 0x0 or op >= 0x8):  # RSV1 belongs to a message's FIRST data frame alone (RFC 7692 §6.1)
+            return fail(1002, "RSV1 on a %s frame" % ("continuation" if op == 0x0 else "control"))
         if op == 0x9:                          # ping → pong (libraries ping by default and hang up without one)
             on_ping(payload or b"")
             continue
@@ -51358,14 +52556,13 @@ def _ws_recv_message(rfile, on_ping, on_pong=None):
                 continue                       # stray continuation with no opening frame — drop it
             frag += payload
             if len(frag) > _WS_MAX_MESSAGE:
-                return None, None
+                return fail(1009, "a fragmented message past %d bytes" % _WS_MAX_MESSAGE)
             if fin:
-                out = bytes(frag)
-                return frag_op, out
+                return message(frag_op, bytes(frag), frag_z)
             continue
         if fin:                                # the common case: a whole message in one frame
-            return op, payload
-        frag_op, frag = op, bytearray(payload)  # a data frame OPENING a fragmented message
+            return message(op, payload, rsv1)
+        frag_op, frag, frag_z = op, bytearray(payload), rsv1   # a data frame OPENING a fragmented message
 
 
 def _send_to_app(app, msg):
@@ -52810,7 +54007,11 @@ def _send_slot_delta(c, key, ftype, payload, pre, sig, parts=None):
 #   tagEdit — the targeted `tagEdit` op (create / rename / recolor / addMember / removeMember /
 #             delete / move, by tag id), the `tagEditAck` / `viewsAck` answers on the poster's socket,
 #             and the write sequence (`seq`) on every views blob.
-KERNEL_WS_CAPS = ("tagEdit", "chatProto2")   # chatProto2: the uuid-anchored chat wire (T323 stage 4b)
+KERNEL_WS_CAPS = ("tagEdit", "chatProto2", "viewOrder", "viewFolds", "restartSession")   # chatProto2: the uuid-anchored chat wire (T323 stage 4b);
+#                                              viewOrder: this kernel keeps the viewer's arrangement (2026-09-23);
+#                                              viewFolds: …and its folded groups, on the same frame (2026-09-23)
+#   restartSession: the menus' Restart session (2026-09-23) — a page that has the row and a kernel that does not answers
+#   unknownOp, which the row reads as the refusal it is instead of latching on a reply that never comes
 # The caps frame: {type: "caps", caps: [...], viewsSeq: int|null}. `viewsSeq` (the 2026-09-05
 # review) is the write seq of the views blob the READY HANDLER'S OWN connect push served this client — the
 # tabOrder frame's for a chat page, the timeline skeleton's (`data.views`), the feed frame's — read from
@@ -52843,6 +54044,64 @@ def _views_seq_of(msg):
         return int(v["seq"])
     except (TypeError, ValueError):
         return None
+
+
+def _view_order_frame():
+    """{type: "viewOrder", order, stored} — the viewer's arrangement this kernel keeps (2026-09-23).
+
+    `order` is a list of strings this kernel never interprets (the store's comment says why that is not
+    the thing the 2026-07-31 ruling ruled out); `stored` says whether this kernel has an arrangement at
+    all, which the client's migration turns on (view-order.ts viewOrderToPublish). Sent to a client on
+    its `ready` -- the connect push -- and to every client the moment a setViewOrder CHANGES the store,
+    which is the event the viewer's other devices converge on. Nothing periodic reads it.
+
+    `folds` rides beside them (2026-09-23): the viewer's fold state (_view_folds_served), an object, or null
+    when this kernel has none, which is what a browser carrying folds of its own publishes against
+    (tab-groups.ts foldsToPublish). A change to either half is a change to this one frame, pushed on the
+    same slot, so the folds converge on the same event the arrangement does (a setViewFolds that CHANGES
+    the store).
+
+    Each half is left OUT when its store could not be read and nothing is known-good, and the page keeps
+    what it is showing for that half rather than adopting a guess (federation.ts reads a half only when it
+    is present); None, no frame at all, when neither half can be said."""
+    served = _view_order_served()
+    folds = _view_folds_served()
+    if served is None and folds is _VIEW_FOLDS_UNKNOWN:
+        return None
+    fr = {"type": "viewOrder"}
+    if served is not None:
+        fr["order"], fr["stored"] = served
+    if folds is not _VIEW_FOLDS_UNKNOWN:
+        fr["folds"] = folds
+    return fr
+
+
+def _send_view_order(c, fr=None):
+    """One client's copy, on its own dedup slot: a client already holding this arrangement byte for byte
+    is sent nothing, so the connect push and the change push cannot double up on it."""
+    try:
+        if fr is None:
+            fr = _view_order_frame()
+        if fr is not None:
+            _send_client(c, ("vieworder",), fr)
+    except Exception:                                # never widen a connect push or a drag's reply
+        sys.stderr.write("viewOrder send: %s\n" % traceback.format_exc())
+
+
+def _broadcast_view_order():
+    """The change event: every connected client learns the new arrangement now. Built ONCE and handed to
+    each client's dedup slot -- the viewer that posted it holds it already and is skipped there."""
+    try:
+        fr = _view_order_frame()
+    except Exception:
+        sys.stderr.write("viewOrder: %s\n" % traceback.format_exc())
+        return
+    if fr is None:
+        return
+    with _clients_lock:
+        clients = list(_clients)
+    for c in clients:
+        _send_view_order(c, fr)
 
 
 def _send_caps(client, views_seq=None):
@@ -54349,6 +55608,8 @@ def _setting_kept_value(name):
         return _thinking_summaries_on()
     if name == "whole-chat-frames":
         return _whole_chat_frames_on()
+    if name == "router-models":
+        return _router_models_on()
     if name == "task-tracking":
         return _task_tracking_on()
     return jd._state_str(name, "")   # the judge-tier stores are bare value files
@@ -54514,7 +55775,7 @@ def _apply_mesh_settings(body):
 
 # Every gt-gated store, by the name _setting_stale is called with — the vocabulary the settingStale
 # frame and the gear's STALE_LABELS already share, so /version's settingsGt speaks the same one.
-_GT_STORES = ("auto-nudge", "compact-suggest", "file-editing", "update-mode", "thinking-summaries", "whole-chat-frames", "task-tracking",
+_GT_STORES = ("auto-nudge", "compact-suggest", "file-editing", "update-mode", "thinking-summaries", "whole-chat-frames", "router-models", "task-tracking",
               "judge-model", "index-model", "judge-effort", "index-effort", "judge-concurrency",
               "distill-model", "distill-effort", "comment-model", "comment-effort", "comment-fast",
               "judge-fast", "distill-fast", "index-fast",
@@ -54972,6 +56233,8 @@ def _setting_stored_gt(name):
         return _gt_int(_auto_nudge_data().get("compactSuggestGt"))
     if name == "update-mode":
         return _update_mode_gt()
+    if name == "router-models":
+        return _router_models_gt()
     if name in ("file-editing", "thinking-summaries", "whole-chat-frames"):
         try:
             d = json.loads((jd.STATE / (THINKING_SUMMARIES_FILE if name == "thinking-summaries"
@@ -58216,6 +59479,18 @@ _built_timeline = [None, None, 0.0, 0.0]          # [fleet_sig, payload, built_a
 _feed_needs_input = [None]
 _feed_needs_input_count = [None]   # per-sid count of needs-you cards, for the numbered badge (plans/tab-state-badge.md); set beside _feed_needs_input from the same feed rule
 _feed_needs_rows = [None]        # sid -> the Needs you box's GOAL rows from the last feed build (plans/needs-you.md, phase three); None before it
+def _row_field_key(v):
+    """A Needs-you row field as a hashable key: a scalar as itself, a structured value (a tree, the awaited rows, a badge's record) as
+    canonical JSON, None as None; the chat signature keys every field the row draws (plans/needs-you.md: the row carries what the card
+    carries), so a change inside a structure repaints the row."""
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    try:
+        return json.dumps(v, sort_keys=True, separators=(",", ":"), default=str)
+    except Exception:
+        return repr(v)
+
+
 _NEEDS_ROW_UNKEYED = frozenset(("t",))   # a goal row's fields the box does not draw: outside the chat key (_chat_build_sig) AND the wake compare
 #                                          below, as _CHAT_ROW_UNKEYED is for the liveness row; every other field (itemId, kind, title, body,
 #                                          cont, fix) is the row's face and moves both (the second review of PR 1967, 2026-09-21)
@@ -58244,7 +59519,9 @@ def _needs_you_rows(feed):
     (_hard_stop_card), in the frame's order. A placeholder (no stable identity) and a notice card (its row comes from the
     notice store with its stored actions, see _chat_notices) stay out. Each row: the item id, the card's text as the title,
     the decision brief as the line (empty until the distiller writes it; the client shows the title alone then), and whether
-    Continue is offered (a live session: the feed card's own rule for its Continue button)."""
+    Continue is offered (a live session: the feed card's own rule for its Continue button). Since the row carries what the card
+    carries (plans/needs-you.md, the user 2026-09-23), every field the card's sections and state badges read rides along from the
+    same feed item (_NEEDS_ROW_CARD_FIELDS), so the chat page draws the row with the card's own builder, never a second copy."""
     out = {}
     for a in (feed.get("asks") or []):
         sid = a.get("sid")
@@ -58258,8 +59535,51 @@ def _needs_you_rows(feed):
                                                  "body": b.get("what") or "", "cont": False, "fix": "credential", "t": a.get("t")})
             continue
         out.setdefault(str(sid), []).append({"itemId": a.get("itemId"), "kind": "goal", "title": a.get("text") or "",
-                                             "body": a.get("blockSummary") or "", "cont": bool(a.get("live")), "t": a.get("t")})
+                                             "body": a.get("blockSummary") or "", "cont": bool(a.get("live")), "t": a.get("t"),
+                                             # the card's own fields, as the feed item carries them (None where the card has none): the
+                                             # sections (_NEEDS_ROW_CARD_FIELDS names them beside the key that reads them)
+                                             "summary": a.get("summary"), "blockSummary": a.get("blockSummary"), "briefParts": a.get("briefParts"),
+                                             "summaryParts": a.get("summaryParts"), "distillState": a.get("distillState"), "summaryStale": a.get("summaryStale"),
+                                             "relayNote": a.get("relayNote"), "background": a.get("background"), "stalled": a.get("stalled"),
+                                             "tree": _row_tree(a.get("tree")), "awaiting": a.get("awaiting"),
+                                             # and the state badges of the card's name row
+                                             "recheck": a.get("recheck"), "rejudging": a.get("rejudging"), "nudgeFailed": a.get("nudgeFailed"),
+                                             "nudged": a.get("nudged"), "interrupting": a.get("interrupting"), "interrupted": a.get("interrupted"),
+                                             "waitingOn": a.get("waitingOn"), "origin": a.get("origin"), "handoffTo": a.get("handoffTo"),
+                                             # the warning chip's evidence, the distill line's landings and the swirl caption's inputs (round two)
+                                             "warns": a.get("warns"), "failLog": a.get("failLog"), "summaryAnchorUuid": a.get("summaryAnchorUuid"),
+                                             "summaryAnchorQuote": a.get("summaryAnchorQuote"), "summaryAnchorsPara": a.get("summaryAnchorsPara"),
+                                             "doneConfirming": a.get("doneConfirming"), "blocked": a.get("blocked"), "column": a.get("column"),
+                                             "judging": a.get("judging"), "working": a.get("working"), "sessState": a.get("sessState"),
+                                             "delegTracked": a.get("delegTracked")})
     return out
+
+
+# the feed item's fields the card's sections and its name-row badges read (ui/webview/card-sections.ts, feed.ts updateAskCard): the
+# section bodies (the distill line with its stamps, the background paragraph, the stall note, the sub-goal tree, the awaited rows) and
+# the state badges (re-judging, follow-up failed, interrupted, awaiting a peer, a delegation's origin or handoff). Every one is keyed in
+# _chat_build_sig (the row signature test reads the two lists against each other).
+# the tree node fields the shared builder reads (ui/webview/card-sections.ts applySections and the row's landing): the row carries a
+# PROJECTION of each node, never the tree the cards share and never a field the builder does not read. Above all not the clock-derived
+# tint (trgb, re-stamped on every 5 s build) nor the modal's own fields (last, whoWorking, log): with the tree copied whole the row's face,
+# the chat signature and the page's row key moved with time alone (a contributor's runs on PR 2124: 590 to 1397 face moves per 96 h for one
+# goal, each a chat rebuild and a status frame to every chat client).
+_NEEDS_ROW_TREE_FIELDS = ("id", "kind", "text", "status", "children", "parked", "cleared", "reviewedEarlier", "auth", "qderived", "t",
+                          "anchorUuid", "summary", "blockSummary", "summaryAnchorUuid", "summaryAnchorQuote")
+
+
+def _row_tree(tree):
+    """The row's copy of a card's tree: new dicts holding the builder's fields alone (None stays None; a list stays a list)."""
+    if tree is None:
+        return None
+    return [{k: r[k] for k in _NEEDS_ROW_TREE_FIELDS if k in r} for r in tree]
+
+
+_NEEDS_ROW_CARD_FIELDS = ("summary", "blockSummary", "briefParts", "summaryParts", "distillState", "summaryStale", "relayNote", "background",
+                          "stalled", "tree", "awaiting", "recheck", "rejudging", "nudgeFailed", "nudged", "interrupting", "interrupted",
+                          "waitingOn", "origin", "handoffTo",
+                          "warns", "failLog", "summaryAnchorUuid", "summaryAnchorQuote", "summaryAnchorsPara", "doneConfirming", "blocked",
+                          "column", "judging", "working", "sessState", "delegTracked")
 
 
 def _needs_input_sids(feed):
@@ -62919,6 +64239,9 @@ def _shim_core_js(app="test", v=0):
 # own element). The list, the current button, and each row carry the session's color.
 _CHAT_MOBILE_CSS = (
     "#mhdr,#mlist{display:none}"    # both hidden on desktop (#mlist is a #tabbar sibling, not inside #mhdr)
+    # the phone's folded-away active tab (render.ts markAway, tab-groups.ts phoneStandIns, 2026-09-23): the node the
+    # current-session chip mirrors while its group is folded, never displayed anywhere (the phone hides the strip besides)
+    "#tabs .tab.tab-away{display:none}"
     # Gate the picker on a TOUCH device, not pane width: the chat iframe is one of three desktop panes, so
     # it's always narrow — a bare max-width would swap in the mobile picker on desktop too (the user wants
     # the real tab strip on desktop). pointer:coarse is true on the phone, false on a mouse/trackpad desktop.
@@ -62993,10 +64316,16 @@ _CHAT_MOBILE_CSS = (
     ".mrow .workdot.retrying{background:transparent;box-shadow:inset 0 0 0 1.5px var(--st-retrying-bg,#e67e22)}"   # badge mode: retrying on the leading dot, a HOLLOW amber ring (a shape cue matching desktop .tab-dot.retrying) so form not colour tells it from the filled working/awaiting dots
     # a GROUP HEADING (2026-09-16: the picker mirrors the strip's sections): the strip header's dress — the
     # label size and letter-spacing .tab-group-head wears, the dim ink — around the header's own chip
-    # (cloned) and the count; no caret and no pointer, since the phone folds nothing
-    ".mhead{display:flex;align-items:center;gap:6px;padding:9px 12px 3px;font-size:.82em;letter-spacing:.04em;"
-    "color:var(--dim,#8a8a8a);user-select:none;-webkit-user-select:none}"
+    # (cloned), the caret and the count, and folded, the header's member-state pip (cloned, styles.css
+    # .tab-group-pip). Since 2026-09-23 it is the FOLD CONTROL, as the desktop header is (the user asked to
+    # fold groups on the phone): a tap target a finger lands on (40px, a row's height and a little more), the
+    # pointer, and the caret turned down while open (.tab-group-caret's idiom)
+    ".mhead{display:flex;align-items:center;gap:6px;min-height:40px;box-sizing:border-box;padding:8px 12px;font-size:.82em;letter-spacing:.04em;"
+    "color:var(--dim,#8a8a8a);cursor:pointer;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}"
     ".mhead .mcount{opacity:.7}"
+    ".mhead .mcaret{display:inline-block;flex:0 0 auto;width:.9em;text-align:center;transition:transform .12s ease}"
+    ".mhead:not(.folded) .mcaret{transform:rotate(90deg)}"
+    ".mhead:focus-visible{outline:1px solid var(--accent,#9cd2ff);outline-offset:-1px}"
     # the untagged trail's divider (the strip's makeTrailSep, turned for a list): a 1px line in 6px gutters
     ".msep{height:13px;box-sizing:border-box;padding:6px 12px;background:var(--box-border,#3a3a3a);background-clip:content-box}"
     # The page must never grow WIDER than the phone (the user 2026-07-11, who reported the whole chat screen taking up
@@ -63024,8 +64353,18 @@ _CHAT_MOBILE_CSS = (
 # (.mhead — the tag's chip and the count, cloned from the header, so the tag wears its one treatment), a
 # row per tab COPY (a session under two tags is a row under each, as it is a tab under each), and a
 # divider where the untagged trail begins (.msep, the strip's .tab-group-sep). The plan sections the
-# phone's strip like the desktop's (tab-groups.ts planStrip) and folds nothing there, so a heading is a
-# label, never a control: the list is the phone's only switcher and every session stays a tap away.
+# phone's strip like the desktop's (tab-groups.ts planStrip), and since 2026-09-23 it FOLDS it like the
+# desktop's too, from the same folds the kernel keeps for every device: the user asked to fold groups on
+# the phone, with the state shared with the desktop like the tab order. That supersedes this list's old
+# rule that a heading is a label and nothing folds, whose reason was that the list is the phone's only
+# switcher and a folded group would hide its sessions; the reach is kept by making the heading the fold
+# control, so a folded group's sessions are one tap away, as on the desktop. A tap on a heading clicks the
+# strip's own (hidden) header, the one fold path (render.ts toggle-group, which on the phone folds and
+# nothing else), and the list stays open. A folded group lists its heading alone, with the count and the
+# member-state pip cloned from the header, and a member set to show through the fold (the desktop's "Show
+# when folded") keeps its row. The ACTIVE session follows the desktop's rule: its group folds like any
+# other, the heading standing in for it (aria-current), and the current-session chip still names it,
+# mirrored from the folded-away tab render.ts paints for exactly that (.tab-away: read, never listed).
 _CHAT_MOBILE_JS = """
 (function(){var tabbar=document.getElementById('tabbar'),tabs=document.getElementById('tabs');
 if(!tabbar||!tabs)return;
@@ -63047,14 +64386,15 @@ function hide(){list.classList.remove('open');}
 // else in the bar (the + tab, the controls, a row break between groups) is not a row.
 function read(){var out=[];[].forEach.call(tabs.children,function(t){
 if(t.classList.contains('tab-group-head')&&t.hasAttribute('data-group')){var g=t.getAttribute('data-group'),cnt=t.querySelector('.tab-group-count');
-out.push({key:'g:'+g,group:g,chip:t.querySelector('.tab-group-chip'),count:cnt?cnt.textContent:''});return;}
+out.push({key:'g:'+g,group:g,chip:t.querySelector('.tab-group-chip'),count:cnt?cnt.textContent:'',folded:t.getAttribute('data-folded')==='1',
+pip:t.querySelector('.tab-group-pip'),holds:t.classList.contains('holds-active'),label:t.getAttribute('aria-label')||g});return;}
 if(t.classList.contains('tab-group-sep')){out.push({key:'sep'});return;}
 if(!t.classList.contains('tab')||!t.hasAttribute('data-id'))return;
 var lab=t.querySelector('.tab-label'),id=t.getAttribute('data-id'),copy=t.getAttribute('data-copy');
 out.push({key:'t:'+id+'/'+(copy===null?'':copy),id:id,copy:copy,name:(lab?lab.textContent:id),lab:lab,
 bg:t.style.getPropertyValue('--chip-bg').trim(),fg:t.style.getPropertyValue('--chip-fg').trim(),
 working:t.classList.contains('tab-working'),awaitbg:!!t.querySelector('.tab-dot.await'),retrying:!!t.querySelector('.tab-dot.retrying'),ask:t.classList.contains('ring-waiting-on-you'),badgeNeeds:!!t.querySelector('.tab-badge'),needsCount:(function(){var b=t.querySelector('.tab-badge');return b?b.textContent:'';})(),needsLabel:(function(){var b=t.querySelector('.tab-badge');return b?(b.getAttribute('aria-label')||''):'';})(),active:t.classList.contains('active'),
-ph:t.classList.contains('tab-placeholder')});});return out;}
+ph:t.classList.contains('tab-placeholder'),away:t.classList.contains('tab-away')});});return out;}
 // A name is filled from the desktop label's own CHILD NODES, cloned — not from its flattened text. A
 // federated session's name carries a <span class="host-prefix"> that renders the "host:" as quiet
 // metadata (host-prefix.ts: dim, italic, never bold, a step smaller), and textContent threw that span
@@ -63090,15 +64430,27 @@ function rowMake(s){var row=document.createElement('div');row.className='mrow';r
 var lbl=document.createElement('span');lbl.className='nm';row.appendChild(lbl);
 var x=document.createElement('span');x.className='mclose';x.textContent='\u00d7';x.title='End session';
 row.appendChild(x);rowUpdate(row,s);return row;}
-// a GROUP HEADING: the header's own chip (tag-menu.ts tagChip, cloned — the one tag treatment, T251) and its
-// count. No caret, since the phone folds nothing (a chevron would promise a fold this row cannot do), and no
-// data-id, so the delegated tap below passes it by: a label, not a pick.
+// a GROUP HEADING: the header's own chip (tag-menu.ts tagChip, cloned — the one tag treatment, T251), the caret,
+// the count (folded: the members the fold hides, as the header counts them) and, folded, the header's member-state
+// pip (cloned, so a fold hides no "needs you" here either). The FOLD CONTROL since 2026-09-23: a button to the
+// keyboard and assistive tech, its state in aria-expanded and its words the header's own label; the header holding
+// the active session is aria-current, as on the desktop. No data-id, so the tap is the fold's, never a pick.
 function headUpdate(row,s){row.textContent='';if(s.chip)row.appendChild(s.chip.cloneNode(true));
-var c=document.createElement('span');c.className='mcount';c.textContent=s.count;row.appendChild(c);}
-function headMake(s){var row=document.createElement('div');row.className='mhead';row.setAttribute('data-key',s.key);row.setAttribute('data-group',s.group);headUpdate(row,s);return row;}
+var cv=document.createElement('span');cv.className='mcaret';cv.textContent='\u25b8';cv.setAttribute('aria-hidden','true');row.appendChild(cv);
+var c=document.createElement('span');c.className='mcount';c.textContent=s.count;row.appendChild(c);
+if(s.folded&&s.pip)row.appendChild(s.pip.cloneNode(true));
+row.classList.toggle('folded',!!s.folded);row.setAttribute('aria-expanded',s.folded?'false':'true');row.setAttribute('aria-label',s.label);
+if(s.holds)row.setAttribute('aria-current','true');else row.removeAttribute('aria-current');}
+function headMake(s){var row=document.createElement('div');row.className='mhead';row.setAttribute('role','button');row.tabIndex=0;
+row.setAttribute('data-key',s.key);row.setAttribute('data-group',s.group);headUpdate(row,s);return row;}
+// the strip's own header for a group, found by walking the strip (no selector: a tag name needs no escaping)
+function realHead(g){var hs=tabs.children;for(var i=0;i<hs.length;i++){if(hs[i].classList.contains('tab-group-head')&&hs[i].getAttribute('data-group')===g)return hs[i];}return null;}
+// the acknowledgement a tap gets at once (ui/CLAUDE.md): the shared .romp-acted pulse (styles.css), cleared on its own end
+function acted(el){el.classList.remove('romp-acted');void el.offsetWidth;el.classList.add('romp-acted');
+el.addEventListener('animationend',function f(){el.classList.remove('romp-acted');el.removeEventListener('animationend',f);});}
 // the untagged trail's divider (the strip's makeTrailSep, turned for a list)
 function sepMake(){var d=document.createElement('div');d.className='msep';d.setAttribute('data-key','sep');d.title='sessions in no tag';return d;}
-var pendingId=null,held=false,dirty=false;
+var pendingId=null,held=false,dirty=false,forwarding=false;
 function sync(){
 // pointer-held defer (the timeline draw()'s pattern, CLAUDE.md click-safety): a push landing while a
 // finger is DOWN must not move or destroy the row under it — flush on release instead. The old
@@ -63129,9 +64481,11 @@ else if(!prt){pendingId=null;}}
 // and the list keeps its scroll position because nothing detaches unchanged rows
 // keyed by the strip's own key (data-key: a tab's id + the group of its copy, a heading's tag, the
 // divider), read back from the rows themselves — no selector, so a tag name needs no escaping
-var want={};ts.forEach(function(s){want[s.key]=1;});
+// (the folded-away active tab is read for the chip above and is never a row: its group lists its heading alone)
+var rows=ts.filter(function(s){return !s.away;});
+var want={};rows.forEach(function(s){want[s.key]=1;});
 var have={};[].slice.call(list.children).forEach(function(r){var k=r.getAttribute('data-key');if(!want[k])r.remove();else have[k]=r;});
-ts.forEach(function(s,i){var row=have[s.key];
+rows.forEach(function(s,i){var row=have[s.key];
 if(s.id){if(!row)row=rowMake(s);else rowUpdate(row,s);}
 else if(s.group!==undefined){if(!row)row=headMake(s);else headUpdate(row,s);}
 else if(!row)row=sepMake();
@@ -63139,6 +64493,14 @@ var at=list.children[i];if(at!==row)list.insertBefore(row,at||null);});}
 // ONE delegated listener on the STABLE list (rows are swapped by sync; the parent survives) — the
 // same delegation rule the desktop strip follows, so a mid-press row swap can still land its tap
 list.addEventListener('click',function(e){
+// a HEADING folds or opens its group through the strip's own header (render.ts toggle-group: the next state is the
+// opposite of the one that header rendered), and the list stays open for the pick. Two clicks must not reach the
+// document's outside-click check, which would close it: this tap's own (propagation stops here, since the sync
+// the fold triggers rebuilds this heading's contents and the check would find the tapped node detached), and the
+// forwarded click on the hidden header, which bubbles from the strip, outside the list (`forwarding`, set for
+// exactly that synchronous dispatch).
+var hd=e.target&&e.target.closest?e.target.closest('.mhead'):null;
+if(hd){e.stopPropagation();acted(hd);var rh=realHead(hd.getAttribute('data-group'));if(rh){forwarding=true;try{rh.click();}finally{forwarding=false;}}return;}
 var row=e.target&&e.target.closest?e.target.closest('.mrow'):null;
 if(!row)return;
 var id=row.getAttribute('data-id');
@@ -63153,12 +64515,15 @@ if(rt&&!rt.classList.contains('tab-placeholder')){rt.click();hide();return;}
 // Classes only — refilling the name here would flatten the host-prefix span (the 2026-07-30 bug).
 pendingId=id;row.classList.add('pending');row.classList.remove('ph');});
 list.addEventListener('pointerdown',function(){held=true;});
+// a heading is a button to the keyboard too: Enter and Space press it, through the same click
+list.addEventListener('keydown',function(e){var hd=e.target&&e.target.closest?e.target.closest('.mhead'):null;
+if(hd&&(e.key==='Enter'||e.key===' ')){e.preventDefault();hd.click();}});
 function release(){if(held){held=false;if(dirty){dirty=false;sync();}}}
 document.addEventListener('pointerup',release);
 document.addEventListener('pointercancel',release);
 cur.addEventListener('click',function(e){e.stopPropagation();list.classList.toggle('open');});
 add.addEventListener('click',function(e){e.stopPropagation();var a=tabs.querySelector('.tab-add');if(a)a.click();});
-document.addEventListener('click',function(e){if(!hdr.contains(e.target)&&!list.contains(e.target))hide();});
+document.addEventListener('click',function(e){if(forwarding)return;if(!hdr.contains(e.target)&&!list.contains(e.target))hide();});
 new MutationObserver(sync).observe(tabs,{childList:true,subtree:true,attributes:true,attributeFilter:['class','style']});
 sync();})();
 """
@@ -63735,7 +65100,7 @@ else if(m.type==="hover"&&panel.setHover)panel.setHover(m);
 // this inline copy serves the browser, that one the VS Code webview. net-popover-known.test.ts's sibling
 // timeline-boot.test.ts pins the pair.
 else if(m.type==="revealEvent"&&panel.revealEvent)panel.revealEvent(m.sid,m.t,m.id);
-else if(m.type==="models"&&panel.refreshModels)panel.refreshModels();
+else if((m.type==="models"||m.type==="wsup")&&panel.refreshModels)panel.refreshModels();   // wsup too: the shim's reconnect frame is the restart signal, and a restart is how ROMP_ROUTER_MODELS changes (timeline-boot.ts's dispatchFrame, the pinned pair)
 else if(m.type==="settingRefused"&&panel.settingRefused)panel.settingRefused(m);
 else if((m.type==="tagEditAck"||m.type==="viewsAck")&&panel.viewsAck)panel.viewsAck(m);
 else if(m.type==="caps"&&panel.setCaps)panel.setCaps(m);
@@ -64805,13 +66170,14 @@ function spSavePrefs(){try{localStorage.setItem(SP_PREFS_KEY,JSON.stringify({ran
 spLoadPrefs();
 // "your order" (T247f, the user 2026-09-08): the order the tab strip and the timeline lanes show — the
 // kernel's shared seed per host (session-order.json; hosts local-first then attach order, remote ids
-// host-prefixed the way federation prefixes them) arranged by THIS viewer's own drag order, read from
-// the same localStorage key the strip reads (view-order.ts VIEW_ORDER_KEY). spApplyViewOrder is that
-// module's applyViewOrder, twinned here because the landing page loads no webview bundle; a node test
+// host-prefixed the way federation prefixes them) arranged by the viewer's own drag order, read from the
+// same localStorage keys the strip reads (view-order.ts): the kernel's arrangement cached for this
+// browser since 2026-09-23, else the pre-move local key. spApplyViewOrder is that module's
+// applyViewOrder, twinned here because the landing page loads no webview bundle; a node test
 // (ui/webview/spend-order-twin.test.ts) holds the two together. Sessions the order does not know (dead,
 // archived, an older peer's) trail in their spend order.
 function spApplyViewOrder(seed,view){var clean=function(xs){var out=[],seen=Object.create(null);(xs||[]).forEach(function(x){if(typeof x==='string'&&!seen[x]){seen[x]=1;out.push(x);}});return out;};var s=clean(seed);if(!view||!view.length)return s;var want=Object.create(null),placed=Object.create(null),out=[];s.forEach(function(x){want[x]=1;});clean(view).forEach(function(id){if(want[id]){placed[id]=1;out.push(id);}});s.forEach(function(id){if(!placed[id])out.push(id);});return out;}
-function spViewOrder(){try{var o=JSON.parse(localStorage.getItem('romp:vieworder')||'[]');return Array.isArray(o)?o:[];}catch(e){return [];}}
+function spViewOrder(){try{var r=localStorage.getItem('romp:vieworder:shared');if(r===null)r=localStorage.getItem('romp:vieworder');var o=JSON.parse(r||'[]');return Array.isArray(o)?o:[];}catch(e){return [];}}
 function spKey(d,s){return (s.host&&s.host!==d.host)?(s.host+':'+s.sid):s.sid;}
 function spOrdered(d){var ss=(d.sessions||[]).slice();if(SP.order!=='yours')return ss;
 var seed=(d.order||[]).map(function(p){return (p[0]&&p[0]!==d.host)?(p[0]+':'+p[1]):p[1];});
@@ -70048,12 +71414,15 @@ class Handler(BaseHTTPRequestHandler):
                                 for c in MODEL_CHOICES],
                      "efforts": [dict(c, color=_effort_color(c["value"], _stops), tone=_effort_tone(c["value"]))
                                  for c in EFFORT_CHOICES],
-                     "codex": {"models": cx_models, "error": cx_err,
+                     "router": _router_status(), "codex": {"models": cx_models, "error": cx_err,
                                "efforts": list(cx_efforts.values())},
                      # the create dialog's pre-read (the user 2026-08-29): what a new comment thread
-                     # gets when the dialog is left untouched — RAW ("session" = same as the session),
-                     # so the dialog shows the effective default and a pick stays a deviation
-                     "commentDefaults": {"model": jd._state_str("comment-model", "session"),
+                     # gets when the dialog is left untouched ("session" = same as the session), so the
+                     # dialog shows the effective default and a pick stays a deviation. The model is the
+                     # read _comment_launch_prefs makes, not the raw store: a stored default this kernel
+                     # no longer offers falls to "session" on both, so the dialog never shows a model the
+                     # create will not launch on (review find, 2026-09-22); effort and fast ride raw
+                     "commentDefaults": {"model": _comment_default_model_effective(),
                                          "effort": jd._state_str("comment-effort", "session"),
                                          "fast": jd._state_str("comment-fast", "session")}}),
                     "application/json", cache="no-cache")
@@ -72257,6 +73626,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._push_one(client)
             finally:
                 seqs, _VIEWS_SERVED.seqs = _VIEWS_SERVED.seqs, None
+            # The viewer's ARRANGEMENT this kernel keeps (2026-09-23), before the caps frame like every
+            # other part of the connect push: the page applies it to the strip, the lanes and the feed's
+            # groups the moment it lands, and a browser that carries an arrangement into a kernel that has
+            # none publishes its own off this frame, so the move loses nobody's order. Its own dedup slot,
+            # so a reconnect that changes nothing costs nothing.
+            _send_view_order(client)
             # What this kernel can do for the page (KERNEL_WS_CAPS), after the pushes above and on every
             # `ready`: the shell's socket, which re-sends ready at every open, learns them again; a page
             # whose views writes were in flight across a drop learns, when a ready reaches its socket and
@@ -72565,6 +73940,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if _set_whole_chat_frames(enabled, gt=_gesture_ms(msg)) is None:
                 _tell_stale_gesture(client, msg)
+        elif msg and msg.get("type") == "setRouterModels" and msg.get("enabled") is not None:
+            # The gear's Extra models switch: kernel-side, PER-INSTALL like setWholeChatFrames (the gateway is this
+            # machine's), gt-gated all the same; the setter applies or removes the families and sends the models frame
+            enabled, ferr = _as_bool(msg.get("enabled"), "enabled")
+            if ferr:
+                _refuse_ws_flag(client, msg["type"], ferr, "enabled", msg.get("enabled"))
+                return
+            if _set_router_models(enabled, gt=_gesture_ms(msg)) is None:
+                _tell_stale_gesture(client, msg)
         elif msg and msg.get("type") == "setSettingPin" and msg.get("store"):
             # The per-machine PIN (plans/settings-across-machines.md, one A): this dashboard's own kernel keeps the store's value
             # against every remote input. Never a KERNEL_SETTING (a pin is per machine by definition); gt-gated like its siblings.
@@ -72807,6 +74191,41 @@ class Handler(BaseHTTPRequestHandler):
             _order_audit("client:" + str(msg.get("surface") or "?"),
                          msg.get("old") or [], msg.get("new") or [],
                          stack=str(msg.get("stack") or "") + ("\n[user drag]" if msg.get("drag") else ""))
+        elif msg and msg.get("type") == "setViewOrder" and isinstance(msg.get("order"), list):
+            # A drag on ANY surface of ANY viewer of this kernel (the user 2026-09-23): the browser hands
+            # over the arrangement it computed over every attached host, and this kernel keeps it so the
+            # viewer's phone and their other desktop read the same order. Stored WHOLE and OPAQUE -- the
+            # ids are host-prefixed and viewer-relative and nothing here reads them (the store's comment
+            # has the argument). Last write wins.
+            try:
+                changed = _write_view_order(msg["order"])
+            except (_StateUnreadable, _StateUnwritable) as e:
+                # The arrangement could not be published. Said to the viewer who dragged rather than
+                # swallowed: their tabs are sitting where they put them on this page and would silently
+                # spring back on the next reload, and every other device would never hear about it.
+                sys.stderr.write("romp-kernel: setViewOrder refused: %s\n" % e)
+                _reply(client, {"type": "warn", "text": "Couldn't save the order you dragged: %s" % e})
+            else:
+                # The CHANGE is the event every other viewer converges on -- nothing polls for it, and an
+                # unchanged republish (every viewer writes the same list when a host reports a new session)
+                # pushes nothing at all.
+                if changed:
+                    _broadcast_view_order()
+        elif msg and msg.get("type") == "setViewFolds" and isinstance(msg.get("folds"), dict):
+            # A group folded or opened, or a member set to show through a fold, on ANY viewer of this kernel
+            # (the user 2026-09-23, who wanted the phone to fold too and the folds shared like the order).
+            # Kept WHOLE and OPAQUE beside the arrangement, and pushed on the same frame, so the phone and
+            # the desktop fold together. Last write wins.
+            try:
+                changed = _write_view_folds(msg["folds"])
+            except (_StateUnreadable, _StateUnwritable) as e:
+                # refused out loud: the group sits folded on this page and would silently spring back on
+                # the next reload, and no other device would ever hear of it
+                sys.stderr.write("romp-kernel: setViewFolds refused: %s\n" % e)
+                _reply(client, {"type": "warn", "text": "Couldn't save the folded groups: %s" % e})
+            else:
+                if changed:                          # the change is the event; an unchanged republish pushes nothing
+                    _broadcast_view_order()
         elif msg and msg.get("type") in ("reorderTabs", "writeOrder") and isinstance(msg.get("order"), list):
             # tab-drag or lane-drag → reorder BOTH surfaces. MERGE the dragged surface's order into the
             # persisted one (don't overwrite): a chat-tab drag must not drop/reshuffle timeline-only lanes.
@@ -72997,6 +74416,12 @@ class Handler(BaseHTTPRequestHandler):
             # confirmRevive → "Revive": resume the dead session in the background (the kernel had
             # no handler, so the modal's Revive silently did nothing — the user 2026-06-16)
             threading.Thread(target=_revive_session, args=(msg["id"], client), daemon=True).start()
+        elif msg and msg.get("type") == "restartSession" and msg.get("id"):
+            # The menus' "Restart session" (the user 2026-09-23): relaunch the session's CLI in place so it
+            # picks up the version installed now. Off the recv loop like the revive beside it — the
+            # interrupt and the reconnect take as long as they take. Advertised in KERNEL_WS_CAPS, so a
+            # page newer than its kernel meets the unknownOp refusal instead of a click that vanishes.
+            threading.Thread(target=_restart_session, args=(msg["id"], client), daemon=True).start()
         elif msg and msg.get("type") == "viewReadOnly" and msg.get("id"):
             _kept_open.add(msg["id"])            # confirmRevive → "View read-only": this dead session
             #                                      gets a (struck) read-only tab now, without resuming it
@@ -73347,10 +74772,17 @@ class Handler(BaseHTTPRequestHandler):
         provrows = (q.get("provrows") or [""])[0] == "1" and app == "fleet"   # the Outline's statement (plans/outline-pane-provisional-row.md): it renders a provisional row for a cold tab, so the cold-tab gate need not stand down for it
         col = (q.get("col") or [""])[0]         # which chat COLUMN of that dashboard (split screen, 2026-09-08) — for the logs;
         #                                         the columns arbitrate a dashboard-aimed focus among themselves (render.ts focusIsOurs)
+        # permessage-deflate (RFC 7692): every browser and Node's `ws` offer it on every dial; taken, the frames the
+        # kernel compresses carry RSV1 and the client inflates them natively (see _WS_DEFLATE_ON's comment). The
+        # header may repeat (get_all), or be a plain mapping in a test's stand-in handler (get)
+        _xh = self.headers.get_all("Sec-WebSocket-Extensions") if hasattr(self.headers, "get_all") else None
+        deflate = _ws_deflate_offer(", ".join(_xh) if _xh else self.headers.get("Sec-WebSocket-Extensions")) if _WS_DEFLATE_ON else None
         self.send_response(101)
         self.send_header("Upgrade", "websocket")
         self.send_header("Connection", "Upgrade")
         self.send_header("Sec-WebSocket-Accept", _ws_accept(key))
+        if deflate is not None:
+            self.send_header("Sec-WebSocket-Extensions", _ws_deflate_response(deflate))
         self.end_headers()
         self.close_connection = True              # hijacked socket — don't let the handler keep-alive after
         _client_seen[0] = time.time()
@@ -73362,6 +74794,8 @@ class Handler(BaseHTTPRequestHandler):
         # would block this handler forever (caught by tests/test_kernel.py's socket-error loop test)
         client, sendq, lock = _new_ws_client(app, wid, self.connection, lock=lock)
         client["kind"] = _dial_kind(self.headers, q)   # page or relay: the one tell the wsopen row reads (and a planned connect-push split)
+        if deflate is not None:
+            client["deflate"] = deflate                # permessage-deflate negotiated: _ws_sender compresses, the read loop inflates
         if active:
             client["active"] = active                  # active-tab-first streaming (the user 2026-06-24)
         if (q.get("delta") or [""])[0] == "1":
@@ -73430,7 +74864,9 @@ class Handler(BaseHTTPRequestHandler):
                 client["inRead"] = True                # parked in the read: silence here is the peer's
                 op, payload = _ws_recv_message(
                     self.rfile, lambda payload: _ws_pong(self.wfile, lock, payload or b""),
-                    on_pong=lambda payload: _note_ws_inbound(client))
+                    on_pong=lambda payload: _note_ws_inbound(client),
+                    inflate=bool(client.get("deflate")),   # a peer that negotiated permessage-deflate may send RSV1 frames
+                    on_fail=lambda code, why: _ws_fail(self.wfile, lock, client, code, why))   # an end the kernel decides: Close frame + one log line
                 if op is None:                         # EOF / close / a client overran the reassembly cap
                     break
                 _note_ws_inbound(client)               # any message proves the peer alive
@@ -73497,6 +74933,11 @@ class Handler(BaseHTTPRequestHandler):
         for hn in ("Upgrade", "Connection", "Sec-WebSocket-Key", "Sec-WebSocket-Version",
                    "Sec-WebSocket-Protocol", "Sec-WebSocket-Extensions"):
             v = self.headers.get(hn)
+            if hn == "Sec-WebSocket-Extensions" and hasattr(self.headers, "get_all"):
+                # the list may come as several lines (RFC 6455 §11.3.2), which the direct handshake reads together: the
+                # remote must see them all, or an offer past the first line upgrades plain through the hub where it
+                # negotiated direct (review of #2106, 2026-09-23). Key and Version may not repeat, so they stay one read
+                v = ", ".join(self.headers.get_all(hn) or []) or v
             if v:
                 lines.append("%s: %s" % (hn, v))
         try:

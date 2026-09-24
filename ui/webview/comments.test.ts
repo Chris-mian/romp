@@ -283,7 +283,10 @@ test("the create dialog pre-reads the kernel's default-comment trio and shows it
   assert.match(UI, /const effVal = chosen \|\| setDef\(kind\);/);
   // a version id stored in the setting still labels correctly (families hold their versions)
   assert.match(UI, /function modelChoiceLabel\(value: string\)/);
-  assert.match(KERNEL, /"commentDefaults": \{"model": jd\._state_str\("comment-model", "session"\),/);
+  // the model is the EFFECTIVE default, the read the create makes too (a stored default the kernel no longer
+  // offers falls to "session" on both, so the dialog never shows a model the create will not launch on)
+  assert.match(KERNEL, /"commentDefaults": \{"model": _comment_default_model_effective\(\),/);
+  assert.match(KERNEL, /def _comment_default_model_effective\(\):/);
 });
 
 test("fast rides the create end to end, resolved dialog > setting > inherit at the kernel", () => {
@@ -295,7 +298,10 @@ test("fast rides the create end to end, resolved dialog > setting > inherit at t
   assert.match(UI, /vscodeApi\.postMessage\(commentCreateFrame\(held\)\)/);
   assert.match(UI, /vscodeApi\?\.postMessage\(commentCreateFrame\(c\)\)/);
   assert.match(KERNEL, /def _comment_launch_prefs\(model="", effort="", fast=""\):/);
-  assert.match(KERNEL, /model, effort, fast = _comment_launch_prefs\(model, effort, fast\)/);
+  // resolved ONCE above the name claim (the model is vouched there, review round three of the extra-models PR) and
+  // reused at the fork: the create hands fast through the same tuple as before
+  assert.match(KERNEL, /launch = _comment_launch_prefs\(model, effort, fast\)/);
+  assert.match(KERNEL, /model, effort, fast = launch/);
   assert.match(KERNEL, /fast=str\(msg\.get\("fast"\) or ""\)/);       // the ws op hands it through…
   assert.match(KERNEL, /"fast": str\(msg\.get\("fast"\) or ""\),/);   // …and a lag-parked create keeps it
   assert.match(KERNEL, /fast=pk\.get\("fast", ""\)/);

@@ -11,7 +11,9 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { installDomHelpers, dispatchFrame, openExternalMessage, bridgeFunctions } from "./timeline-boot";
+import { installDomHelpers, dispatchFrame, openExternalMessage, bridgeFunctions, writeTabGroupsBlob } from "./timeline-boot";
+import { setFoldsPublisher } from "./tab-groups";
+import { setViewOrderPublisher } from "./view-order";
 
 const ROOT = path.resolve(process.cwd(), "..");
 const KERNEL = fs.readFileSync(path.join(ROOT, "bin", "romp-kernel"), "utf8");
@@ -59,14 +61,19 @@ test("dispatchFrame routes kernel frames to the panel", () => {
   assert.equal(dispatchFrame(panel, { type: "activeChat", activeChat: "s1" }), true);
   assert.equal(dispatchFrame(panel, { type: "hover", sid: "s1" }), true);
   assert.equal(dispatchFrame(panel, { type: "models", rev: 3 }), true);
+  // the shim's socket-flip frame: a kernel restart is the documented way to change the extra models the API gateway
+  // declares, and a restarted kernel sends no models frame for a list that changed while it was down, so the lane
+  // menu re-reads /models on the reconnect the way the chat's picker and the gear already do (review find, 2026-09-22)
+  assert.equal(dispatchFrame(panel, { type: "wsup" }), true, "the reconnect frame re-reads the model list too");
   assert.equal(dispatchFrame(panel, { type: "tagEditAck", writeId: "w1", ok: true }), true, "a targeted tag edit's ack");
   assert.equal(dispatchFrame(panel, { type: "viewsAck", writeId: "w2", ok: false }), true, "a whole-blob write's ack");
   assert.equal(dispatchFrame(panel, { type: "caps", caps: ["tagEdit"] }), true, "the kernel's capabilities");
   assert.equal(dispatchFrame(panel, { type: "unknownOp", op: "tagEdit", writeId: "w3" }), true, "an op the kernel does not know");
   assert.equal(dispatchFrame(panel, { type: "ka" }), false);
   assert.equal(dispatchFrame(null, { type: "data" }), false);
-  assert.deepEqual(calls.map((c) => c[0]), ["update", "applyBars", "setActiveChat", "setHover", "refreshModels", "viewsAck", "viewsAck", "setCaps", "unknownOp"]);
-  assert.deepEqual(calls.slice(5), [["viewsAck", "tagEditAck", "w1"], ["viewsAck", "viewsAck", "w2"], ["setCaps", ["tagEdit"]], ["unknownOp", "tagEdit", "w3"]],
+  assert.deepEqual(calls.map((c) => c[0]), ["update", "applyBars", "setActiveChat", "setHover", "refreshModels", "refreshModels", "viewsAck", "viewsAck", "setCaps", "unknownOp"],
+    "a models frame and a wsup frame each land on refreshModels, once");
+  assert.deepEqual(calls.slice(6), [["viewsAck", "tagEditAck", "w1"], ["viewsAck", "viewsAck", "w2"], ["setCaps", ["tagEdit"]], ["unknownOp", "tagEdit", "w3"]],
     "both acks land on the one panel door; caps and unknownOp on their own");
 });
 
@@ -75,6 +82,21 @@ test("dispatchFrame tolerates a panel without the optional methods", () => {
   assert.equal(dispatchFrame(panel, { type: "bars" }), false);
   assert.equal(dispatchFrame(panel, { type: "hover" }), false);
   assert.equal(dispatchFrame(panel, { type: "models" }), false);
+  assert.equal(dispatchFrame(panel, { type: "wsup" }), false, "an older view without refreshModels is skipped on the reconnect frame too, never thrown at");
+});
+
+test("the kernel's inline boot re-reads the model list on the shim's wsup frame too, so the browser timeline sees a restart", () => {
+  // The browser's timeline shim fires {type:"wsup"} as a FRAME when its socket reopens (kernel.py ws.onopen), and the
+  // chat (render.ts) and the gear (gear.js) re-read /models on it: a kernel restart is the documented way to change
+  // ROMP_ROUTER_MODELS, and the restarted kernel sends no models frame for a list that changed while it was down. The
+  // lane menu's arm lived on the models frame alone (review find, 2026-09-22); both boots take the reconnect frame now.
+  const bootStart = KERNEL.indexOf("_TIMELINE_BOOT = ");
+  const boot = KERNEL.slice(bootStart, KERNEL.indexOf('"""', bootStart + 60));
+  assert.match(boot, /else if\(\(m\.type==="models"\|\|m\.type==="wsup"\)&&panel\.refreshModels\)panel\.refreshModels\(\);/,
+    "the inline twin arms refreshModels on models and on wsup");
+  const BOOT = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "timeline-boot.ts"), "utf8");
+  assert.match(BOOT, /if \(\(m\.type === "models" \|\| m\.type === "wsup"\) && panel\.refreshModels\) \{ panel\.refreshModels\(\); return true; \}/,
+    "…and the VS Code boot's dispatchFrame the same pair");
 });
 
 test("openExternalMessage unwraps a vscode:// deep link into the kernel deepLink op", () => {
@@ -115,14 +137,62 @@ test("bridges post the same kernel ops as the web boot", () => {
   ]);
 });
 
-test("a lane drag posts NOTHING to a kernel — it arranges this browser's own view", () => {
-  // Order moved out of the kernel (the user 2026-07-31, ./view-order): a kernel can only record an order
-  // over its OWN sids, which is exactly why hosts could never interleave. The drag writes localStorage and
-  // federation re-emits; sending a `writeOrder` op alongside would put the kernel back in charge of a
-  // per-viewer choice and make a drag here move the tabs on another machine.
-  const { sent, post } = posts();
-  bridgeFunctions(post).__rompTimelineWriteOrder(["a", "TESTHOST:b"]);
-  assert.deepEqual(sent, []);
+test("a lane drag posts the WHOLE arrangement to the local kernel, never a per-kernel writeOrder", () => {
+  // Two rulings, and only one of them moved. The ORDER is still computed here, over every attached host
+  // at once: a `writeOrder` op would hand each kernel a fragment of its own sids, which is exactly why
+  // hosts could never interleave before 2026-07-31. What the kernel gets since 2026-09-23 is the finished
+  // list, host prefixes and all, as opaque data to KEEP — so a drag here reaches the viewer's phone and
+  // their other desktop instead of stopping at this webview (the user 2026-09-23).
+  // …and only once this webview has HEARD the kernel's arrangement (review find on #2062, 2026-09-23): before
+  // that the drag is kept pending and merged over the kernel's when its viewOrder frame arrives.
+  // A webview that reloaded (its host's reconnect does that) holds the arrangement it cached and no publisher.
+  const g: any = globalThis;
+  const hadLS = "localStorage" in g, prevLS = g.localStorage;
+  const store = new Map<string, string>([["romp:vieworder:shared", JSON.stringify(["TESTHOST:b", "a"])]]);
+  g.localStorage = { getItem: (k: string) => (store.has(k) ? store.get(k)! : null), setItem: (k: string, v: string) => { store.set(k, v); }, removeItem: (k: string) => { store.delete(k); } };
+  setViewOrderPublisher(null);
+  try {
+    const { sent, post } = posts();
+    const bridges = bridgeFunctions(post);
+    bridges.__rompTimelineWriteOrder(["a", "TESTHOST:b"]);
+    assert.deepEqual(sent, [], "not heard yet: nothing published");
+    // meanwhile another device added a session to the end; the frame carries that
+    dispatchFrame({}, { type: "viewOrder", order: ["TESTHOST:b", "a", "c"], stored: true });
+    assert.deepEqual(sent, [{ type: "setViewOrder", order: ["a", "TESTHOST:b", "c"] }],
+      "the pending drag lands over the kernel's list, and the other device's session stays");
+    bridges.__rompTimelineWriteOrder(["TESTHOST:b", "a", "c"]);
+    assert.deepEqual(sent.at(-1), { type: "setViewOrder", order: ["TESTHOST:b", "a", "c"] }, "heard: a drag is published as it happens");
+    assert.ok(!sent.some((m: any) => m.type === "writeOrder" || m.type === "reorderTabs"),
+      "a kernel is never asked to order sids it does not know about");
+  } finally {
+    setViewOrderPublisher(null);
+    if (hadLS) g.localStorage = prevLS; else delete g.localStorage;
+  }
+});
+
+test("the VS Code timeline hears the kernel's FOLDS and, from then on, publishes a fold through its host pipe (2026-09-23)", () => {
+  // the Sessions pane honours the tag groups' folds; in VS Code it has no federation manager, so the viewOrder frame's folds half
+  // reaches dispatchFrame, and the view's own fold write (romp-timeline-view.js writeTabGroupsBlob → window.__rompWriteTabGroups,
+  // which timeline-main.ts sets to writeTabGroupsBlob) publishes through `post` once the kernel's folds were heard
+  const g: any = globalThis;
+  const store = new Map<string, string>();
+  const saved = [g.localStorage, g.window];
+  g.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); }, removeItem: (k: string) => { store.delete(k); } };
+  g.window = new EventTarget();
+  try {
+    const { sent, post } = posts();
+    bridgeFunctions(post);
+    assert.equal(dispatchFrame({}, { type: "viewOrder", order: [], stored: false, folds: { collapsed: ["api"], expanded: [], pinned: [] } }), true, "the frame is the timeline's to take");
+    assert.deepEqual(JSON.parse(store.get("romp:tabgroups:shared")!).collapsed, ["api"], "the kernel's folds adopted into this webview's store");
+    assert.deepEqual(sent, [], "adopting publishes nothing");
+    writeTabGroupsBlob({ on: true, collapsed: ["api", "web"], expanded: [], pinned: [], timeline: true });
+    assert.deepEqual(sent, [{ type: "setViewFolds", folds: { collapsed: ["api", "web"], expanded: [], pinned: [] } }], "heard: the view's fold goes to the kernel");
+    assert.equal(dispatchFrame({}, { type: "viewOrder", order: [], stored: true }), true, "a frame with no folds half (an older kernel): taken, nothing adopted");
+  } finally {
+    [g.localStorage, g.window] = saved;
+    setFoldsPublisher(null);
+    setViewOrderPublisher(null);   // the frame's arrangement half installed this webview's order publisher too
+  }
 });
 
 test("installDomHelpers supplies the 3 Obsidian helpers", () => {

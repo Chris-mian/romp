@@ -7,19 +7,37 @@
 // edits, and reordering the groups IS reordering tagOrder — the kernel-persisted union order the
 // timeline's tag-pill drag writes too, so the two surfaces cannot disagree.
 //
-// Per-browser state, this viewer's like romp:vieworder: whether the strip sections at all (ON by
-// default whenever some tag holds a visible tab; the chat tag-lens menu's "Group tabs by tag" turns
-// it off), which sections are folded, and which members show through their section's fold (the
-// tab menu's "Show when folded"). `archived` starts folded — that tag exists to put sessions away.
-// Notification is view-order.ts's two-path idiom: localStorage reaches other panes (the storage
-// event), a same-window CustomEvent reaches the writer. Pure and DOM-free (the tab-order.ts
-// pattern) so the rule executes in node tests; render.ts paints it.
+// The view state, in two halves (the user 2026-09-23, who wanted to fold groups on the phone too, with the
+// folds synced to the desktop like the tab order):
+//   - THIS BROWSER's: whether the strip sections at all (ON by default whenever some tag holds a visible
+//     tab; the chat tag-lens menu's "Group tabs by tag" turns it off) and the Sessions pane's own switch.
+//     They live in romp:tabgroups, as they always have.
+//   - EVERY DEVICE's, the FOLDS (TabFolds): which sections are folded, which default-folded ones were
+//     opened, which members show through their section's fold (the tab menu's "Show when folded"), and
+//     the rename memory those pins rest on. The kernel keeps them beside the viewer's arrangement
+//     (kernel.py view-folds.json, served and pushed on the same viewOrder frame as view-order.ts's list),
+//     and this browser caches the kernel's copy under romp:tabgroups:shared. The fold fields romp:tabgroups
+//     held before that day are read, never written again: what a browser publishes when the kernel has no
+//     folds yet, and what reverting hands back (view-order.ts's migration, the same shape).
+// `archived` starts folded — that tag exists to put sessions away. Notification is view-order.ts's two-path
+// idiom: localStorage reaches other panes (the storage event), a same-window CustomEvent reaches the
+// writer; the kernel's push is the third delivery, to the viewer's other devices. Pure and DOM-free (the
+// tab-order.ts pattern) so the rule executes in node tests; render.ts paints it.
 import { SessionViews, TagUnion, viewTags, viewTagUnion } from "./session-views";
 import { hostOf } from "./host-prefix";
 
 export const TABGROUPS_KEY = "romp:tabgroups";
+/** The kernel's copy of the FOLDS, cached for this browser (2026-09-23): what a reload paints from before the
+ *  kernel's first frame lands, and — `storage` crossing same-origin documents — how a fold in one pane reaches
+ *  the others. The kernel is the authority (view-order.ts VIEW_ORDER_SHARED_KEY's pattern). */
+export const TABGROUPS_SHARED_KEY = "romp:tabgroups:shared";
+/** The folds this browser held before its first change made while a page had not yet heard the kernel's (see
+ *  FoldsPublisher): the BASE of that change, so whichever page of this browser hears the kernel's folds first
+ *  applies the change (the cache less this base) over them (mergeFolds). Origin-wide, not per page: the pane that
+ *  hears first may not be the pane that was clicked. Absent when nothing is pending. */
+export const TABGROUPS_PENDING_KEY = "romp:tabgroups:pending";
 export const TABGROUPS_EVENT = "romp-tabgroups";
-/** sections that start folded until the user opens them (remembered per browser once toggled) */
+/** sections that start folded until the user opens them (remembered, on every device, once toggled) */
 export const DEFAULT_COLLAPSED: ReadonlySet<string> = new Set(["archived"]);
 
 /** One strip section: a tag's name + color and the visible tabs it holds, plus `localId` — the
@@ -150,31 +168,210 @@ export function parseTabGroups(raw: string | null | undefined, unions: readonly 
   }
 }
 
-export function readTabGroups(unions: readonly TagUnion[] = []): TabGroupsState {
-  try {
-    return parseTabGroups(localStorage.getItem(TABGROUPS_KEY), unions);
-  } catch {
-    return fresh();   // private mode / blocked storage → the defaults, every time
-  }
+/** The FOLDS: the part of the store every device shares (2026-09-23) — which sections are folded, which
+ *  default-folded ones were opened, which members show through a fold, and the rename memory the pins rest
+ *  on (followTagRenames: a pin and the evidence it was carried on travel together, or a device that missed a
+ *  rename would carry the pin back). `on` and `timeline` are not in it: whether this browser groups its
+ *  strip, and its Sessions pane, stay this browser's. The kernel keeps this object without reading it. */
+export type TabFolds = Pick<TabGroupsState, "collapsed" | "expanded" | "pinned" | "followed" | "followedSeq">;
+
+/** A state's folds, in the canonical shape the wire and the cache carry: the three lists always, the memory
+ *  only when it has entries (writeTabGroups' old rule), so two devices holding the same folds hold the same
+ *  bytes and an unchanged republish is recognisably unchanged. */
+export function foldsOf(st: TabGroupsState): TabFolds {
+  const f: TabFolds = { collapsed: st.collapsed.slice(), expanded: st.expanded.slice(), pinned: st.pinned.map((p) => ({ ...p })) };
+  if (st.followed && Object.keys(st.followed).length) f.followed = { ...st.followed };
+  if (st.followedSeq && Object.keys(st.followedSeq).length) f.followedSeq = { ...st.followedSeq };
+  return f;
 }
 
-/** Persist and tell every pane — `storage` fires only in OTHER same-origin contexts, so the writing
- *  window gets the same news through a CustomEvent (one notification path, two deliveries). */
-export function writeTabGroups(st: TabGroupsState): void {
+/** Folds are the fold fields of a parsed blob, so the one parser validates both halves (a malformed entry
+ *  costs a preference, never the dashboard) and migrates a pin's earlier shape the same way. */
+function parseFolds(raw: string | null | undefined, unions: readonly TagUnion[] = []): TabFolds {
+  return foldsOf(parseTabGroups(raw, unions));
+}
+
+/** A state with its fold fields replaced by `f` and its own switches kept. */
+function withFolds(st: TabGroupsState, f: TabFolds): TabGroupsState {
+  const out: TabGroupsState = { on: st.on, collapsed: f.collapsed, expanded: f.expanded, pinned: f.pinned };
+  if (f.followed) out.followed = f.followed;
+  if (f.followedSeq) out.followedSeq = f.followedSeq;
+  if (st.timeline === true) out.timeline = true;
+  return out;
+}
+
+function getKey(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }   // private mode / blocked storage → as absent
+}
+
+/** The store as every surface reads it: this browser's switches from romp:tabgroups, the folds from the
+ *  kernel's copy once this browser holds one, else from the fold fields romp:tabgroups carried before the
+ *  folds were shared (so the first paint after the upgrade is the one the viewer is used to). Re-read per
+ *  use, never cached: another pane of this page writes the same keys. */
+export function readTabGroups(unions: readonly TagUnion[] = []): TabGroupsState {
+  const own = parseTabGroups(getKey(TABGROUPS_KEY), unions);
+  const shared = getKey(TABGROUPS_SHARED_KEY);
+  return shared === null ? own : withFolds(own, parseFolds(shared, unions));
+}
+
+/** How a fold change reaches the kernel: federation.ts installs `window.__rompPublishViewFolds` on every page
+ *  that has a manager, and a page with none (a VS Code webview) installs one directly (setFoldsPublisher) —
+ *  in both cases only once the kernel's own folds have reached the page ON THE CURRENT CONNECTION (the frame's
+ *  `folds` half), and withdrawn when that connection drops (federation.ts unhearViewOrder on the shim's wsdown and
+ *  the reconnect's wsup; render.ts on a VS Code pipe's down edge) — the arrangement's gate (view-order.ts
+ *  ViewOrderPublisher), the same frame granting both. So a page never publishes its WHOLE fold state over the
+ *  kernel's before it has heard it: the connect push serves the strip, and with it the header a person can click
+ *  and the views frame a rename follow runs on, before that frame, and a whole-state publish from then (or, after a
+ *  drop, a fold made offline riding the shim's queue) would put this browser's older copy over what another device
+ *  folded since. A change made in that window is kept as a DELTA instead (TABGROUPS_PENDING_KEY, mergeFolds)
+ *  and applied over the kernel's folds when they arrive: the gesture is new information and lands, and the
+ *  kernel's newer state around it stands. No publisher ever (a kernel from before the folds were shared) →
+ *  the folds are this browser's alone, as they were. */
+export type FoldsPublisher = (folds: TabFolds) => void;
+let directFoldsPublisher: FoldsPublisher | null = null;
+
+export function setFoldsPublisher(fn: FoldsPublisher | null): void {
+  directFoldsPublisher = fn;
+}
+
+export function foldsPublisher(): FoldsPublisher | null {
   try {
-    const blob: Record<string, unknown> = { on: st.on, collapsed: st.collapsed, expanded: st.expanded, pinned: st.pinned };
-    if (st.followed && Object.keys(st.followed).length) blob.followed = st.followed;
-    if (st.followedSeq && Object.keys(st.followedSeq).length) blob.followedSeq = st.followedSeq;
-    if (st.timeline === true) blob.timeline = true;   // the Sessions pane's switch rides the strip's writes (T399)
-    localStorage.setItem(TABGROUPS_KEY, JSON.stringify(blob));
-  } catch {
-    /* quota / private mode → this preference just doesn't outlive the page */
-  }
+    const slot = (globalThis as any).window?.__rompPublishViewFolds;
+    if (typeof slot === "function") return slot as FoldsPublisher;
+  } catch { /* no window */ }
+  return directFoldsPublisher;
+}
+
+/** Cache `f` as the kernel's copy; true when that CHANGED what this browser held (absent counts as changed). */
+function cacheFolds(f: TabFolds): boolean {
+  const text = JSON.stringify(f);
+  if (getKey(TABGROUPS_SHARED_KEY) === text) return false;
+  try { localStorage.setItem(TABGROUPS_SHARED_KEY, text); } catch { /* quota / private mode → the page still shows it */ }
+  return true;
+}
+
+function announce(): void {
   try {
     window.dispatchEvent(new CustomEvent(TABGROUPS_EVENT));
   } catch {
     /* no window (node test) */
   }
+}
+
+/** Persist, publish and tell every pane. This browser's switches go to romp:tabgroups, whose pre-2026-09-23
+ *  fold fields ride through untouched (read-only now: reverting hands them back); the folds go to the kernel's
+ *  cached copy and, when they CHANGED, to the kernel (a switch flip or an unchanged rewrite publishes
+ *  nothing). `storage` fires only in OTHER same-origin contexts, so the writing window gets the same news
+ *  through a CustomEvent; the kernel's push carries it to the viewer's other devices. Last write wins. */
+export function writeTabGroups(st: TabGroupsState): void {
+  const prev = foldsOf(readTabGroups());   // what the folds were before this write: a pending change's base (below)
+  try {
+    let blob: Record<string, unknown> = {};
+    try { const o = JSON.parse(getKey(TABGROUPS_KEY) || "{}"); if (o && typeof o === "object" && !Array.isArray(o)) blob = o; } catch { /* unparseable → rewritten */ }
+    blob.on = st.on;
+    if (st.timeline === true) blob.timeline = true; else delete blob.timeline;   // the Sessions pane's switch rides the strip's writes (T399)
+    localStorage.setItem(TABGROUPS_KEY, JSON.stringify(blob));
+  } catch {
+    /* quota / private mode → this preference just doesn't outlive the page */
+  }
+  const f = foldsOf(st);
+  if (cacheFolds(f)) {
+    const publish = foldsPublisher();
+    if (publish) { try { publish(f); } catch { /* a dead socket: this browser's cache still holds the fold */ } }
+    else if (getKey(TABGROUPS_PENDING_KEY) === null) {
+      // not heard yet: the change waits as a delta over the folds it was made on (the first such write's base holds
+      // for the ones after it, so the delta is every change since), for hearSharedFolds to apply over the kernel's
+      try { localStorage.setItem(TABGROUPS_PENDING_KEY, JSON.stringify(prev)); } catch { /* the change stays this browser's */ }
+    }
+  }
+  announce();
+}
+
+/** The three-way merge a pending change lands by: the kernel's folds (`served`) with this browser's changes since
+ *  `base` (what `local` holds that base did not, and what base held that local dropped) applied over them — per
+ *  section name in `collapsed` and `expanded`, per entry in `pinned`, per tag id in the rename memory. So a fold made
+ *  before the kernel's word arrived lands, and whatever another device changed meanwhile stands; a change the
+ *  kernel already carries (a rename follow another device ran too) applies as a no-op. */
+export function mergeFolds(base: TabFolds, local: TabFolds, served: TabFolds): TabFolds {
+  const sets = <T>(b: readonly T[], l: readonly T[], s: readonly T[], key: (x: T) => string): T[] => {
+    const bk = new Set(b.map(key)), lk = new Set(l.map(key));
+    const out = s.filter((x) => !(bk.has(key(x)) && !lk.has(key(x))));        // dropped here since base: dropped
+    const have = new Set(out.map(key));
+    for (const x of l) if (!bk.has(key(x)) && !have.has(key(x))) { out.push(x); have.add(key(x)); }   // added here: added
+    return out;
+  };
+  const maps = <V>(b: Record<string, V> = {}, l: Record<string, V> = {}, s: Record<string, V> = {}): Record<string, V> => {
+    const out: Record<string, V> = { ...s };
+    for (const k of new Set([...Object.keys(b), ...Object.keys(l)])) {
+      if (JSON.stringify(b[k]) === JSON.stringify(l[k])) continue;             // unchanged here: the kernel's stands
+      if (k in l) out[k] = l[k]; else delete out[k];
+    }
+    return out;
+  };
+  const name = (x: string) => x;
+  const pin = (p: PinnedRef) => `${p.sid}\u0000${p.name}\u0000${p.id ?? ""}`;
+  return foldsOf({
+    on: true,
+    collapsed: sets(base.collapsed, local.collapsed, served.collapsed, name),
+    expanded: sets(base.expanded, local.expanded, served.expanded, name),
+    pinned: sets(base.pinned, local.pinned, served.pinned, pin),
+    followed: maps(base.followed, local.followed, served.followed),
+    followedSeq: maps(base.followedSeq, local.followedSeq, served.followedSeq),
+  });
+}
+
+/** Take the folds the kernel served. Caches and tells every pane ONLY when they differ from what this browser
+ *  holds: every viewer sees its own publish come back, and adopting it again would announce a change that did
+ *  not happen. Returns whether anything changed. */
+export function adoptSharedFolds(served: unknown): boolean {
+  if (!served || typeof served !== "object" || Array.isArray(served)) return false;
+  if (!cacheFolds(parseFolds(JSON.stringify(served)))) return false;
+  announce();
+  return true;
+}
+
+/** The migration, as a decision (view-order.ts viewOrderToPublish's twin). `served` is the frame's `folds`
+ *  half: an object when the kernel keeps folds, null when it keeps NONE (which is not an emptied state — a
+ *  viewer who opened every group must not have them refolded from somebody's old key). `local` is what this
+ *  browser reads (readTabGroups). Returns the folds to PUBLISH, or null to adopt the kernel's:
+ *  - the kernel has folds → they win, whatever this browser holds; the pre-move fields stay where they are.
+ *  - the kernel has none and this browser folds, opens, pins or remembers anything → publish it, so nobody's
+ *    folds are lost in the move (and a kernel whose store was lost is refilled by the first viewer back).
+ *  - neither → nothing to do. */
+export function foldsToPublish(served: unknown, local: TabGroupsState): TabFolds | null {
+  if (served !== null) return null;
+  const f = foldsOf(local);
+  return f.collapsed.length || f.expanded.length || f.pinned.length || f.followed ? f : null;
+}
+
+/** Publish `f` as the migration does: cache it and hand it to the kernel UNCONDITIONALLY (the kernel has none,
+ *  whatever this browser's cache already says), announcing only a change. */
+export function publishFolds(f: TabFolds, publish: FoldsPublisher): void {
+  const changed = cacheFolds(f);
+  try { publish(f); } catch { /* a dead socket: the next connect's frame asks again */ }
+  if (changed) announce();
+}
+
+/** A page HEARS the kernel's folds: the viewOrder frame's `folds` half (kernel.py _view_order_frame), on the
+ *  connect push and on every change. The migration first (foldsToPublish: this browser's folds go up when the
+ *  kernel keeps none; otherwise the kernel's win and are adopted), then `install` hands the page its publisher
+ *  — from this moment on it speaks for the folds (the rule at FoldsPublisher). The ONE implementation for the
+ *  three kinds of page: every page with a federation manager (federation.ts, the window slot), a VS Code chat
+ *  webview (render.ts) and a VS Code timeline (timeline-boot.ts), the last two through setFoldsPublisher. */
+export function hearSharedFolds(served: unknown, publish: FoldsPublisher, install: (fn: FoldsPublisher) => void): void {
+  const local = readTabGroups();
+  const pending = getKey(TABGROUPS_PENDING_KEY);
+  if (pending !== null) { try { localStorage.removeItem(TABGROUPS_PENDING_KEY); } catch { /* read once; a stale base only re-applies no-ops */ } }
+  const isObj = !!served && typeof served === "object" && !Array.isArray(served);
+  if (pending !== null && isObj) {
+    // a change this browser made before any of its pages heard the kernel: over the kernel's folds, not instead of them
+    publishFolds(mergeFolds(parseFolds(pending), foldsOf(local), parseFolds(JSON.stringify(served))), publish);
+  } else {
+    const mine = foldsToPublish(served, local);
+    if (mine) publishFolds(mine, publish);
+    else adoptSharedFolds(served);
+  }
+  install(publish);
 }
 
 /** Folded? The user's explicit fold or open wins; otherwise the default set decides. */
@@ -617,10 +814,14 @@ export interface StripPlan {
  *    the strip's children in order (kernel.py _CHAT_MOBILE_JS: a heading row per group header, a row per
  *    tab copy, a divider at the trail). It SECTIONS like the desktop (the user 2026-09-16, whose phone
  *    listed the sessions in the raw view order while the desktop grouped them by tag: the two must read
- *    the same), but NOTHING FOLDS there: the picker's heading is a label, not a fold control, and the
- *    picker is the phone's only switcher, so a folded section there made its sessions unreachable
- *    (`archived` starts folded). Every member renders under its header, `folded` stays empty, and a pin
- *    has nothing to show through.
+ *    the same), and since 2026-09-23 it FOLDS like the desktop too, from the same folds (the user asked
+ *    to fold groups on the phone, with the state shared across devices). Until then nothing folded there,
+ *    on the reasoning that the picker is the phone's only switcher and a folded section would put its
+ *    sessions out of reach; the user's ruling supersedes it, and the reach is kept another way: the
+ *    picker's heading is now the fold control, one tap from the members, as the desktop header is. Every
+ *    rule below holds on the phone as written (the pins, the active tab's stand-in), except `packed`,
+ *    which is a strip layout and never set there: the picker lists each heading on a row of its own.
+ *    render.ts adds the phone's one extra node for the folded-away active tab (phoneStandIns).
  *  - `pending`: a provisional tab (a create in flight) with the tags the request named. It renders
  *    under every one of them from the first paint — the way the kernel's frame will place it — instead
  *    of landing in the untagged trail and jumping when the frame arrives.
@@ -646,32 +847,26 @@ export interface StripPlan {
  *    does the trail; a lone folded group between open ones has nothing to pack with and keeps its row.
  *    The item right before, not the section: a folded section with a member pinned through its fold
  *    ends in that member's tab, so the next folded header opens a row as it would after an open group.
- *    Never on the phone, where nothing folds.
+ *    Never on the phone, whose picker lists every heading on its own row.
  *
- *  WHAT TWO VIEWERS SHARE, AND THE ONE THING THEY DO NOT (measured 2026-09-23, after the user asked twice
- *  why their phone and their desktop disagree; tests/test_mobile_picker_order_browser.py prints the table).
- *  This function is the ONE ordered source both surfaces render: the desktop strip paints its items, and
- *  the phone's picker is built by walking that strip's children, so within a page they cannot disagree.
- *  Across two VIEWERS, everything this function reads is shared but two inputs, both this browser's own:
- *    - the SECTIONS and their order come from `unions` — the kernel's tags and tagOrder — so the headings
- *      and their sequence are identical on every machine;
- *    - which section a session sits in comes from tag membership, also the kernel's, so a session loose on
- *      one surface is loose on every other: the trail's MEMBERSHIP never diverges;
- *    - `visibleIds` is the viewer's OWN arrangement (view-order.ts, romp:vieworder in this browser's
- *      localStorage), and that is per-browser on purpose — the user's ruling of 2026-07-31, that the order
- *      is a property of how you are looking at your sessions, so a drag on the laptop must not move the
- *      tab on the desktop. It governs the order INSIDE each section and the order of the trail alike;
- *    - `st` is the viewer's OWN tab-groups store (romp:tabgroups, per browser like the arrangement; the head
- *      of this file). It governs whether and how the strip sections at all: the group switch (`st.on`) on
- *      both surfaces, since the phone's picker menu carries the same switch (render.ts builds one groupToggle
- *      for both mounts), and the folds and pins on the desktop alone, since nothing folds on the phone.
- *      Switched off, a viewer reads one flat run in its arrangement's order, with no headings and no trail.
- *  So the one way two viewers that are both grouped can read differently is that one of them has arranged
- *  its tabs: same sessions, same headings, each viewer's own sequence. It shows up in the trail first simply
- *  because the trail is usually the longest run of tabs. Nothing here is a second sort to be reconciled: a
- *  surface that wants to match another must be fed the same arrangement, which is a question about that
- *  ruling, not about this plan. (The phone offers no drag, so its arrangement is the kernel's order as it
- *  first adopted it, plus later arrivals at the end.) */
+ *  WHAT TWO VIEWERS SHARE (measured 2026-09-23, after the user asked twice why their phone and their desktop
+ *  disagree; tests/test_mobile_picker_order_browser.py prints the table). This function is the ONE ordered
+ *  source both surfaces render: the desktop strip paints its items, and the phone's picker is built by
+ *  walking that strip's children, so within a page they cannot disagree. Across two VIEWERS of one kernel,
+ *  every input is the same but one switch:
+ *    - the SECTIONS and their order come from `unions` — the kernel's tags and tagOrder;
+ *    - which section a session sits in comes from tag membership, also the kernel's, so the trail's
+ *      MEMBERSHIP never diverges;
+ *    - `visibleIds` is arranged by the viewer's arrangement, which the kernel keeps and pushes since
+ *      2026-09-23 (view-order.ts; until then each browser kept its own, and the trail read differently
+ *      wherever one of them had dragged). It governs the order INSIDE each section and the order of the
+ *      trail alike;
+ *    - the folds and pins in `st` are the kernel's too since the same day (TabFolds, the head of this file),
+ *      on the phone as on the desktop;
+ *    - `st.on`, whether the strip sections at all, stays this browser's own: the phone's picker menu carries
+ *      the same switch (render.ts builds one groupToggle for both mounts). Switched off, a viewer reads one
+ *      flat run in the arrangement's order, with no headings and no trail.
+ *  So two viewers that are both grouped read alike: same sessions, same headings, same sequence, same folds. */
 export function planStrip(visibleIds: readonly string[], unions: readonly TagUnion[], st: TabGroupsState,
                           activeId: string | null, phone: boolean,
                           pending?: { id: string; tags: readonly string[] } | null): StripPlan {
@@ -689,8 +884,8 @@ export function planStrip(visibleIds: readonly string[], unions: readonly TagUni
   }
   const secs = sectionTabs(visibleIds, u);
   // does this section put a copy of `id` on the strip: open, or folded with the copy pinned through the fold
-  // a section's fold as this plan renders it: never the trail's, and never on the phone (above)
-  const foldOf = (sec: TabSection): boolean => !phone && sec.name !== null && isSectionCollapsed(st, sec.name);
+  // a section's fold as this plan renders it: never the trail's; on the phone exactly as on the desktop (above)
+  const foldOf = (sec: TabSection): boolean => sec.name !== null && isSectionCollapsed(st, sec.name);
   const shows = (sec: TabSection, id: string): boolean => !foldOf(sec) || isPinned(st, sec, id);
   const holders = activeId !== null ? secs.filter((sec) => sec.ids.includes(activeId)) : [];
   const shownSomewhere = activeId !== null && holders.some((sec) => shows(sec, activeId));
@@ -705,7 +900,7 @@ export function planStrip(visibleIds: readonly string[], unions: readonly TagUni
     // packed: this header is folded and the item right before it is a folded header too (the trail's header
     // is never folded, so a folded header never packs onto the trail, nor the trail onto anything)
     const prev = items[items.length - 1];
-    const packed = f && prev !== undefined && "head" in prev && prev.folded;
+    const packed = !phone && f && prev !== undefined && "head" in prev && prev.folded;
     items.push({ head: sec, folded: f, active, hidden, packed });
     for (const id of sec.ids) { if (hidden.includes(id)) folded.add(id); else items.push({ id }); }
   }
@@ -713,6 +908,25 @@ export function planStrip(visibleIds: readonly string[], unions: readonly TagUni
   // keyboard — only when EVERY copy is; one copy on screen keeps it in the order
   for (const it of items) if ("id" in it) folded.delete(it.id);
   return { items, folded, sectioned };
+}
+
+/** A strip item as render.ts PAINTS it: the plan's, or on the phone the folded-away active tab's own node. */
+export type PaintItem = StripItem | { id: string; away: true };
+
+/** The phone's one addition to the plan (2026-09-23, when the phone began to fold): the ACTIVE tab folded
+ *  away under its section is still painted, as a node the picker reads and never lists (`away`), right
+ *  after the header that stands in for it. The picker's current-session chip (kernel.py _CHAT_MOBILE_JS)
+ *  mirrors the strip's active tab — its name, colour and state cues, from the one tab builder — and a fold
+ *  that took the tab off the strip would otherwise leave the chip naming whichever session came first:
+ *  the user must never lose sight of the session they are in. The desktop needs no such node (its folded
+ *  header is the stand-in, and the transcript under the strip names the session), so render.ts calls this
+ *  on the phone layout alone, where the strip is not displayed. Returns `items` itself when the active tab
+ *  shows somewhere (a copy open or pinned through its fold), or there is none. */
+export function phoneStandIns(items: readonly StripItem[], activeId: string | null, folded: ReadonlySet<string>): readonly PaintItem[] {
+  if (activeId === null || !folded.has(activeId)) return items;
+  const at = items.findIndex((it) => "head" in it && it.active && it.folded);
+  if (at < 0) return items;
+  return [...items.slice(0, at + 1), { id: activeId, away: true }, ...items.slice(at + 1)];
 }
 
 /** The tabs a repaint REVEALS: the ids the strip shows now (its visible ids less the plan's folded ones) that the

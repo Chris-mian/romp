@@ -41,6 +41,7 @@ import types
 import unittest
 from unittest import mock
 from romp_load import load_source
+from tests.needs_row_fixture import populated_ask   # noqa: E402  the shared fixture, a package module (romp_load put the checkout root on the path for a direct run)
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -1078,6 +1079,67 @@ class Differential(_World):
         finally:
             km._feed_needs_input[0], km._feed_needs_rows[0] = saved_in, saved_rows
 
+    def test_every_card_field_on_a_goal_row_moves_the_notices_label(self):
+        # the row carries what the card carries (plans/needs-you.md, round two of the box content PR): each of the card's fields on the row is
+        # FLIPPED against the signature, one at a time from the same base row, and each flip moves the notices label. The source-text
+        # cross-check below reads that every name is keyed; this reads that the key is read from the row itself (a key read from the wrong
+        # dict, or a field name mistyped in the tuple, passes the text and fails here). A structured sentinel, since the fields are shapes.
+        saved_in, saved_rows = km._feed_needs_input[0], km._feed_needs_rows[0]
+        try:
+            km._feed_needs_input[0] = frozenset([SID])
+            base = {"itemId": SID + ":g9", "kind": "goal", "title": "wire the fixtures", "body": "", "cont": False, "t": 1}
+            base.update({f: None for f in km._NEEDS_ROW_CARD_FIELDS})
+            for f in km._NEEDS_ROW_CARD_FIELDS:
+                with self.subTest(field=f):
+                    km._feed_needs_rows[0] = {SID: [dict(base)]}
+                    before = self.sig()
+                    km._feed_needs_rows[0] = {SID: [dict(base, **{f: {"moved": f}})]}
+                    self.assertEqual(self.moved(before, self.sig()), ("notices",), "the row's %s moves the label" % f)
+            # and ONE INNER ELEMENT of a structured value (a contributor's review of PR 2124: a None-to-value move passes a key that is constant
+            # per structure; the key must read the value itself)
+            shaped = {"briefParts": ([{"id": "a", "since": 1}, {"id": "b", "since": 2}], lambda v: [dict(v[0], since=9), v[1]]),
+                      "summaryParts": ([{"id": "a", "since": 1}, {"id": "b", "since": 2}], lambda v: [v[0], dict(v[1], since=9)]),
+                      "stalled": ({"why": "no turn in 2h", "since": 1, "note": None}, lambda v: dict(v, note="the fixtures wait on a port")),
+                      "tree": ([{"id": "g9", "kind": "ask", "text": "wire the fixtures", "status": "open", "children": ["g9a"]}, {"id": "g9a", "kind": "ask", "text": "pick a port", "status": "open", "children": []}],
+                               lambda v: [v[0], dict(v[1], status="done")]),
+                      "awaiting": ({"why": "a job on the cluster", "kind": "task", "since": 5}, lambda v: dict(v, why="a second job on the cluster")),
+                      "nudged": ({"count": 1, "times": [10]}, lambda v: {"count": 2, "times": [10, 20]}),
+                      "waitingOn": ({"name": "api", "kind": "delegate", "since": 3}, lambda v: dict(v, name="tests")),
+                      "origin": ({"peer": "api", "peerSid": SID + "-api", "live": True}, lambda v: dict(v, live=False)),
+                      "handoffTo": ({"peer": "api", "peerSid": SID + "-api"}, lambda v: dict(v, peer="tests")),
+                      # the six a contributor's second note on PR 2124 found missing: under a key constant per structure a second warning left the row stale
+                      "warns": ([{"kind": "brief-failed", "t": 1, "msg": "the brief could not be written", "detail": ""}], lambda v: v + [{"kind": "summary-failed", "t": 2, "msg": "the takeaway could not be written", "detail": ""}]),
+                      "failLog": ([{"t": 1, "line": "brief", "model": "opus", "note": "529"}], lambda v: [dict(v[0], note="overloaded")]),
+                      "summaryAnchorsPara": ([{"u": "a1"}, None], lambda v: [dict(v[0], q="the fixtures"), None]),
+                      "working": ({"since": 10, "toolUses": 3}, lambda v: dict(v, toolUses=4)),
+                      "delegTracked": ([{"sid": SID + "-w", "name": "web"}], lambda v: [dict(v[0], name="worker")])}
+            # WHICH fields are structured is read from the kernel's own row, never from a second hand-written list (the contributor's note on the
+            # 0.17.1 fix: a constant read by no kernel code tied the table to itself, and a structured field added later to the card fields but
+            # not to the constant would have passed as a scalar move): the one fully populated ask the row projection test reads too
+            # (tests/needs_row_fixture.py), built into a row through _needs_you_rows, each field classified by what the ROW carries (a dict or a
+            # list). A live-block object never rides a plain row (the credential floor builds the fix row, which carries no card field; every
+            # other live block is a hard stop, which takes no row), so the row's blocked is None by construction and its move is the scalar
+            # loop's; the derivation says so where a hand-written list had it structured
+            row = km._needs_you_rows({"asks": [populated_ask(SID, km._board_needs_you(None))]})[SID][0]
+            structured = {f for f in km._NEEDS_ROW_CARD_FIELDS if isinstance(row.get(f), (dict, list))}
+            self.assertEqual(structured, set(shaped), "the table moves every structured member of the row's card fields, no more and no fewer (read from the row the kernel builds)")
+            self.assertEqual({f for f in km._NEEDS_ROW_CARD_FIELDS if row.get(f) is None}, {"blocked"}, "premise: every card field but the live block rode onto the row")
+            # a SCALAR member moves to another scalar (nudgeFailed among them: a bool)
+            for f in set(km._NEEDS_ROW_CARD_FIELDS) - structured:
+                with self.subTest(field=f, scalar=True):
+                    km._feed_needs_rows[0] = {SID: [dict(base, **{f: "one"})]}
+                    before = self.sig()
+                    km._feed_needs_rows[0] = {SID: [dict(base, **{f: "another"})]}
+                    self.assertEqual(self.moved(before, self.sig()), ("notices",), "a scalar move of the row's %s moves the label" % f)
+            for f, (value, move) in shaped.items():
+                with self.subTest(field=f, inner=True):
+                    km._feed_needs_rows[0] = {SID: [dict(base, **{f: value})]}
+                    before = self.sig()
+                    km._feed_needs_rows[0] = {SID: [dict(base, **{f: move(value)})]}
+                    self.assertEqual(self.moved(before, self.sig()), ("notices",), "one inner element of the row's %s moves the label" % f)
+        finally:
+            km._feed_needs_input[0], km._feed_needs_rows[0] = saved_in, saved_rows
+
     def test_the_unkeyed_row_field_is_pinned_by_value_and_the_rows_other_fields_are_the_key(self):
         # _NEEDS_ROW_UNKEYED by value, as _CHAT_ROW_UNKEYED is; and every field a goal row carries but the unkeyed one is in the
         # signature's tuple, so a field added to _needs_you_rows without a place in the key fails here (the third review of PR 1967)
@@ -1091,7 +1153,10 @@ class Differential(_World):
         rows = km._needs_you_rows(feed).get(SID) or []
         self.assertEqual([r["itemId"] for r in rows], [SID + ":g1", SID + ":g2"], "the plain row and the credential row: %r" % rows)
         fields = set().union(*(set(r) for r in rows))
-        self.assertEqual(fields - km._NEEDS_ROW_UNKEYED, {"itemId", "kind", "title", "body", "cont", "fix"}, "every field a built row carries is keyed or declared unkeyed")
+        CARD_FIELDS = ("summary", "blockSummary", "briefParts", "summaryParts", "distillState", "summaryStale", "relayNote", "background",
+               "stalled", "tree", "awaiting", "recheck", "rejudging", "nudgeFailed", "nudged", "interrupting", "interrupted", "waitingOn", "origin", "handoffTo",
+               "warns", "failLog", "summaryAnchorUuid", "summaryAnchorQuote", "summaryAnchorsPara", "doneConfirming", "blocked", "column", "judging", "working", "sessState", "delegTracked")   # written out, so a kernel whose rows lack them reds here on the rows (test_chat_notices holds the kernel's list to this one)
+        self.assertEqual(fields - km._NEEDS_ROW_UNKEYED, {"itemId", "kind", "title", "body", "cont", "fix"} | set(CARD_FIELDS), "every field a built row carries is keyed or declared unkeyed (the card's fields since the row carries what the card carries)")
         # and the row literals' keys from the AST (the third review) read the same set: a second reading of the same rows
         tree = ast.parse(inspect.getsource(km._needs_you_rows).lstrip())
         lit = set()

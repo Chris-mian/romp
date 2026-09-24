@@ -7,7 +7,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
 
 test("feed prefs from romp:settings: newestFirst/collapsed default OFF, grouped default ON; the subgoals pref is gone", () => {
   assert.match(FEED, /function feedPrefs\(\)/);
@@ -35,7 +35,7 @@ test("the card shows the DISTILLER's line (summary/blockSummary) but NO why/gene
   // distiller-line.test.ts (completed→summary, blocked→blockSummary, hidden when empty). These pins just
   // confirm the card creates the element and routes through that single rule.
   assert.match(FEED, /const distill = el\("div", "fask-distill"\)/);
-  assert.match(FEED, /import \{ distillText, distillInputs, applyDistillLine, distillPending, distillStaleNote \} from "\.\/distiller-line"/);
+  assert.match(FEED, /import \{ distillText, distillInputs, applyDistillLine, distillPending, distillStaleNote, distillParas \} from "\.\/distiller-line"/);   // distillParas since the box content round: the paragraph split is the module's, shared with the Needs you row
   // keyed on the GENUINE state (dCompleted/dBlocked from distillInputs), not the transient column, so a
   // still-blocked card keeps its brief through the recheck/rejudging Working flip (the user 2026-07-21)
   assert.match(FEED, /applyDistillLine\(a\._distill as HTMLElement, dCompleted, dBlocked,\s*\n?\s*it\.summary, it\.blockSummary\)/);

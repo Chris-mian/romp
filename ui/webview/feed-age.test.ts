@@ -141,7 +141,7 @@ test("liveRefresher: a hidden pane skips the pass and catches up exactly once wh
 });
 
 test("feed.ts reads a card's clock only through nowSec(), stamps every age and duration on the card face, and the live pass repaints them all", () => {
-  assert.match(FEED, /import \{ liveNow, liveRefresher, refreshAges, stampAge \} from "\.\/feed-age";/);
+  assert.match(FEED, /import \{ liveNow, liveRefresher, refreshAges, stampAge, relAge \} from "\.\/feed-age";/);
   assert.match(FEED, /function nowSec\(\): number \{ return liveNow\(hostNow, hostNowAt, Date\.now\(\)\); \}/);
   assert.match(FEED, /if \(typeof m\.now === "number"\) \{\n\s*hostNow = m\.now;\n\s*hostNowAt = typeof m\.nowAt === "number" \? m\.nowAt : Date\.now\(\);/,
     "the payload's clock is recorded with when THAT FRAME ARRIVED (federation's `nowAt`) — never with when this handler ran");
@@ -159,7 +159,7 @@ test("feed.ts reads a card's clock only through nowSec(), stamps every age and d
   // change, so a duration baked into a caption would freeze on a card never re-sent
   assert.match(FEED, /function durSpan\(since: number\): HTMLElement \{\n\s*const d = el\("span", "fask-dur"\);\n\s*stampAge\(d, since, "dur", false, nowSec\(\), relAge, ageColorReadable\);/);
   assert.doesNotMatch(FEED, /, Date\.now\(\) \/ 1000\)/, "no elapsed label reads the browser clock any more (the clock anchor itself still does, feed-age.ts liveNow)");
-  assert.match(FEED, /if \(bp!\[i\]\.since\) stampAge\(age, bp!\[i\]\.since, "plain", false, nowS, relAge, ageColorReadable\);/);
+  assert.match(fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8"), /if \(bp!\[i\]\.since\) stampAge\(age, bp!\[i\]\.since, "plain", false, nowS, env\.relAge, env\.ageTint\);/, "the paragraph stamps, in the shared builder since round two of the box content PR, on the page\'s clock and words"); assert.match(FEED, /nowSec: \(\) => nowSec\(\), relAge: \(sec\) => relAge\(sec\), ageTint: \(sec\) => ageColorReadable\(sec\),/, "which the feed hands it");
   // the 15 s live pass: the latched Continue's title, then every stamped age, writing only what changed,
   // through the shared visibility gate
   const pass = FEED.slice(FEED.indexOf("function livePass(): void {"), FEED.indexOf("const live = liveRefresher("));

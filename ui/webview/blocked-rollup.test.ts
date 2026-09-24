@@ -12,7 +12,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const UI = path.resolve(process.cwd(), "..", "ui", "webview");
-const FEED = fs.readFileSync(path.join(UI, "feed.ts"), "utf8");
+const FEED = fs.readFileSync(path.join(UI, "feed.ts"), "utf8") + fs.readFileSync(path.join(UI, "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "bin", "romp-kernel"), "utf8");
 
 test("kernel flatten rolls a blocked descendant up to every non-done ancestor and marks it qderived", () => {
