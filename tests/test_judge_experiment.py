@@ -74,6 +74,20 @@ if log:
                              "argv": args, "cwd": os.getcwd(),                            # review MED 2: the flags and the cwd the caller ran, observed
                              "credPresent": [k for k in SENSITIVE if os.environ.get(k)],  # which sensitive names ride the child env (presence, never a value)
                              "rawHash": raw_hash, "markNorm": mark_norm}) + "\n")         # raw differs per call (the mark); mark-normalized is equal across builds
+if os.environ.get("JE_TEST_KILL_ALL") and judge in ("planner", "closer", "unblocker"):   # kill EVERY arm call (none ever serves): no usage row lands, so the budget stop must price kills from the floor
+    import signal as _sig
+    os.kill(os.getpid(), _sig.SIGALRM); sys.exit(1)
+_killdir = os.environ.get("JE_TEST_KILL_FIRST")                # kill-first knob: the FIRST planner and closer call (per judge; the test clears the dir between arms) dies
+if _killdir and judge in ("planner", "closer"):                # like a timer kill (empty stdout, returncode -SIGALRM), so the retry's re-sample road is exercised
+    import signal as _sig
+    _marker = os.path.join(_killdir, judge)
+    if not os.path.exists(_marker):
+        open(_marker, "w").write("x")                          # only the first call of each judge kills; the re-sample (a fresh process) finds the marker and serves
+        _alog = os.environ.get("JE_TEST_ALARM_LOG")
+        if _alog:
+            open(_alog, "a").write("%s %d\n" % (judge, _sig.alarm(0)))   # the perl alarm the arm set: 240 at the harness alarm, 120 if the alarm-raise is removed
+        os.kill(os.getpid(), _sig.SIGALRM)                     # die with empty stdout: a timeout kill the retry re-samples
+        sys.exit(1)                                            # unreached
 m = re.search(r"<(turn|segment|message)[^>]*>\n(.*?)\n</(turn|segment|message)", user, re.S)
 text = m.group(2) if m else user
 flag = bool(re.search(r"i can also|which option|not done", text, re.I))
@@ -472,23 +486,41 @@ class Harness(unittest.TestCase):
         time, derivation-independent) and adopts the current version, so _plan_session runs no whole-store seal and only the
         turn's units (time >= cut) remain to plan. Stubbed jd so the contract is deterministic."""
         import types as _t
-        session = {"turns": [[{"id": "s1"}, {"id": "s2"}, {"id": "s3"}, {"id": "s4"}]]}
-        units = [("s1", "work", 50), ("s2", "work", 70), ("s3", "work", 100), ("s4", "work", 120)]   # cut at 100: s1,s2 pre-cut; s3,s4 the turn
+        session = {"turns": [[{"id": "s0"}, {"id": "s1"}, {"id": "s2"}, {"id": "s3"}, {"id": "s4"}]]}
+        units = [("s0", "work", 30), ("s1", "work", 50), ("s2", "work", 70), ("s3", "work", 100), ("s4", "work", 120)]   # cut at 100: s0,s1,s2 pre-cut; s3,s4 the turn
         for v in (9, 10, 11, 12, 13, 14):
-            store = {"placements": {}, "placementsV": v}
+            store = {"placements": {"s0#work": "nodeX"}, "placementsV": v}   # s0 is a pre-cut unit ALREADY PLACED (a node id): the guard must LEAVE it, never overwrite it with None (PR 2099 review low 4)
             jd = _t.SimpleNamespace(PLACEMENTS_V=15)
             jd.episode_floor = lambda fsid: None
             jd._segs = lambda turn, store: turn
             jd.plan_units = lambda session, store, floor=None, lazy_text=True: units
             jd._unit_key = lambda seg, phase: "%s#%s" % (seg, phase)
-            jd._placed_key = lambda placements, key, live=None, floor=None: key in placements
+            jd._placed_key = lambda placements, key, live=None, floor=None: placements.get(key) is not None   # placed = a non-None node id
             sealed = self.je.seal_pre_cut_adopt(jd, "fsid", session, store, 100)
             self.assertEqual(store["placementsV"], 15, "adopts the current version from %d, so _plan_session skips its seal" % v)
-            self.assertEqual(sealed, 2, "exactly the two pre-cut units sealed (from version %d): %r" % (v, store["placements"]))
-            self.assertIsNone(store["placements"].get("s1#work"), "pre-cut unit sealed")
-            self.assertIsNone(store["placements"].get("s2#work"), "pre-cut unit sealed")
+            self.assertEqual(sealed, 2, "exactly the two UNPLACED pre-cut units sealed (from version %d), the placed one not counted: %r" % (v, store["placements"]))
+            self.assertEqual(store["placements"].get("s0#work"), "nodeX", "a placed pre-cut key KEEPS its node id (the guard skips it), never overwritten to None")
+            self.assertIsNone(store["placements"].get("s1#work"), "an unplaced pre-cut unit sealed")
+            self.assertIsNone(store["placements"].get("s2#work"), "an unplaced pre-cut unit sealed")
             self.assertNotIn("s3#work", store["placements"], "the turn unit at the cut is left to plan")
             self.assertNotIn("s4#work", store["placements"], "the turn unit after the cut is left to plan")
+
+    def test_a_minted_top_scores_by_the_seedstart_boundary_not_startt(self):
+        """PR 2099 review low 3: a top the arm mints in the ending's own turn WITHOUT filing a done or block on it records as
+        SCORED, by the seedStart cut boundary. For an opener-less ending startT is None, so reverting the boundary to startT
+        would read the minted-no-verdict top as unscored: the pin reds that revert. A top the arm filed a verdict on scores
+        regardless of birth."""
+        now = 1000
+        lo = 500                                               # seedStart for an opener-less ending (its previous turn's end); startT would be None
+        minted = {"t": 600, "log": []}                          # born in the turn, no done/block filed
+        self.assertTrue(self.je.top_scored(minted, lo, now), "a top minted in the turn (no verdict) scores by the seedStart boundary")
+        self.assertFalse(self.je.top_scored(minted, None, now), "the revert to startT (None) drops the minted-no-verdict top: the pin")
+        seed = {"t": 100, "log": []}                            # born before the turn, never touched
+        self.assertFalse(self.je.top_scored(seed, lo, now), "a pre-turn top with no verdict does not score")
+        filed = {"t": 100, "log": [{"kind": "done", "at": now}]}   # pre-turn, but the arm filed a done THIS build (at >= now)
+        self.assertTrue(self.je.top_scored(filed, lo, now), "a top the arm filed a done/block on this build scores regardless of birth")
+        old_verdict = {"t": 100, "log": [{"kind": "done", "at": now - 100}]}   # a seed verdict, before this pass
+        self.assertFalse(self.je.top_scored(old_verdict, lo, now), "a seed's own earlier verdict is not the arm's filing")
 
     def test_a_silent_measured_judge_reads_not_comparable_and_is_named_in_the_table(self):
         """The comparability precondition (manager's condition 2): an arm in which any measured judge made ZERO calls is not
@@ -1051,6 +1083,10 @@ class Harness(unittest.TestCase):
                     ctx.last_call_fail = None; return "ok"
                 if verdict == "pause":
                     ctx.paused = True; ctx.last_call_fail = None; return ""
+                if verdict == "serve_empty":
+                    ctx.last_call_fail = None; return ""              # a legitimate EMPTY reply, no failure: returned at once, never retried
+                if verdict == "pause_stale":
+                    ctx.paused = True; return ""                      # a pause that LEAVES last_call_fail set (stale), as the real pause paths do: the `paused` conjunct must return
                 with ep.open("a", encoding="utf-8") as f:                 # a real transient call failure files one `call` row
                     f.write(json.dumps({"judge": judge, "err": "call", "note": "timeout"}) + "\n")
                 ctx.last_call_fail = {"note": "timeout"}; return ""
@@ -1085,6 +1121,22 @@ class Harness(unittest.TestCase):
         jd = fake_jd(lambda n: "pause")
         self.je.install_call_retry(jd, ep, c5, attempts=3)
         self.assertEqual((jd._judge_run_impl(judge="planner"), self.je.count_failure_rows(ep), c5["firstAttemptKills"]), ("", 0, 0), "a pause is a skip, not a failure to retry")
+        # a served EMPTY reply (no failure): returned at once, never a first-attempt kill
+        ep.write_text(""); c6 = {}
+        jd = fake_jd(lambda n: "serve_empty")
+        self.je.install_call_retry(jd, ep, c6, attempts=3)
+        self.assertEqual((jd._judge_run_impl(judge="planner"), c6["firstAttemptKills"], c6["retryAttempts"]), ("", 0, 0), "a served empty reply is not a failure to retry")
+        # a pause AFTER a failure with last_call_fail left STALE: the `paused` conjunct RETURNS (ending the retry), but a pause is
+        # a stand-down, NOT a recovery (a recovery is a non-empty served reply, PR 2122 review medium 2)
+        ep.write_text(""); c7 = {}
+        jd = fake_jd(lambda n: "fail" if n == 0 else "pause_stale")
+        self.je.install_call_retry(jd, ep, c7, attempts=3)
+        self.assertEqual((jd._judge_run_impl(judge="planner"), c7["firstAttemptKills"], c7["recoveredCalls"]), ("", 1, 0), "a pause after a kill ends the retry via the paused conjunct but is NOT counted a recovery")
+        self.assertEqual(self.je.count_failure_rows(ep), 0, "the earlier kill's row is still tagged out when the pause returns (not a final failure)")
+        # a tagged (retried) row is skipped by BOTH counters, arm and non-arm
+        ep.write_text(json.dumps({"judge": "planner", "err": "call", "note": "timeout", "retried": True}) + "\n"
+                      + json.dumps({"judge": "gister", "err": "call", "note": "timeout", "retried": True}) + "\n")
+        self.assertEqual((self.je.count_failure_rows(ep), self.je.count_non_arm_failure_rows(ep)), (0, 0), "a tagged row is skipped by both count_failure_rows and count_non_arm_failure_rows")
 
     def test_install_call_retry_refuses_a_concurrent_entry(self):
         """The by-line-range tag-and-count is correct only single-threaded (the arm's construction); the guard makes that an
@@ -1106,6 +1158,178 @@ class Harness(unittest.TestCase):
         self.assertEqual(jd._judge_run_impl(judge="planner"), "ok")
         self.assertIsInstance(box.get("e"), RuntimeError, "a concurrent entry is refused, not silently raced")
 
+    def _restore_arm_env(self, extra=()):   # snapshot + addCleanup the process env load_judge / the kill knob mutate
+        keys = ("XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "ROMP_CLAUDE_BIN", "ROMP_STATE_DIR") + tuple(extra)
+        snap = {k: os.environ.get(k) for k in keys}
+        self.addCleanup(lambda: [os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v) for k, v in snap.items()])
+
+    def test_the_arm_retry_wiring_recovers_kills_and_restores(self):
+        """Arm-level wiring of the retry (PR 2092 review point 1): the kill-first knob kills each arm's first planner and closer
+        call, which the retry re-samples to a served reply, so a two-arm one-build run reads failures 0 with the counters filled
+        and both arms comparable; the module's _judge_run_impl and its 120s alarm are RESTORED after the arm (a removed install
+        or a dropped restore red the restore assertions), and the fake observed the arm's 240s alarm (the alarm-raise)."""
+        dest, m = self._corpus(name="retrywire")
+        run_root = os.path.join(self.td, "runs-retrywire")
+        killdir = os.path.join(self.td, "killdir"); os.makedirs(killdir)
+        alarmlog = os.path.join(self.td, "alarm.log")
+        caps = []
+        orig = self.je.load_judge
+        def patched(*a, **k):
+            jd = orig(*a, **k)
+            caps.append({"jd": jd, "origImpl": jd._judge_run_impl, "alarm": jd.CALL_ALARM_S})   # captured BEFORE run_arm_inprocess installs the retry / raises the alarm
+            return jd
+        self.je.load_judge = patched
+        self.addCleanup(lambda: setattr(self.je, "load_judge", orig))
+        self._restore_arm_env(("JE_TEST_KILL_FIRST", "JE_TEST_ALARM_LOG"))
+        os.environ["JE_TEST_KILL_FIRST"] = killdir
+        os.environ["JE_TEST_ALARM_LOG"] = alarmlog
+        res = []
+        for arm in ("A", "B"):
+            for f in os.listdir(killdir):
+                os.unlink(os.path.join(killdir, f))   # clear the markers so each arm kills its OWN first planner and closer call
+            res.append(self.je.run_arm_inprocess(dest, arm, None, run_root, None, self.fake, now=T0 + 10**6, builds=1))
+        for r in res:
+            self.assertEqual(r["failures"], 0, "the first-call kills recovered on re-sample: no failure (%r)" % r.get("failuresByKind"))
+            self.assertEqual((r["retry"]["firstAttemptKills"], r["retry"]["recoveredCalls"]), (2, 2), "the planner and closer first calls each killed once and recovered: %r" % r["retry"])
+            self.assertEqual(r["failuresByKind"], {}, "nothing failed every attempt")
+        Path(run_root, "arms.json").write_text(json.dumps({"arms": ["A", "B"]}))
+        rows = self.je.report(dest, run_root, str(self.state))
+        self.assertTrue(all(x["comparable"] for x in rows), "both arms recovered and read comparable")
+        # the review's fix named the three retry columns and the failures cell: the table shows the counters and a 0 failures cell (PR 2092 review low b)
+        table = (Path(run_root) / "table.md").read_text()
+        row = [l for l in table.splitlines() if l.startswith("| A |")][0]
+        cells = [c.strip() for c in row.strip("|").split("|")]
+        self.assertEqual((cells[-4], cells[-3], cells[-2]), ("2", "2", "2"), "the table prints first-attempt kills / re-samples / recovered = 2/2/2 for the arm: %r" % row)
+        self.assertEqual(cells[-1], "0", "the failures cell reads 0 (comparable after recovery): %r" % row)
+        for c in caps:
+            self.assertEqual(c["jd"]._judge_run_impl.__name__, "_judge_run_impl", "the retry wrapper (_retrying) is restored to the module's original _judge_run_impl after the arm")
+            self.assertEqual(c["jd"].CALL_ALARM_S, c["alarm"], "the module alarm is restored to its pre-arm value (120s)")
+            self.assertEqual(c["alarm"], 120, "the module alarm before the arm is the production 120s")
+        observed = {int(l.split()[1]) for l in Path(alarmlog).read_text().splitlines() if l.strip()}
+        self.assertEqual(observed, {240}, "each killed call ran under the arm's HARNESS_ALARM_S (240s); the alarm-raise mutant would read 120: %r" % observed)
+
+    def test_the_budget_stop_counts_killed_attempts_from_a_floor_when_no_row_landed(self):
+        """PR 2122 review medium 3: a killed attempt writes no usage row, so with the ledger EMPTY the mean-cost estimate is 0
+        and the stop would never fire. The floor prices a killed attempt when no row landed, so a kill-heavy arm with an empty
+        ledger still stops at the 1.2x bound. Killing every arm call leaves the ledger empty, yet the arm stops."""
+        dest, m = self._corpus(name="killbudget")
+        self._restore_arm_env(("JE_TEST_KILL_ALL",))
+        os.environ["JE_TEST_KILL_ALL"] = "1"
+        res = self.je.run_arm_inprocess(dest, "A", None, os.path.join(self.td, "r-killbudget"), 0.05, self.fake, now=T0 + 10**6, builds=1)
+        self.assertEqual(res.get("calls"), 0, "every arm call was killed: no usage row landed, so the mean cost is undefined")
+        self.assertIsNotNone(res.get("stopped"), "the arm STOPS on the killed-attempt floor estimate though the ledger is empty")
+        self.assertGreater(res["stopped"].get("killedAttempts", 0), 0, "the stop names the killed attempts it counted at the floor")
+
+    def test_tag_surfaces_a_read_failure_and_never_overwrites_the_ledger(self):
+        """PR 2122 review low a: _tag's read path must SURFACE a read failure, never swallow it to an empty list and then write
+        that over the ledger, destroying rows. With the errors file unreadable when the recovery tag reads it, the tag raises
+        and the ledger's rows are preserved (pre-fix: the read swallowed, the ledger truncated to 0, the call returned ok)."""
+        ep = Path(self.td) / "tagfail.jsonl"
+        ep.write_text(json.dumps({"judge": "planner", "err": "x", "note": "one"}) + "\n"
+                      + json.dumps({"judge": "planner", "err": "x", "note": "two"}) + "\n")
+        ctx = types.SimpleNamespace(paused=False, last_call_fail=None)
+        jd = types.SimpleNamespace(_judge_ctx=ctx)
+        calls = {"n": 0}
+        def impl(*a, **k):
+            n = calls["n"]; calls["n"] += 1
+            if n == 0:
+                with ep.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps({"judge": "planner", "err": "call", "note": "kill"}) + "\n")   # a kill: a row written, the range captured
+                ctx.last_call_fail = {"note": "kill"}; return ""
+            os.chmod(ep, 0)                                       # the recovery tag will now READ this file and fail
+            ctx.last_call_fail = None; return "ok"
+        jd._judge_run_impl = impl
+        self.je.install_call_retry(jd, ep, {}, attempts=3)
+        try:
+            with self.assertRaises(OSError):
+                jd._judge_run_impl(judge="planner")              # the recovery tag reads the unreadable ledger and SURFACES the failure
+        finally:
+            os.chmod(ep, 0o644)
+        self.assertEqual(len(ep.read_text().splitlines()), 3, "the ledger's rows are preserved, never overwritten with an empty list on a failed read")
+
+    def test_a_crashed_ending_is_evicted_from_the_event_model_caches(self):
+        """Verifier low (a): the crash-path eviction (the finally around the build) drops a crashed ending's document from both
+        caches, not only a successful one. A planner that raises for one ending still leaves the arm's caches flat; moving the
+        evict out of the finally would leave the crashed ending's entries cached."""
+        self._judge_written_stores()
+        dest, m = self._corpus(name="crashevict")
+        target = [x for x in m["endings"] if x.get("startT") is not None][0]["id"]
+        caps = {}
+        orig = self.je.load_judge
+        def patched(*a, **k):
+            jd = orig(*a, **k)
+            real = jd._plan_session
+            def boom(fsid, *aa, **kk):
+                if fsid == target:
+                    raise RuntimeError("boom in planner")
+                return real(fsid, *aa, **kk)
+            jd._plan_session = boom
+            caps["jd"] = jd
+            return jd
+        self.je.load_judge = patched
+        self.addCleanup(lambda: setattr(self.je, "load_judge", orig))
+        self._restore_arm_env()
+        res = self.je.run_arm_inprocess(dest, "current", None, os.path.join(self.td, "r-crashevict"), None, self.fake, now=T0 + 10**6)
+        self.assertIn(target, res.get("endingsCrashed") or [], "the fixture crashed one ending")
+        em = caps["jd"].em
+        # every ending, the CRASHED one included, is evicted in the finally, so both caches are EMPTY after the run; an evict on
+        # the success path only would leave the crashed ending's document cached (== 1), which this pins out
+        self.assertEqual((len(em._ASM_CACHE), len(em._JSONL_CACHE)), (0, 0), "the crashed ending is evicted too (the finally): both caches empty, not %d/%d" % (len(em._ASM_CACHE), len(em._JSONL_CACHE)))
+
+    def test_a_budget_stopped_arm_is_not_finished(self):
+        """Verifier low (d): finished is set only when the loop ran EVERY manifest ending; a budget stop leaves the run partial,
+        so the report does not read it complete and excuses nothing."""
+        dest, m = self._corpus(name="budgetstop")
+        self._restore_arm_env()
+        res = self.je.run_arm_inprocess(dest, "A", None, os.path.join(self.td, "r-budget"), 0.001, self.fake, now=T0 + 10**6)   # a tiny budget: stops after the first ending
+        self.assertIsNotNone(res.get("stopped"), "the tiny budget stopped the arm")
+        self.assertFalse(res.get("finished"), "a budget-stopped arm is NOT finished (it did not run every ending)")
+
+    def test_the_prompt_hashes_and_judge_commit_are_stamped(self):
+        """Queued stamp (PR 2092): results record the sha256 of each prompt key's EFFECTIVE text after apply_prompts and the
+        harness commit, so a results file identifies which text ran where the prompt KEYS alone could not; a candidate's swapped
+        key hashes differently from the baseline's shipped text."""
+        dest, m = self._corpus(name="phash")
+        self._restore_arm_env()
+        base = self.je.run_arm_inprocess(dest, "baseline", None, os.path.join(self.td, "r-pb"), None, self.fake, now=T0 + 10**6)
+        self.assertEqual(set(base["promptHashes"]), {"PLAN_SYS", "CLOSER_SYS", "UNBLOCK_SYS"}, "every prompt key's effective text is hashed")
+        self.assertIn("judgePyCommit", base, "the harness/judge.py commit is recorded (a sha or None off a checkout)")
+        cand_f = os.path.join(self.td, "cand.json"); Path(cand_f).write_text(json.dumps({"CLOSER_SYS": "CANDIDATE-MARK a different closer prompt"}))
+        cand = self.je.run_arm_inprocess(dest, "candidate", cand_f, os.path.join(self.td, "r-pc"), None, self.fake, now=T0 + 10**6)
+        self.assertNotEqual(cand["promptHashes"]["CLOSER_SYS"], base["promptHashes"]["CLOSER_SYS"], "the swapped candidate text hashes differently from the shipped closer")
+        self.assertEqual(cand["promptHashes"]["PLAN_SYS"], base["promptHashes"]["PLAN_SYS"], "a key the candidate did not swap keeps the shipped hash")
+
+    def test_the_report_parse_restores_the_process_environment(self):
+        """Verifier low (c): the report-time parse loads a judge against a scratch state root (load_judge sets XDG_STATE_HOME,
+        CLAUDE_CONFIG_DIR, ROMP_CLAUDE_BIN and pops ROMP_STATE_DIR), then removes the scratch dir; it must restore the process
+        environment so nothing is left pointed at a deleted root."""
+        dest, m = self._corpus(name="envrestore")
+        keys = ("XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "ROMP_CLAUDE_BIN", "ROMP_STATE_DIR")
+        self._restore_arm_env()
+        for k, v in {"XDG_STATE_HOME": "/sentinel/state", "CLAUDE_CONFIG_DIR": "/sentinel/claude", "ROMP_CLAUDE_BIN": "/sentinel/bin", "ROMP_STATE_DIR": "/sentinel/rompstate"}.items():
+            os.environ[k] = v
+        before = {k: os.environ.get(k) for k in keys}
+        self.je.plannable_units_from_corpus(dest, m, [e["id"] for e in m["endings"][:2]])
+        self.assertEqual({k: os.environ.get(k) for k in keys}, before, "the report parse restores every env var it set, leaving nothing pointed at the deleted scratch root")
+
+    def test_the_failures_cell_names_the_unnamed_remainder_and_the_columns_read_not_recorded(self):
+        """PR 2092/2099 lows: the failures cell names the remainder when the kinds sum to less than the count ('N unnamed', the
+        closer's cap road files a failure without a row), a no-per-judge-record run prints 'not recorded' for the measured-calls
+        column, and an absent retry tally prints 'not recorded' (never a false 0), while a recorded zero stays 0."""
+        dest, m = self._corpus(name="cells")
+        run_root = os.path.join(self.td, "runs-cells"); os.makedirs(run_root)
+        eids = {x["id"]: {"class": x["class"], "builds": [{}] * 3} for x in m["endings"]}
+        # an old/withdrawn record: no callsByJudge and no retry; two failures, one named by kind, one rowless (the closer's cap road)
+        Path(run_root, "old").mkdir()
+        Path(run_root, "old", "results.json").write_text(json.dumps(
+            {"arm": "old", "failures": 2, "buildsPerCard": 3, "failuresByKind": {"parse": 1}, "endings": eids}))
+        self.je.report(dest, run_root, str(self.state))
+        table = (Path(run_root) / "table.md").read_text()
+        self.assertIn("parse 1", table); self.assertIn("1 unnamed", table)   # the rowless remainder is named, the count no longer dropped
+        self.assertIn("not comparable", table)
+        row = [l for l in table.splitlines() if l.startswith("| old |")][0]
+        self.assertIn("| not recorded |", row, "no per-judge record prints 'not recorded' for the measured-calls column, not 0/0/0/0")
+        self.assertEqual(row.count("not recorded"), 4, "measured-calls plus the three retry columns all read 'not recorded' for this record: %r" % row)
     def test_a_plainly_cleared_completed_top_is_no_leak_and_a_reopened_needs_input_is_no_false_interrupt(self):
         """The plan's negatives (round three): a completed top the user plainly cleared (no re-open) is NOT a leak; a
         needs_input top the user re-opened, even if later cleared, is NOT a false interrupt (the re-open short-circuits)."""
