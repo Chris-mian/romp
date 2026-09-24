@@ -22,11 +22,12 @@ conversation…" row, the dashed /clear chip, and the message's dashed pending b
 run, the fresh-episode arrives as a full `session` frame that REPLACES the view, so the "Clearing
 conversation…" row and the message's pending bubble are dropped by that replacement and the message lands
 as its own row: those two are UNREPRODUCED as PERSISTENT rows here (the after-assertions guard that they
-are gone). The element that PERSISTS at the base is the /clear, dressed "sending…": the CLIENT's own
-optimistic bubble (it lands no record, so reconcilePending never retired it) and the kernel's own /clear
-echo. The fix ends both: the client keeps the /clear bubble but retires it at the CLEAR BOUNDARY (the
-fresh episode), and the kernel retires its echo by the taken copy's qid. `clearTextAnywhere` is the
-reliable regression signal: RED at the base (the /clear rides the settled conversation), green after.
+are gone). At the base the /clear PERSISTS, dressed "sending…": the CLIENT's own optimistic bubble and the
+kernel's own /clear echo. The fix ends both: the client retires the /clear bubble at the CLEAR BOUNDARY
+(the fresh episode) and the kernel retires its echo by the taken copy's qid, while the CLI-shaped fixture
+writes the /clear's command-name record so it LANDS as a command row. `clearStuck` is the reliable
+regression signal: it matches only the two STUCK forms (the optimistic chip, the kernel echo), never the
+landed command row, so it is RED at the base (a stuck /clear rides on) and green after.
 SYNTHETIC fixtures only; skips LOUDLY without the extension deps or a browser.
 """
 import json
@@ -158,14 +159,16 @@ const after = await page.evaluate((c) => {
   const msgLanded = Array.from(document.querySelectorAll("#content .turn.turn-user:not(.echo) .user-bubble")).some((b) => txt(b).indexOf(msg) >= 0);
   const replyShown = Array.from(document.querySelectorAll("#content .turn")).some((t) => txt(t).indexOf(reply) >= 0);
   const boundaryCard = Array.from(document.querySelectorAll("#content .turn, #content .notice")).some((el) => txt(el).indexOf("Conversation cleared") >= 0 || txt(el).indexOf("fresh one starts") >= 0);
-  // any stray "/clear" text in a message bubble is the never-retiring echo, however the timing dressed it
-  // (a "sending…" echo, a "not delivered" bubble): the fresh episode's records carry the /clear NOWHERE
-  const clearTextAnywhere = Array.from(document.querySelectorAll("#content .turn .user-bubble, #content .turn-queued .queued-bubble, #content .turn.echo")).some((b) => txt(b).indexOf("/clear") >= 0);
+  // The regression signal: a STUCK "/clear" (the defect), NOT the LANDED /clear command row (the fixed
+  // state). With the CLI-shaped fixture the /clear lands as a command row (.turn-cmd, which carries a
+  // .user-bubble), so a "/clear text anywhere" read would false-match it; scope instead to the two STUCK
+  // forms, the optimistic pending chip (.turn-queued .slash-cmd-chip) and the kernel echo (.turn.echo).
+  const clearStuck = Array.from(document.querySelectorAll("#content .turn-queued .slash-cmd-chip, #content .turn.echo")).some((b) => txt(b).indexOf("/clear") >= 0);
   const turnTexts = Array.from(document.querySelectorAll("#content .turn")).map((t) => (txt(t) || "").trim().slice(0, 80));
   const chip = document.getElementById("status-chip");
   const pill = chip ? (chip.textContent || "").trim() : "";
   const composer = (document.getElementById("composer-input") || {}).value || "";
-  return { clearingRow, clearingText, clearChip, clearEcho, clearTextAnywhere, turnTexts, sendingGroup, msgInQueued, msgLanded, replyShown, boundaryCard, pill, composer };
+  return { clearingRow, clearingText, clearChip, clearEcho, clearStuck, turnTexts, sendingGroup, msgInQueued, msgLanded, replyShown, boundaryCard, pill, composer };
 }, cfg);
 
 const frames = await page.evaluate(() => window.__frames || []);
@@ -285,10 +288,11 @@ class ServedClearBatchRealKernel(unittest.TestCase):
         r = self._result()
         a = r["after"]
         table = "\n  after=" + json.dumps(a) + "\n  qids=" + json.dumps(r["qids"])
-        # THE regression signal, reliable at the base: the /clear writes no record, so any "/clear" text left
-        # in a bubble is the never-retiring echo the report describes (dressed "sending…" or "never delivered"
-        # by the moment's timing). Base: it rides the settled conversation → red; fixed: retired by qid → green.
-        self.assertFalse(a["clearTextAnywhere"], "the /clear echo is RETIRED, no stray '/clear' bubble rides the settled conversation" + table)
+        # THE regression signal, reliable at the base: a STUCK "/clear" (the optimistic pending chip or the
+        # kernel echo), NOT the landed /clear command row the CLI-shaped fixture now produces. Base (client
+        # boundary-retire reverted): a stuck /clear chip rides on, so red; fixed: it lands as a command row
+        # and no stuck chip remains, so green.
+        self.assertFalse(a["clearStuck"], "no STUCK '/clear' (optimistic chip or kernel echo) rides the settled conversation; the /clear is a LANDED command row" + table)
         self.assertFalse(a["clearingRow"], "the 'Clearing conversation…' row is gone once the clear has run" + table)
         self.assertFalse(a["clearingText"], "no 'Clearing conversation…' text anywhere (row or statusline)" + table)
         self.assertFalse(a["sendingGroup"], "no 'sending…' group left owed" + table)

@@ -271,8 +271,8 @@ A transcript-resetting `/clear` is the one exception: it writes no record in the
 so its echo there never lands and, in a same-second batch with a message, is never overtaken
 either; its bubble ends on the CLEAR BOUNDARY instead, the fresh episode the `/clear`
 forks (one boundary ends one `/clear`, in press order), and the kernel retires its own
-`/clear` echo at that same boundary by the taken copy's id. A Codex `/clear` is
-refused, reaches no boundary, and ends the ordinary way on that refusal. Fixture gap (2026-09-24): the served lab's synthetic fake SDK writes none of the records the real Claude CLI (version 2.1.280) emits within milliseconds of a fresh episode (a session caveat, the `/clear` command-name record, and a local-command record), so under that fixture alone a solo `/clear` that empties the session leaves the `/clear` bubble and echo resident with no following frame to end them; this is the fixture's gap, not a kernel bug.
+`/clear` echo at that same boundary by the taken copy's id. A Codex `/clear` runs the
+native clear instead (a fresh app-server thread), so it reaches no clear boundary and its bubble ends the ordinary way, on the acknowledging chip when the clear runs and on the refusal when it fails. The served lab's fake SDK writes the fresh-episode record group too (CLI 2.1.280 emits a session caveat, the `/clear` command-name record, and a local-command record within milliseconds of the init), so a solo `/clear` there ends on a ready frame with the `/clear` a landed command row. The clear-to-empty leftover an earlier record-less fixture showed (2026-09-24) was that fixture's gap, not a kernel bug.
 While the socket is down the bubble is labelled "not confirmed", until a kernel
 copy of the send clears the label. A send that landed mid-turn (`absorbed` on the
 user chat event) is placed where the model READ it: at its landing time, the
