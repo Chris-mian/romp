@@ -362,6 +362,50 @@ following to every connected machine's kernel):
   the transcript when the kernel attaches) and whether romp is
   retrying, with the cadence and the next attempt, or where to turn retries on.
 
+### Extra models from your API gateway
+
+An install whose sessions reach the API through a gateway of its own can offer the models that
+gateway serves, in every model picker beside the Claude families. The switch is **Settings**,
+**General**, **This machine**, **Extra models from your API gateway**, off by default; while it is
+off the pickers list Claude models only. It is a per-install setting, kept on the machine that
+holds it and never sent to another (its gateway is that machine's): `~/.local/state/romp/router-models.json`,
+`{"enabled": true, "gt": <gesture stamp>}`; an absent, unreadable or malformed file reads OFF.
+
+Which models the gateway serves is declared to the service, not picked in the gear:
+`ROMP_ROUTER_MODELS` in `service.env`, a comma-separated list of model ids, and optionally
+`ROMP_ROUTER_MODELS_URL`, a gateway endpoint that lists its models, whose answer joins the declared
+ids. Both are read when the service starts, so a change to them needs a service restart; the switch
+itself applies live. At boot the declared families install into the catalog when the switch is on.
+`ROMP_MODEL_CATALOG=off` (a hermetic lab's no-network rule) stops the listing fetch alone, on the
+boot road and the live one; the declared install reads no network and is never held by it. A
+picker row and the badge both read the model id itself, one name per model.
+
+The gear's click posts `setRouterModels` (`{"enabled", "gt"}`) with a gesture stamp, under the
+ordering and stale rules every stamped setting follows; there is no echo frame of its own, since an
+applied flip changes the catalog and the kernel sends its usual `models` frame, on which every
+picker and the gear redraw. Turning it on adds the families to the pickers; turning it off removes
+them, but does not touch a session already running one, which keeps its model until you pick
+another (a later pick of a removed model is refused). A gateway model whose id carries no Claude
+family word has no capability tint in the pickers, and a swap to or from it is never read as a
+capacity fallback: it is a cross-provider change on an explicit pick. An id that does carry a family
+word (`gw-opus-mini`) is matched by the colour, tone and rank helpers wherever the word appears, so
+it tints and ranks as that family, and a swap to it can read as one.
+
+The switch's status line in the gear comes from the authed `/models` payload's `router` section,
+`{"enabled", "declared", "gateway", "error"}`: the ids the kernel parsed out of the variable, whether
+a gateway is configured (`ANTHROPIC_BASE_URL` in the service's environment first, else in Claude
+Code's managed or user settings, pointing anywhere but Anthropic; `null` while the switch is off,
+when nothing is probed), and the standing advisory: while on, nothing declared, no gateway, or a
+settings file that could not be read (a fixed phrase; the detail goes to the kernel log), each read
+live at every request so the line clears as soon as the operator fixes it, and a listing that could
+not be fetched; after an off flip, the live sessions, the judge tiers and the default for new comment
+threads still on a removed model (the stores are left as they are; a new thread whose default is a
+removed model inherits its parent). A removed model is refused on every pick road, the comment
+thread dialog and the new-session seed included. A declared id the first-party grammar owns (a Claude version id or family alias) is
+skipped, said once in the log, and reported as not declared; a listing or an apply that lands after
+a later flip installs nothing and changes nothing. `/version` carries
+`routerModels`, the switch's value, for the gear's checkbox.
+
 ### Per-session billing (login vs API key)
 
 An SDK session bills either the machine's Claude login (subscription usage) or
@@ -5245,7 +5289,8 @@ edge lights, and clicking it returns that row to the shared value.
 
 A few kernel settings stay on the machine that holds them, because they
 describe it: **Conserve memory**, **Thinking summaries**, **Whole chat
-frames**, and the **Default directory** for new sessions, a path that means
+frames**, **Extra models from your API gateway** (the gateway is that
+machine's), and the **Default directory** for new sessions, a path that means
 nothing on another machine. **Updates install automatically** is sent to every
 kernel when you click it but is not one of the converging four: each install
 keeps its own boot policy.

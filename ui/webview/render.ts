@@ -16208,8 +16208,11 @@ function metaChoices(kind: MetaKind, st: Status): MetaChoice[] {
   return META_CHOICES[kind];
 }
 
-// Is this menu entry the session's current value? Effort matches exactly; the
-// model var holds a display name ("Opus 4.8"), so match on the leading word.
+// Is this menu entry the session's current value? Effort matches exactly; the model var holds a display name
+// ("Opus 4.8"), so match on the leading WORD — or the whole badge, which is how a model the API gateway declares
+// (ROMP_ROUTER_MODELS) shows: its id verbatim, mixed case and all. Both sides are downcased and the word boundary
+// is a space, so a declared prefix pair (gpt-6, gpt-6-astra) ticks one row, not two (review round two, 2026-09-22;
+// the timeline lane menu's isCurrentMeta is the twin, current-meta-tick.test.ts pins them equal).
 function isCurrentMeta(kind: MetaKind, st: Status, value: string): boolean {
   if (kind === "effort") return (st.effort || "").toLowerCase() === value;
   if (kind === "fast") return (st.fast || "").toLowerCase() === value;   // "cooldown" marks neither entry
@@ -16218,7 +16221,8 @@ function isCurrentMeta(kind: MetaKind, st: Status, value: string): boolean {
     if (value === "default") return m === "" || m === "default" || m === "normal";
     return m === value.toLowerCase();                                          // auto / acceptEdits / plan match exactly
   }
-  return (st.model || "").toLowerCase().startsWith(value);
+  const cur = (st.model || "").toLowerCase(), v = (value || "").toLowerCase();
+  return !!v && (cur === v || cur.startsWith(v + " "));
 }
 
 // The requested-model tooltip (the user 2026-09-17): why the pick is not answering, then what romp does about it —
@@ -19509,6 +19513,12 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // ready (_client_reset_chat_base) drops every base and awaitingFull clears whole. A statement AHEAD of the chain, like
   // the tabOrder pre-step, so the chain's wsup arm stays the one line its pins read.
   if (m.type === "wsup") forgetHeldWm(sessions, null);
+  // the shim's socket-flip frame is also the kernel-restart signal this pane sees: re-read /models, because a restart is
+  // the documented way to change the extra models the API gateway declares (ROMP_ROUTER_MODELS is read when the service
+  // starts) and a restarted kernel sends no models frame for a list that changed while it was down. The same reader the
+  // models frame uses (loadModelChoices, rev-checked: a kernel seeds its rev from the clock at boot, so the restarted
+  // kernel's list reads newer than the one this page holds); the gear's cache block takes the frame the same way.
+  if (m.type === "wsup") loadModelChoices();
   if (m.type === "tabOrder") noteSkeletonTabOrder(m);   // BEFORE the chain's applyTabOrder below: one repaint, final skeleton set (2026-09-07)
   if (m.type === "session") upsert(m);
   else if (m.type === "globalRetryPaused") {
