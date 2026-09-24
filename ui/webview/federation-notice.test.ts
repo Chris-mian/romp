@@ -146,3 +146,13 @@ test("a remote session frame's rows carry their sender the way the feed's cards 
   assert.equal(frame.status.notices[0].origin.peerSid, PSID, "a COPY: the inbound frame is not mutated");
   assert.equal(prefixInbound("", frame).status.notices[0].origin.peerHost, "", "the local host is the identity");
 });
+
+test("the tracked delegation's recipients take the awaiting peers' rule, on a card and on a row: an entry the card's kernel recorded as its own takes the host and a prefixed sid, an already-hosted one passes untouched (a contributor's note on PR 2141)", () => {
+  const HANDED = "11111111-2222-3333-4444-000000000779", HOSTED = "11111111-2222-3333-4444-000000000778";
+  const tracked = [{ sid: HANDED, name: "tests", host: "" }, { sid: HOSTED, name: "docs", host: "OTHER" }];
+  const cardIn = prefixInbound("TESTHOST", { type: "feed", asks: [{ itemId: SID + ":g1", sid: SID, name: "web", column: "working", t: 1, delegTracked: tracked }] });
+  assert.deepEqual(cardIn.asks[0].delegTracked.map((p: any) => [p.host, p.sid]), [["TESTHOST", "TESTHOST:" + HANDED], ["OTHER", HOSTED]], "on a card: the badge's click target is the entry's sid, so it wears the host");
+  const rowIn = prefixInbound("TESTHOST", { type: "session", id: SID, status: { notices: [{ itemId: `notice:${SID}:m1:1`, key: "m1", rev: 1, title: "t", body: "b", producer: "postal", actions: [], delegTracked: tracked }] } });
+  assert.deepEqual(rowIn.status.notices[0].delegTracked.map((p: any) => [p.host, p.sid]), [["TESTHOST", "TESTHOST:" + HANDED], ["OTHER", HOSTED]], "on a row, which carries the field though it draws no tracked delegation: the same helper serves both shapes");
+  assert.equal(tracked[0].sid, HANDED, "a COPY: the inbound entries are not mutated");
+});

@@ -499,6 +499,8 @@ test("a HELD-MAIL notice card (plans/notice-cards.md, action kinds): Approve pos
   approve.onclick(ev);
   await dispatch({ type: "noticeActionDone", itemId: "notice:" + WEB + ":m1:1", ok: true, error: "" });
   assert.equal(card("notice:" + WEB + ":m1:1"), null, "delivered: the dismissing card left at once");
+  assert.deepEqual(((CS as any).sectionHostsRaw as ((id: string) => HTMLElement[]) | undefined)?.("notice:" + WEB + ":m1:1") ?? [], [],
+    "…and left the section registry with it: the completed dismiss-in-flight clear unregisters the twins it removes (a contributor's note on PR 2141)");
 });
 
 test("the held-mail card's Deny asks for the optional note first, on the document body: without a note posts the bare verdict, with one posts input.note, and the backdrop closes with no decision", async () => {
@@ -2441,4 +2443,22 @@ test("a card that leaves the payload leaves the section registry on its way out:
   assert.deepEqual(CS.sectionHosts("zz"), [], "the reading view drops a host that is not in the document");
   assert.deepEqual(sectionHostsRaw("zz"), [], "…and that read emptied the set");
   await dispatch(frame([g1, g2, g3]));   // the board back to three for the tests that follow
+});
+
+test("the focused section's copy leaves the registry when the focus moves on (the board's card stays registered once), and the section's removal takes its copies out too (a contributor's note on PR 2141)", async () => {
+  const raw = (CS as any).sectionHostsRaw as (id: string) => HTMLElement[];
+  await dispatch(frame([g1, g2, g3]));
+  assert.deepEqual({ g1: raw("g1").length, g2: raw("g2").length }, { g1: 1, g2: 1 }, "the board's cards alone before the section shows");
+  // the switch is the view menu's fourth row (T347): open the menu from the footer's View button and press the row by its label
+  const viewBtn = body.byId("feed-viewbtn"); assert.ok(viewBtn, "the footer's View button");
+  const pressFocusedRow = () => { (viewBtn as any).onclick(ev); const row: any = body.querySelectorAll(".feed-viewmenu .ctx-item").find((r: any) => /Show focused session/.test(r.textContent || "")); assert.ok(row, "the Show focused session row"); row.onclick(ev); };
+  pressFocusedRow();
+  await dispatch({ type: "activeChat", id: WEB });   // the chat's focused session: its cards get a copy on top
+  assert.ok(body.byId("feed-focus"), "the focused section is up");
+  assert.deepEqual({ g1: raw("g1").length, g2: raw("g2").length }, { g1: 2, g2: 1 }, "the focused session's card has two hosts, the board's and the section's copy");
+  await dispatch({ type: "activeChat", id: API });   // the focus moves on: g1's copy leaves the section, g2 gets one
+  assert.deepEqual({ g1: raw("g1").length, g2: raw("g2").length }, { g1: 1, g2: 2 }, "the copy that left the section left the registry on its way out (the focused-copy exit unregisters), the board's card stays registered once");
+  pressFocusedRow();   // the switch off: the section is removed with its copies
+  assert.equal(body.byId("feed-focus"), null, "the section is gone");
+  assert.deepEqual({ g1: raw("g1").length, g2: raw("g2").length }, { g1: 1, g2: 1 }, "the section's removal took its copies out of the registry");
 });

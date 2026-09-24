@@ -181,6 +181,8 @@ test("Clear, its 180 ms finish and Undo resolve by ITEM across both copies, neve
   assert.match(FEED, /for \(const c of groupTwins\(cur\.turnId\)\) c\.classList\.add\("dismissing"\);/, "…and the group card's");
   assert.match(FEED, /for \(const c of cardTwins\(it\.itemId\)\) c\.classList\.remove\("dismissing"\);/, "Undo restores both copies");
   assert.match(FEED, /const f = fsAskEls\.get\(m\.itemId\);[\s\S]*?leaving\.push\(\[f, \(\) => fsAskEls\.get\(m\.itemId\) === f, \(\) => \{ fsAskEls\.delete\(m\.itemId\); unregisterSectionHost\(m\.itemId, f\); \}\]\);/, "the session-wide Clear takes the copies along, out of the registry too");
+  assert.match(FEED, /if \(c\) leaving\.push\(\[c, \(\) => askEls\.get\(m\.itemId\) === c, \(\) => \{ askEls\.delete\(m\.itemId\); unregisterSectionHost\(m\.itemId, c\); \}\]\);/, "…and the board's card leaves the registry the same way (a contributor's note on PR 2141: the board-card branch had no covering test)");
+  assert.match(FEED, /for \(const id of Array\.from\(fsAskEls\.keys\(\)\)\) if \(!desired\.has\("f:a:" \+ id\)\) \{ const f = fsAskEls\.get\(id\); f\?\.remove\(\); if \(f\) unregisterSectionHost\(id, f\); fsAskEls\.delete\(id\); \}/, "a copy whose card left the focused session's view leaves the registry as it leaves the section (the same note)");
   assert.match(FEED, /for \(const \[tid, g\] of Array\.from\(fsGroupEls\)\) \{/, "…group copies too");
 });
 
