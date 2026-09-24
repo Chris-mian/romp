@@ -9067,7 +9067,7 @@ def _mtime_or_none(path):
     """`path`'s mtime, or None when it cannot be stat'd."""
     try:
         return os.stat(path).st_mtime
-    except OSError:
+    except (OSError, ValueError):   # ValueError: a NUL in a recorded path
         return None
 
 

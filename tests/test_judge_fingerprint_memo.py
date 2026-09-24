@@ -248,6 +248,13 @@ class FingerprintMemoTest(unittest.TestCase):
         (jd.SDKDIR / (SID + ".json")).write_text(json.dumps({"transcriptPath": str(recorded), "lastSid": OTHER}))
         self.assertEqual(self._age_out_and_wake(sibling, recorded, self.proj / (SID + ".jsonl")), [SID])
 
+    def test_a_woken_session_with_a_STALE_record_re_enters_discover(self):
+        """A record naming a file that no longer exists falls back to the launch dir's file, as discover() does."""
+        jd.SDKDIR.mkdir(parents=True, exist_ok=True)
+        gone = Path(self._td) / "projects" / "gone" / (SID + ".jsonl")
+        (jd.SDKDIR / (SID + ".json")).write_text(json.dumps({"transcriptPath": str(gone)}))
+        self.assertEqual(self._age_out_and_wake(self.proj / (SID + ".jsonl")), [SID])
+
     def test_an_append_inside_the_window_still_serves_the_cache(self):
         """The counterpart: a live session's append must NOT invalidate, or the cache buys nothing."""
         now = int(time.time())
