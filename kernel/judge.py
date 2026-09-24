@@ -9188,12 +9188,7 @@ def _discover_fingerprint():
         # the path (review find). pm stays in the tuple: a stale record falls back to the launch-dir walk.
         rec = _sdk_transcript_path(f.name) or ""
         last = _sdk_last_sid(f.name) or ""
-        rm = 0
-        if rec:
-            try:
-                rm = os.stat(os.path.dirname(rec)).st_mtime
-            except OSError:
-                rm = 0
+        rm = (_mtime_or_none(os.path.dirname(rec)) or 0) if rec else 0
         fp.append((f.name, mt, pm, last, rec, rm, _in_window(_signed_mtime(f.name, rec, last, pdir), now)))
     if len(_namefp_memo) > len(fp):                             # a retired session's entry is gone from the
         live = {row[0] for row in fp}                           # walk → evict it, so the memo stays bounded

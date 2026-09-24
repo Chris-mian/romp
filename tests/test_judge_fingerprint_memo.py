@@ -255,6 +255,16 @@ class FingerprintMemoTest(unittest.TestCase):
         (jd.SDKDIR / (SID + ".json")).write_text(json.dumps({"transcriptPath": str(gone)}))
         self.assertEqual(self._age_out_and_wake(self.proj / (SID + ".jsonl")), [SID])
 
+    def test_a_NUL_in_a_recorded_value_signs_as_absent_and_the_session_stays_listed(self):
+        """Only a corrupt or hand-edited registry carries a NUL; discover must still list the session."""
+        jd.SDKDIR.mkdir(parents=True, exist_ok=True)
+        for record in ({"lastSid": OTHER + "\x00"},
+                       {"transcriptPath": str(Path(self._td) / "pro\x00jects" / (SID + ".jsonl"))}):
+            with self.subTest(record=record):
+                (jd.SDKDIR / (SID + ".json")).write_text(json.dumps(record))
+                jd._namefp_memo.clear()
+                self.assertIn(SID, [row[0] for row in jd.discover(int(time.time()))])
+
     def test_an_append_inside_the_window_still_serves_the_cache(self):
         """The counterpart: a live session's append must NOT invalidate, or the cache buys nothing."""
         now = int(time.time())
