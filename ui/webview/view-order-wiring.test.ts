@@ -1,5 +1,8 @@
-// Where the viewer's order is READ and WRITTEN (the user 2026-07-31). view-order.test.ts executes the rule;
-// this pins that all three surfaces actually go through it and that nothing writes order back to a kernel.
+// Where the viewer's order is READ, WRITTEN and now KEPT. view-order.test.ts executes the layering rule and
+// view-order-shared.test.ts the storage and migration; this pins that all three surfaces actually go through
+// it, that nothing asks a KERNEL to order its own sids (the half of the 2026-07-31 ruling, commit e9870995,
+// that did not move), and that the finished list reaches the local kernel whole so every viewer of it
+// converges (the user 2026-09-23).
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -28,13 +31,44 @@ test("the arrangement is re-read per emit, never cached", () => {
 });
 
 test("a drag in any pane moves every pane, through both notification paths", () => {
-  // `storage` fires only in OTHER same-origin contexts, so the writer needs its own event
-  assert.match(FED, /w\.addEventListener\("storage", \(e: StorageEvent\) => \{ if \(!e\.key \|\| e\.key === VIEW_ORDER_KEY\) reorder\(\); \}\);/);
+  // `storage` fires only in OTHER same-origin contexts, so the writer needs its own event. Both keys: the
+  // kernel's arrangement as this browser caches it, and the pre-move local key a browser still reads until
+  // its kernel serves one.
+  assert.match(FED, /w\.addEventListener\("storage", \(e: StorageEvent\) => \{ if \(!e\.key \|\| e\.key === VIEW_ORDER_SHARED_KEY \|\| e\.key === VIEW_ORDER_KEY\) reorder\(\); \}\);/);
   assert.match(FED, /w\.addEventListener\(VIEW_ORDER_EVENT, reorder\);/);
   assert.match(FED, /const reorder = \(\) => \{ this\.emitMergedOrder\(\); this\.emitMergedFeed\(\); this\.emitMergedTimeline\(false\); \};/);
 });
 
-test("the chat strip's drag writes the BROWSER, not a kernel", () => {
+test("…and a drag in any pane reaches the KERNEL, through the one window slot that crosses the bundles", () => {
+  // federation.ts is never imported into a pane bundle (federation-single-instance.test.ts), so each bundle
+  // holds its own module copy of view-order.ts: a slot on the window is the only channel between them, the
+  // way __rompFed and __rompWriteOrder already are.
+  assert.match(FED, /if \(msg\.type === "setViewOrder"\) return \[\{ host: LOCAL, msg \}\];/,
+    "the whole list goes to the local kernel; splitting it by host is the shape the 2026-07-31 ruling ruled out");
+});
+
+test("the slot exists only once the kernel's arrangement has been HEARD on this connection, and a drop withdraws it", () => {
+  // review find on #2062 (2026-09-23): a slot installed at boot let a new device answer the connect push's strip,
+  // which lands BEFORE the viewOrder frame, by publishing the kernel's seed order over every other device's.
+  assert.doesNotMatch(FED, /w\.__rompPublishViewOrder = \(order/, "never installed at start()");
+  assert.match(FED, /hearSharedOrder\(served, m\.stored === true, \(o\) => this\.outbound\(\{ type: "setViewOrder", order: o\.slice\(\) \}\),\n\s*\(fn\) => \{ w\.__rompPublishViewOrder = fn; \}\);/,
+    "the viewOrder frame installs it");
+  assert.match(FED, /w\.addEventListener\("romp:wsdown", \(\) => this\.unhearViewOrder\(\)\);/, "the socket's drop withdraws it");
+  assert.match(FED, /if \(m && m\.type === "wsup" && host === LOCAL\) this\.unhearViewOrder\(\);/, "…and a new connection starts unheard");
+  assert.match(FED, /if \(!this\.viewOrderHeard\) \{ this\.reportDeferred = true; return; \}/,
+    "a host report before the hearing is held back from the arrangement…");
+  assert.match(FED, /if \(first && this\.reportDeferred\) \{/, "…and folded in once, on the connection's first hearing — never on a later push");
+  assert.match(FED, /w\.__rompShownOrder = \(\) =>/, "what the strip shows is published instead: a pre-hearing drag's base");
+});
+
+test("the kernel's arrangement is taken from the LOCAL kernel only, and never handed on to the panes", () => {
+  // a remote kernel's store belongs to whoever sits in front of THAT machine; taking it would let one
+  // viewer's drag rearrange another's. The panes read the arrangement through the merged re-emits, as ever.
+  assert.match(FED, /if \(m && m\.type === "viewOrder"\) \{\n\s*if \(host !== LOCAL\) return;/);
+  assert.match(FED, /hearSharedOrder\(served, m\.stored === true,/, "the migration and the merge are one implementation, shared with the manager-less pages");
+});
+
+test("the chat strip's drag writes the arrangement, never a per-kernel order op", () => {
   assert.match(RENDER, /function commitTabOrder\(\) \{\s*\n\s*if \(fedMissing\) return;[^\n]*\n\s*writeViewOrder\(order\.slice\(\)\);\s*\n\s*\}/);   // the guard: a page without its manager never writes (federation-missing.test.ts, 2026-09-10)
   assert.doesNotMatch(RENDER, /type: "reorderTabs"/,
     "a kernel can only record an order over its own sids — writing there is what blocked interleaving");
@@ -43,6 +77,10 @@ test("the chat strip's drag writes the BROWSER, not a kernel", () => {
 test("the timeline's lane drag writes the same store", () => {
   assert.match(BOOT, /__rompTimelineWriteOrder: \(order: unknown\) =>\s*\n\s*writeViewOrder\(/);
   assert.doesNotMatch(BOOT, /type: "writeOrder"/);
+  // …and the VS Code timeline, which has no federation manager to publish the window slot, hands the
+  // finished list to the kernel through its own host pipe — once it has heard the kernel's (dispatchFrame)
+  assert.match(BOOT, /orderPost = \(order\) => post\(\{ type: "setViewOrder", order: order\.slice\(\) \}\);/);
+  assert.match(BOOT, /hearSharedOrder\(served, m\.stored === true, orderPost, setViewOrderPublisher\);/);
 });
 
 test("a pane answers another pane's drag by re-emitting, never by rewriting the arrangement", () => {

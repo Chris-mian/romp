@@ -58,6 +58,7 @@ const viewPath = path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"
 const V: any = createRequire(__filename)(viewPath);
 const TABGROUPS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "tab-groups.ts"), "utf8");
 const TAGMENU = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "tag-menu.ts"), "utf8");
+const VIEW_SRC = fs.readFileSync(viewPath, "utf8");
 
 const WEB = "11111111-2222-3333-4444-000000000001", API = "11111111-2222-3333-4444-000000000002", TESTS = "11111111-2222-3333-4444-000000000003",
   DOCS = "11111111-2222-3333-4444-000000000004", OLD = "11111111-2222-3333-4444-000000000006";
@@ -96,24 +97,46 @@ test("the fold and the switch are written in the strip's own shape, every other 
   let blob = JSON.parse(store.get("romp:tabgroups")!);
   assert.deepEqual(blob, { on: false, collapsed: ["qa"], expanded: [], pinned: [{ sid: WEB, name: "qa" }], followed: { g1: "qa" }, timeline: true }, "the switch is one field; nothing else moved");
   assert.equal(V.tlGroupByTag(), true);
+  // the FOLDS are every device's since 2026-09-23 (tab-groups.ts TabFolds): written to the kernel's cached copy, the fold
+  // fields the pre-move key carried left exactly as they were (read, never written: reverting hands them back)
+  assert.deepEqual(JSON.parse(store.get("romp:tabgroups:shared")!), { collapsed: ["qa"], expanded: [], pinned: [{ sid: WEB, name: "qa" }], followed: { g1: "qa" } },
+    "the switch's write carries the folds into the shared copy, unchanged");
   assert.equal(V.toggleSectionFold("backend"), true, "folded");
   blob = JSON.parse(store.get("romp:tabgroups")!);
-  assert.deepEqual([blob.collapsed, blob.expanded, blob.pinned, blob.followed, blob.on, blob.timeline], [["qa", "backend"], [], [{ sid: WEB, name: "qa" }], { g1: "qa" }, false, true]);
+  const shared = () => JSON.parse(store.get("romp:tabgroups:shared")!);
+  assert.deepEqual([shared().collapsed, shared().expanded, shared().pinned, shared().followed, blob.on, blob.timeline], [["qa", "backend"], [], [{ sid: WEB, name: "qa" }], { g1: "qa" }, false, true]);
+  assert.deepEqual(blob.collapsed, ["qa"], "the pre-move key's folds stand where they were");
   assert.equal(V.toggleSectionFold("archived"), false, "the default-folded tag opens…");
-  blob = JSON.parse(store.get("romp:tabgroups")!);
-  assert.deepEqual([blob.collapsed, blob.expanded], [["qa", "backend"], ["archived"]], "…remembered under expanded, as tab-groups.ts setSectionCollapsed does");
+  assert.deepEqual([shared().collapsed, shared().expanded], [["qa", "backend"], ["archived"]], "…remembered under expanded, as tab-groups.ts setSectionCollapsed does");
   assert.equal(V.toggleSectionFold("archived"), true);
-  assert.deepEqual(JSON.parse(store.get("romp:tabgroups")!).expanded, [], "folding it again drops the memory");
+  assert.deepEqual(shared().expanded, [], "folding it again drops the memory");
   V.setTlGroupByTag(false);
   assert.equal("timeline" in JSON.parse(store.get("romp:tabgroups")!), false, "off drops the field: the blob as before T399");
   assert.ok(events.length >= 5 && events.every((e) => e === "romp-tabgroups"), "every write tells the window (tab-groups.ts TABGROUPS_EVENT)");
   // a corrupt or absent entry costs the preference, never the pane
-  store.set("romp:tabgroups", "not json");
+  store.set("romp:tabgroups", "not json"); store.set("romp:tabgroups:shared", "not json either");
   assert.deepEqual([V.tlGroupByTag(), V.sectionFolded(V.tabGroupsState(), "archived"), V.sectionFolded(V.tabGroupsState(), "qa")], [false, true, false]);
+  // and on a page with a federation manager the write is the one implementation on the window (federation.ts
+  // __rompWriteTabGroups: tab-groups.ts writeTabGroups, which also publishes the folds to the kernel)
+  const handed: any[] = [];
+  g.__rompWriteTabGroups = (b: unknown) => handed.push(b);   // `window` is the global here
+  try {
+    store.clear();
+    V.toggleSectionFold("backend");
+  } finally {
+    delete g.__rompWriteTabGroups;
+  }
+  assert.deepEqual(handed.map((b) => [b.collapsed, b.on]), [[["backend"], true]], "handed the whole blob, folded");
+  assert.equal(store.size, 0, "and nothing written here: the one implementation does the writing");
 });
 
 test("drift pins: the key, the event, the default-folded set and the chip's numbers are tab-groups.ts's and tag-menu.ts's own", () => {
   assert.match(TABGROUPS, new RegExp('export const TABGROUPS_KEY = "' + V.TABGROUPS_KEY + '"'));
+  // the folds' key and fields (2026-09-23): the view mirrors tab-groups.ts's split, so the kernel's copy is read first here too
+  assert.match(TABGROUPS, /export const TABGROUPS_SHARED_KEY = "romp:tabgroups:shared";/);
+  assert.match(VIEW_SRC, /const TABGROUPS_SHARED_KEY = 'romp:tabgroups:shared';/);
+  assert.match(TABGROUPS, /export type TabFolds = Pick<TabGroupsState, "collapsed" \| "expanded" \| "pinned" \| "followed" \| "followedSeq">;/);
+  assert.match(VIEW_SRC, /const TABGROUPS_FOLD_FIELDS = \['collapsed', 'expanded', 'pinned', 'followed', 'followedSeq'\];/);
   assert.match(TABGROUPS, /export const TABGROUPS_EVENT = "romp-tabgroups"/);
   const m = /DEFAULT_COLLAPSED: ReadonlySet<string> = new Set\(\[([^\]]*)\]\)/.exec(TABGROUPS);
   assert.ok(m, "tab-groups.ts declares DEFAULT_COLLAPSED as a literal set");
@@ -249,7 +272,7 @@ test("a focus on a session folded away unfolds its first lane's section through 
   panel._curViews = () => ({ active: "all", tagOrder: ["backend", "frontend", "archived"], tags: unions.map((u, k) => ({ id: "t" + k, name: u.name, color: u.color, members: u.members })) });
   assert.equal(panel._unfoldFor(WEB), null, "a visible session unfolds nothing");
   assert.equal(panel._unfoldFor(OLD), "archived", "old-notes' first lane sits under archived, folded by default: it opens");
-  assert.deepEqual(JSON.parse(store.get("romp:tabgroups")!).expanded, ["archived"], "written to the shared key, so the strip follows");
+  assert.deepEqual(JSON.parse(store.get("romp:tabgroups:shared")!).expanded, ["archived"], "written to the shared key, so the strip follows");
   const opened: string[] = [];
   panel.openChat = (tid: string) => { opened.push(tid); };
   panel.selectedSid = OLD;                                   // hidden (the rows above still have archived folded)
@@ -272,7 +295,7 @@ test("the unfold reaches only a session the pane would draw: one the lens or the
   panel._rows = V.tlRows(panel._vis, unions, st(), true);
   panel._rowOf = Object.create(null); panel._rows.forEach((r: any, i: number) => { if (r.kind === "lane" && !(r.s.id in panel._rowOf)) panel._rowOf[r.s.id] = i; });
   assert.equal(panel._unfoldFor(OLD), null, "not in the visible set: nothing unfolds");
-  assert.deepEqual(JSON.parse(store.get("romp:tabgroups")!).expanded, [], "and the shared blob is untouched");
+  assert.equal(store.get("romp:tabgroups:shared"), undefined, "and the shared blob is untouched");
   panel._vis = VIS2;                                        // visible but folded: unfolds, as before
   assert.equal(panel._unfoldFor(OLD), "archived");
 });
@@ -331,7 +354,7 @@ test("a reveal at a session whose work sits outside the window pans FIRST, then 
   panel._panToTime = () => { panned = true; return true; };
   panel._laneForFocusSid = (sid: string) => sid;
   panel.revealEvent(OLD, 600, null);
-  assert.deepEqual(JSON.parse(store.get("romp:tabgroups")!).expanded, ["archived"], "archived unfolded, through the shared blob");
+  assert.deepEqual(JSON.parse(store.get("romp:tabgroups:shared")!).expanded, ["archived"], "archived unfolded, through the shared blob");
   assert.ok(OLD in panel._rowOf, "old-notes has its lane after the redraw");
   const ring = panel.svg.children.find((c: any) => c.tag === "circle");
   assert.ok(ring, "and the pulse landed");
@@ -339,11 +362,12 @@ test("a reveal at a session whose work sits outside the window pans FIRST, then 
   assert.ok(panel.draws >= 3, "the panned draw, then the draw after the unfold");
   // a session the lens would still exclude after the pan keeps refusing
   store.set("romp:tabgroups", JSON.stringify({ on: true, collapsed: [], expanded: [], pinned: [], timeline: true }));
+  store.delete("romp:tabgroups:shared");   // the folds back to the defaults too (archived folded)
   panned = false;
   const panel2 = drawingPanel(() => [API, DOCS, WEB, TESTS]);   // old-notes never in the visible set (the lens removed it)
   panel2.data = { sessions: VIS2 }; panel2._panToTime = () => { panned = true; return true; }; panel2._laneForFocusSid = (sid: string) => sid;
   panel2.revealEvent(OLD, 600, null);
-  assert.deepEqual(JSON.parse(store.get("romp:tabgroups")!).expanded, [], "nothing unfolds for a session the pane will not draw");
+  assert.equal(store.get("romp:tabgroups:shared"), undefined, "nothing unfolds for a session the pane will not draw");
   assert.equal(panel2.svg.children.length, 0, "and nothing pulses");
 });
 
@@ -381,4 +405,8 @@ test("source pins: the draw pass lays rows out through tlRows, the focus pulse a
   assert.match(src, /openSelected\(preserveFocus\) \{\s*\n\s*const s = this\._selectedLane\(\);/, "the debounced open reads the drawn rows");
   assert.match(src, /composeSelected\(\) \{\s*\n\s*const s = this\._selectedLane\(\);/, "Enter reads the drawn rows");
   assert.match(src, /window\.addEventListener\('storage', \(e\) => \{ if \(e && e\.key === TABGROUPS_KEY\) this\.draw\(\); \}\);/, "a fold or the switch in another window repaints (its own listener: the tab lock's pins on the settings listener stand)");
+  // …and so does a fold that reached this browser from another DEVICE (2026-09-23): cached by another pane (the storage event on
+  // the shared key), or adopted by this page's own federation manager off the kernel's push (the same-window event)
+  assert.match(src, /window\.addEventListener\('storage', \(e\) => \{ if \(e && e\.key === TABGROUPS_SHARED_KEY\) this\.draw\(\); \}\);/);
+  assert.match(src, /window\.addEventListener\(TABGROUPS_EVENT, \(\) => this\.draw\(\)\);/);
 });

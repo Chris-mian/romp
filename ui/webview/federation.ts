@@ -11,9 +11,11 @@
 // local kernel is just connection #0 with the empty-string host key, so its messages pass through
 // unprefixed and the single-kernel path is byte-for-byte unchanged.
 
-import { adoptArrivals, applyViewOrder, applyViewOrderTo, churnSwaps, healOrder, pruneViewOrder,
-         readViewOrder, writeViewOrder, VIEW_ORDER_KEY, VIEW_ORDER_EVENT } from "./view-order";
+import { adoptArrivals, applyViewOrder, applyViewOrderTo, churnSwaps, healOrder, hearSharedOrder,
+         pruneViewOrder, readViewOrder, writeViewOrder,
+         VIEW_ORDER_KEY, VIEW_ORDER_SHARED_KEY, VIEW_ORDER_EVENT } from "./view-order";
 import { adoptViews, capsAdopts, announcedSeq, announcedAfter } from "./views-writes";
+import { hearSharedFolds, parseTabGroups, writeTabGroups } from "./tab-groups";
 import { hostOf, bareId, hostDialLive } from "./host-prefix";
 import { installPerfTelemetry, classifyFrame, type RompPerf } from "./perf-telemetry";
 
@@ -377,6 +379,16 @@ export function routeOutbound(msg: any, knownHosts?: ReadonlySet<string>): Route
   // display name would have taken the name-addressed route below to that host — tag names and
   // session names share a field name, not a meaning).
   if (msg.type === "tagEdit" || msg.type === "setTimelineViews") return [{ host: LOCAL, msg }];
+
+  // The VIEWER'S arrangement goes to the LOCAL kernel WHOLE, ids still host-prefixed (2026-09-23). It is
+  // one list over every host — the thing no single kernel can compute — and the kernel this browser talks
+  // to keeps it as opaque data so the viewer's other devices read the same order. Splitting it by host,
+  // which the `order[]` rule right below would do, is exactly the shape the 2026-07-31 ruling ruled out:
+  // each kernel would get a fragment of its own sids and the interleaving would be gone.
+  if (msg.type === "setViewOrder") return [{ host: LOCAL, msg }];
+  // …and so do its FOLDS (2026-09-23): tag names and pinned ids as this viewer sees them, kept by the kernel it
+  // talks to beside the arrangement. No field of it is a per-host order to split.
+  if (msg.type === "setViewFolds") return [{ host: LOCAL, msg }];
 
   // order[] (reorderTabs / the timeline's writeOrder): split across the hosts it touches.
   if (Array.isArray(msg.order) && msg.order.some((x: any) => typeof x === "string")) {
@@ -1105,12 +1117,31 @@ export class FederationManager {
     // missing (the user 2026-08-02). A view arrangement is not new information about what exists; only a
     // host's own report is, so only an inbound tabOrder push may touch the store (absorbHostReport).
     const reorder = () => { this.emitMergedOrder(); this.emitMergedFeed(); this.emitMergedTimeline(false); };
-    w.addEventListener("storage", (e: StorageEvent) => { if (!e.key || e.key === VIEW_ORDER_KEY) reorder(); });
+    w.addEventListener("storage", (e: StorageEvent) => { if (!e.key || e.key === VIEW_ORDER_SHARED_KEY || e.key === VIEW_ORDER_KEY) reorder(); });
     w.addEventListener(VIEW_ORDER_EVENT, reorder);
     // The kernel-served timeline page boots from an inline script that cannot import this module, so the
     // one implementation of the write is published here for it (its VS Code twin imports it directly).
     w.__rompWriteOrder = (order: unknown) =>
       writeViewOrder(Array.isArray(order) ? order.filter((x: unknown): x is string => typeof x === "string") : []);
+    // …and how an arrangement reaches the KERNEL that keeps it (2026-09-23): through `__rompPublishViewOrder`, the
+    // window slot every bundle's writeViewOrder reads (each pane bundle holds its own module copy of view-order.ts;
+    // federation.ts is never imported into one). That slot is NOT installed here. A page speaks for the arrangement
+    // only once the kernel's has reached it on the current connection — the viewOrder frame below installs it, and
+    // a drop withdraws it (view-order.ts ViewOrderPublisher has the why: a page that published from boot put a new
+    // device's seed order over the arrangement on every other device). What the strip is SHOWING is published
+    // instead, so a drag made before then is measured from what the user was looking at (view-order.ts shownOrder).
+    w.__rompShownOrder = () => (this.lastShownOrder ? this.lastShownOrder.slice() : null);
+    // The socket dropped: from here until the next connection's viewOrder frame this page's copy may be stale —
+    // another device can drag or fold meanwhile — so it stops speaking for the arrangement and the folds. A drag or a
+    // fold in the gap is kept as a pending change and merged over the kernel's when it arrives. (The shim's own event:
+    // this document's socket. The reconnect's `wsup` FRAME, below, does the same in frame order.)
+    w.addEventListener("romp:wsdown", () => this.unhearViewOrder());
+    // The tab-groups store's ONE write, for the kernel-served timeline page's inline view (romp-timeline-view.js, served
+    // raw, imports nothing — the __rompWriteOrder precedent above): a fold there splits into this browser's switches and
+    // the shared folds, caches, publishes and tells every pane exactly as the strip's own fold does (2026-09-23).
+    w.__rompWriteTabGroups = (blob: unknown) => writeTabGroups(parseTabGroups(JSON.stringify(blob ?? {})));
+    // The FOLDS' publisher (w.__rompPublishViewFolds) is NOT installed here either: a page speaks for the folds only once
+    // the kernel's have reached it (tab-groups.ts FoldsPublisher; installed by the viewOrder frame below).
     this.poll();
     setInterval(() => this.poll(), 4000); // converge on attach/detach made from the shell's network panel
     // the remote sockets' liveness watchdog (socketVerdict above) — the shim's 5s tick, for the relay side
@@ -1220,6 +1251,52 @@ export class FederationManager {
     // a kernel's `caps` frame describes THAT kernel; the panes hold only the LOCAL kernel's (its views
     // store is the one they write). A remote's would read as the local kernel's — dropped here.
     if (m && m.type === "caps" && host !== LOCAL) return;
+    // The ARRANGEMENT the kernel keeps for this viewer (2026-09-23), served on connect and pushed on every
+    // change — the event the other devices converge on. Only the LOCAL kernel's counts: a remote kernel's
+    // store is whatever dashboard sits in front of THAT machine, and taking it would let one viewer's drag
+    // rearrange another's. Either this browser's own arrangement is the one that survives the move (a
+    // kernel with no store yet: publish it, and the push that comes back is what every other viewer of
+    // this kernel adopts) or the kernel's wins; adoptSharedOrder is silent when it changes nothing, so a
+    // viewer seeing its own publish come back does not re-announce it. Never handed on to the panes: they
+    // read the arrangement through the merged re-emits below, as they always have.
+    // HEARING it is also what lets this page speak for the arrangement at all (view-order.ts hearSharedOrder): a
+    // drag made before this frame lands over the kernel's list rather than instead of it, the migration runs, and
+    // only then is the publisher installed. A host report that arrived before it (the connect push's strip) was
+    // held back from the arrangement (absorbHostReport) and is folded in now, ONCE, on this connection's first
+    // hearing: that report is the host's own word on what exists. Every later viewOrder frame is another viewer's
+    // arrangement, which is not evidence about what exists, so it never prunes here — two devices whose session
+    // lists differ for a moment would otherwise each re-prune the other's publish, back and forth, without end
+    // (the 2026-08-02 rule, across devices; the first cut of the #2062 fix did exactly that).
+    // Each half is read only when the frame carries it: the kernel leaves out a half whose store it could not read,
+    // and this page then keeps what it shows for that half rather than adopting a guess — and, for the arrangement,
+    // stays unheard: a page that has not been told the kernel's order does not speak for it.
+    if (m && m.type === "viewOrder") {
+      if (host !== LOCAL) return;
+      const w = window as any;
+      if (Array.isArray(m.order)) {
+        const served = m.order.filter((x: unknown): x is string => typeof x === "string");
+        hearSharedOrder(served, m.stored === true, (o) => this.outbound({ type: "setViewOrder", order: o.slice() }),
+                        (fn) => { w.__rompPublishViewOrder = fn; });
+        const first = !this.viewOrderHeard;
+        this.viewOrderHeard = true;
+        if (first && this.reportDeferred) {
+          this.reportDeferred = false;
+          this.absorbHostReport(LOCAL, this.perHostOrder[LOCAL] || [], this.perHostTabs[LOCAL] || []);   // no churn: prev is now
+        }
+      }
+      // The FOLDS beside it (2026-09-23, the user: fold groups on the phone too, synced like the order). The same
+      // migration and adoption (tab-groups.ts hearSharedFolds), and the adoption's announce is what repaints the strip
+      // and the Sessions pane of this document; its cache write is what repaints the other panes (`storage`). From
+      // here on, on THIS connection, this page publishes its folds, the slot every bundle on it reads (the view-order
+      // slot's pattern); a drop withdraws it with the arrangement's (unhearViewOrder).
+      if ("folds" in m) {
+        hearSharedFolds(m.folds, (f) => this.outbound({ type: "setViewFolds", folds: f }), (fn) => { w.__rompPublishViewFolds = fn; });
+      }
+      return;
+    }
+    // A NEW connection (the shim's reconnect, as a frame: it lands after the dead socket's last frames and before the
+    // new one's first): nothing heard on the old one counts for this one. Handed on to the panes as before.
+    if (m && m.type === "wsup" && host === LOCAL) this.unhearViewOrder();
     // The local kernel's caps frame is the reconnect event: each replayed views store adopts the blob its
     // gate last turned away when the frame names it (the 2026-09-05 review; capsAdopts),
     // as the panes do — the kernel sends its connect push before this frame and `viewsSeq` is the seq of
@@ -1348,6 +1425,22 @@ export class FederationManager {
     return readViewOrder();
   }
 
+  // Whether the kernel's arrangement has reached this page on the CURRENT local connection (the viewOrder frame),
+  // and so whether this page may speak for it — publish a drag, fold a host's report into it (absorbHostReport).
+  private viewOrderHeard = false;
+  private reportDeferred = false;                    // a host report arrived before the hearing: fold it in when it lands
+  private lastShownOrder: string[] | null = null;   // the merged strip last emitted: a pre-hearing drag's base
+
+  /** The connection that heard the viewer's store is gone: stop speaking for it until the next one hears it — the
+   *  arrangement and the FOLDS alike (2026-09-23), both granted by the viewOrder frame. A fold made in the gap waits as
+   *  a delta and lands over the kernel's folds when the next connection's frame arrives (tab-groups.ts FoldsPublisher);
+   *  kept across the drop, the publisher put this page's pre-drop copy over whatever another device folded meanwhile. */
+  private unhearViewOrder(): void {
+    this.viewOrderHeard = false;
+    try { delete (window as any).__rompPublishViewOrder; } catch { /* no window */ }
+    try { delete (window as any).__rompPublishViewFolds; } catch { /* no window */ }
+  }
+
   private lastFeedCounts = "";   // last per-host ask-count signature — breadcrumb only on change
 
   private emitMergedFeed(): void {
@@ -1450,6 +1543,7 @@ export class FederationManager {
     // momentary, and the local arrival itself emits; a host's own FRESH push is never held — its ids are its word.
     if (!fresh && !(LOCAL in this.perHostOrder)) return;
     const order = mergeHostOrder(this.perHostOrder, this.hostSeq, this.view());
+    this.lastShownOrder = order;   // what the strip shows: a drag made before the kernel's arrangement is heard is measured from it
     const tabs = this.hostSeq.flatMap((h) => this.perHostTabs[h] || []);
     const live = this.hostSeq.flatMap((h) => this.perHostLive[h] || []);   // T258: the union the pane's omission guard reads
     // `skeleton` rides EVERY merged strip, an array even when empty: the pane's rule is "array → replace,
@@ -1484,7 +1578,15 @@ export class FederationManager {
   //    (the user 2026-08-10, who watched the new tab pop from last place to second-to-last). Writing the
   //    placement down is what makes it hold: an unadopted id was re-derived from the host-blocked seed
   //    on every merge and every reload.
+  //
+  // NONE of it runs before this page has heard the kernel's arrangement on the current connection (viewOrderHeard;
+  // view-order.ts ViewOrderPublisher). The connect push serves the strip before the viewOrder frame, and folding it
+  // into a copy that is empty (a new device, a cleared browser) or stale (a reconnect) wrote the seed order, or the
+  // stale one, straight over the arrangement on every device (review find on #2062, 2026-09-23). Nothing is lost by
+  // waiting: until then the merge still shows every session (applyViewOrder puts the ones the copy never placed at
+  // the end, in seed order, which is where adoption would put them), and the frame runs this pass when it lands.
   private absorbHostReport(host: string, prevOrder: readonly string[], prevTabs: readonly any[]): void {
+    if (!this.viewOrderHeard) { this.reportDeferred = true; return; }
     const names = (tabs: readonly any[]) => {
       const byId = new Map<string, string>();
       for (const t of tabs) if (t && typeof t.id === "string") byId.set(t.id, String(t.name || ""));

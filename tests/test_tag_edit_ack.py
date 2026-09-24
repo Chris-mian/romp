@@ -886,13 +886,24 @@ class Capability(_Wire):
                         "the caps frame follows the push: the shim's stale banner clears on the first real frame "
                         "after a reconnect, which must stay the resync frame itself")
         self.assertNotIn("tabOrder", types, "no strip from the handler itself: the connect push is the one source")
+        # the viewer's arrangement rides the connect push too (2026-09-23), before the caps frame like
+        # every other part of it — its own frame, on its own dedup slot
+        self.assertLess(types.index("viewOrder"), types.index("caps"))
+        self.assertEqual(next(m for m in self.sent if m["type"] == "viewOrder"),
+                         {"type": "viewOrder", "order": [], "stored": False, "folds": None},
+                         "no arrangement stored here yet, nor any folds (2026-09-23), which is what a browser "
+                         "carrying either publishes against")
         caps = next(m for m in self.sent if m["type"] == "caps")
+        # the frame lists the tuple itself, so a PR adding a capability edits one line, not this test too
         self.assertEqual(caps, {"type": "caps", "caps": list(km.KERNEL_WS_CAPS), "viewsSeq": None},
-                         "every cap this kernel advertises, whole (tagEdit and chatProto2 at first; restartSession "
-                         "since 2026-09-23) — the frame is the list, and the list is the kernel's; no store exists "
+                         "every cap this kernel advertises, whole (tagEdit and chatProto2 at first; viewOrder, viewFolds and "
+                         "restartSession since 2026-09-23): the frame is the list, and the list is the kernel's; no store exists "
                          "yet, so the stubbed push carried no seq and the store has none: viewsSeq is null, the key "
                          "always present")
         self.assertEqual(caps["caps"][:2], ["tagEdit", "chatProto2"], "…with the two this pane's own gate reads first")
+        self.assertIn("viewOrder", caps["caps"])
+        self.assertIn("viewFolds", caps["caps"])
+        self.assertIn("restartSession", caps["caps"])
         # a RE-SENT ready (the shim, on a reconnected socket) gets the caps again — the event a page
         # with writes in flight across the drop keys on
         n = len(self.sent)

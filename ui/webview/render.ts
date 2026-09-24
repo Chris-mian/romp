@@ -50,9 +50,10 @@ import { historyMarks, historyBands, windowSpans, HIST_H, HIST_GAP } from "./glo
 import { newSkeletonState, applyTabOrderSkeleton, onStatus, holdStatus, onFull, onDismiss, onSocketUp, nextPrefetch, renderKind } from "./skeleton-tabs";
 import { onHostSocketUp } from "./skeleton-tabs";   // the relay's reopen forgets what loaded on the dead relay socket (2026-09-23)
 import { reconcileTabOrder, adoptArrival } from "./tab-order";
-import { applyViewOrder, readViewOrder, writeViewOrder } from "./view-order";   // the read: a page with no federation manager arranges its own strip (applyTabOrder, frame-listener.ts paneArranges)
+import { applyViewOrder, hearSharedOrder, readViewOrder, setViewOrderPublisher, writeViewOrder } from "./view-order";   // the read: a page with no federation manager arranges its own strip (applyTabOrder, frame-listener.ts paneArranges)
 import { planStrip, readTabGroups, writeTabGroups, setSectionCollapsed, sectionRef, isPinned, setPinned, prunePinned, reachableFrom, headWords,
-         followAdoption, reorderTagOrder, homeSectionOf, neighborOfFolded, revealedTabs, TABGROUPS_KEY, TABGROUPS_EVENT, type TabSection, type StripItem } from "./tab-groups";
+         followAdoption, reorderTagOrder, homeSectionOf, neighborOfFolded, revealedTabs, phoneStandIns, hearSharedFolds,
+         setFoldsPublisher, TABGROUPS_KEY, TABGROUPS_SHARED_KEY, TABGROUPS_EVENT, type TabSection, type StripItem } from "./tab-groups";
 import { snapshotModel, snapshotHeading, rowWords, type SnapModel, type SnapRow } from "./tab-snapshot";
 import { rowStillOpen, installSnapshotEscape, reconcileRows } from "./tab-snapshot-view";
 import { tabStateClass, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
@@ -5758,12 +5759,13 @@ function fadedColor(hex: string, amount = 1): string {
 
 // Persist the current full tab order. Called only after a drag — the one client action that changes it.
 //
-// This writes to THIS BROWSER, not to the kernel (the user 2026-07-31): order is a property of how you are
-// looking at the fleet, so arranging tabs on the laptop has no business moving them on the desktop — and
-// only a browser-side list can interleave hosts at all, since no single kernel can record an order over
-// sids it does not know about. Each kernel keeps its own list as the arrival-order SEED; ./view-order
-// layers this over it, and federation re-emits the tab strip, the timeline lanes and the feed's groups
-// together so all three surfaces read the same way.
+// The list this writes is computed HERE, in the browser, because only a browser-side list can interleave
+// hosts at all — no single kernel can record an order over sids it does not know about (the 2026-07-31
+// ruling, still true). Where it is KEPT moved to the kernel on 2026-09-23: writeViewOrder caches it for
+// this browser and hands it to the local kernel as opaque data, so the arrangement follows the user to
+// their phone and their other desktop instead of stopping at this browser. Each kernel keeps its own
+// session list as the arrival-order SEED; ./view-order layers this over it, and federation re-emits the
+// tab strip, the timeline lanes and the feed's groups together so all three surfaces read the same way.
 function commitTabOrder() {
   if (fedMissing) return;   // an order that never passed through the arrangement is not an arrangement: never written (see fedMissing)
   writeViewOrder(order.slice());
@@ -6770,12 +6772,15 @@ function renderTabs() {
   // glance (renderSnapshot); the keyboard walk (visibleOrder()) drops the folded ids so ←/→
   // skip them. On the phone layout (phoneLayout — the kernel page's own media rule) the plan sections
   // the same way, so the phone's session list, scraped from the strip's children in order, reads as the
-  // desktop strip does (the user 2026-09-16); nothing folds there, since that list's heading is a label
-  // with no fold to open. A create in flight (the provisional tab) sections under the tags its request
-  // named.
+  // desktop strip does (the user 2026-09-16), and since 2026-09-23 it folds the same way too, from the
+  // same folds the kernel keeps for every device (the list's heading is the fold control there). The phone
+  // paints one node more: the active tab folded away, which its picker reads for the current-session chip
+  // and never lists (tab-groups.ts phoneStandIns). A create in flight (the provisional tab) sections under
+  // the tags its request named.
   const unions = viewTagUnion(effViews());
   const plan = planStrip(visibleIds, unions, readTabGroups(unions), activeId, phoneLayout(),
                          provisionalId ? { id: provisionalId, tags: provisionalTags } : null);
+  const paint = phoneLayout() ? phoneStandIns(plan.items, activeId, plan.folded) : plan.items;
   collapsedTabIds = plan.folded;
   lastStripItems = plan.items;   // before the skip below: the section view (stripAftermath, renderSnapshot) and the folded stand-in read the plan from here on either path
   // A REVEAL RE-ARMS THE IDLE PREFETCH, whatever caused the repaint (the user 2026-09-14: hidden tabs are not built until shown, and
@@ -6811,6 +6816,7 @@ function renderTabs() {
   // input missing here is a repaint that never happens.
   const stripSig = JSON.stringify([
     activeId, peekId, ids, visibleIds, activeId ? tabInView(activeId) : null, plan.items,
+    paint !== plan.items,   // the phone's folded-away active node (phoneStandIns): where it goes is plan.items + activeId, whether it goes is this
     settings.tabCtx, settings.stripGroupRows, settings.tabsLocked, settings.tabStateBadge, settings.theme, settings.colormap, settings.tabWidgets, titleWithKey("Open a session", "session.new"),   // tabWidgets: which widgets a tab carries, their order and options (T379); tabsLocked: the tab lock (T395); tabStateBadge: badge vs ring (the badge repaints the whole strip when flipped)
     surfaceLens(effViews(), "chat"), unions,
     snapView,   // the section whose view the pane shows (makeGroupHead: the header's mark and its way-back act)
@@ -6861,7 +6867,14 @@ function renderTabs() {
   // reader (flipTabs) can tell them apart; every by-id reader (focus, the menu, the tip) lands on the
   // first copy, which is the same session.
   let copyGroup: string | null | undefined;
-  for (const item of plan.items) {
+  // the phone's folded-away active tab (phoneStandIns): the full tab of the session, built like any other, so the
+  // picker's chip mirrors its live name, colour and state cues; never displayed (the phone hides the strip, and the
+  // class hides it besides), out of the keyboard's and the accessibility tree's reach, and not draggable
+  const markAway = (node: HTMLElement, item: object) => {
+    if (!("away" in item)) return;
+    node.classList.add("tab-away"); node.setAttribute("aria-hidden", "true"); node.tabIndex = -1; node.draggable = false;
+  };
+  for (const item of paint) {
     if ("head" in item) {
       // every group on its own line (T264), under the one-group-per-row setting: a row break ahead of
       // each header except the strip's first item, which already opens the first row, and except a
@@ -6880,11 +6893,13 @@ function renderTabs() {
     if (renderKind(skeletonTabs, id, !!s) === "skeleton") {
       const sk = makeSkeletonTab(id);
       if (copyGroup !== undefined) sk.dataset.copy = copyGroup ?? "";   // a skeleton copy per group too — flipTabs keys per copy (T264b)
+      markAway(sk, item);
       bar.appendChild(sk); continue;
     }
     if (!s) {
       const ph = makePlaceholderTab(id);
       if (copyGroup !== undefined) ph.dataset.copy = copyGroup ?? "";   // a placeholder copy per group too — flipTabs keys per copy (T264b)
+      markAway(ph, item);
       bar.appendChild(ph); continue;
     }
     const tab = el("div", "tab" + (id === activeId ? " active" : ""));
@@ -6950,6 +6965,7 @@ function renderTabs() {
     tab.addEventListener("dblclick", (e) => { e.preventDefault(); toggleLedgerCollapsed(); });
     // right-click → context menu; "Rename" edits the title in place (not for a viewer: nothing to rename/hide/end)
     if (!s.sub) tab.addEventListener("contextmenu", (e) => { e.preventDefault(); e.stopPropagation(); showTabMenu(e, id, tab.dataset.copy); });   // the copy's group rides along (T264b)
+    markAway(tab, item);
     bar.appendChild(tab);
   }
   const add = el("div", "tab tab-add");
@@ -19512,6 +19528,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // the pipe's down edge is the VS Code twin of the shim's romp:wsdown: unconfirmed sends say so (markPendingLost)
   if (m.type === "pipeState" && m.up) reaskWaitingSubagents();   // the extension's reconnect-class event (it never sees romp:wsup), T355
   if (m.type === "pipeState" && m.up) forgetHeldWm(sessions, null);   // …and the held watermarks go (frame-guard.ts, 2026-09-23): the kernel behind the pane's pipe may be a fresh process whose live-tail revision restarted at 0
+  if (m.type === "pipeState" && !m.up && paneArranges(window as any)) { setViewOrderPublisher(null); setFoldsPublisher(null); }   // the pipe that heard the kernel's arrangement is gone: stop speaking for it until the next connection's viewOrder frame (view-order.ts ViewOrderPublisher, 2026-09-23)
   if (m.type === "pipeState") { if (!m.up) { markPendingLost("connection"); onWireDown(); } pipeBanner(!!m.up, Number(m.queued) || 0); return; }   // the pane's down edge clears the in-flight asks as the socket's does (round nine, medium 2)
   // any kernel message proves the kernel is reachable again — heal previews whose fetch died in a
   // restart window (preview.ts retryFailedPreviews; a no-op when nothing failed). federation's
@@ -19924,6 +19941,33 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     if (typeof m.selfHost === "string" && m.selfHost) adoptSelfHost(m.selfHost);   // the LOCAL kernel's own name: federation puts only its own on the merged frame
     captureViews(m.views || null);
     applyTabOrder(m.order, m.tabs, { reemit: m.reemit === true, freshHost: typeof m.freshHost === "string" ? m.freshHost : undefined }, m.live);
+  }
+  // The kernel's arrangement for this viewer (2026-09-23), reaching a page that arranges its own strip —
+  // a VS Code webview, whose host pipes kernel frames through verbatim. A page WITH a federation manager
+  // never sees this frame: the manager consumes it and re-emits the three merged surfaces arranged. The
+  // pane's current `order` stands in for the seed: it is the kernel's list already arranged by the order
+  // this frame replaces, so ids the new arrangement does not name keep the places they are showing in.
+  // Such a page is a viewer of this kernel like any other (2026-09-23): its host pipes every message through
+  // verbatim, so HEARING this frame is also what installs its publisher (view-order.ts hearSharedOrder; a drag
+  // made before it lands over the kernel's list), and the pipe's down edge (pipeState, below) withdraws it. A page
+  // whose manager is MISSING never gets here (paneArranges is false): it shows the seed and refuses drags, and an
+  // order that never passed through the arrangement must never be published.
+  // Each half only when the frame carries it: the kernel leaves out a half whose store it could not read (and a page
+  // not told the arrangement stays unheard, so it does not speak for it).
+  else if (m.type === "viewOrder" && paneArranges(window as any)) {
+    if (Array.isArray(m.order)) {
+      const served = m.order.filter((x: any) => typeof x === "string");
+      if (hearSharedOrder(served, m.stored === true, (o) => vscodeApi?.postMessage({ type: "setViewOrder", order: o.slice() }), setViewOrderPublisher)) {
+        const arranged = applyViewOrder(order, readViewOrder());
+        order.length = 0;
+        for (const id of arranged) order.push(id);
+        renderTabs();
+      }
+    }
+    // …and the FOLDS riding beside it (2026-09-23): the migration and the adoption every page runs (tab-groups.ts
+    // hearSharedFolds; an adoption repaints through TABGROUPS_EVENT), after which this webview publishes its folds
+    // through its host pipe, as it publishes its arrangement
+    if ("folds" in m) hearSharedFolds(m.folds, (f) => vscodeApi?.postMessage({ type: "setViewFolds", folds: f }), setFoldsPublisher);
   }
   else if (m.type === "renamed" && m.id && typeof m.name === "string") {
     notePendingMeta(pendingTabMeta, m.id, { name: m.name });   // kernel truth — hold it against a push built pre-rename
@@ -21361,6 +21405,9 @@ window.addEventListener("storage", (e) => {
 // TAB SECTIONS state (tab-groups.ts): a fold/open or the "Group tabs by tag" switch — from this
 // window (the CustomEvent) or a sibling pane (the storage event) — re-renders the strip
 window.addEventListener("storage", (e) => { if (e.key === TABGROUPS_KEY) renderTabs(); });
+// …and so does the kernel's copy of the FOLDS, which a sibling pane caches when it folds a group or adopts the kernel's
+// push (tab-groups.ts TABGROUPS_SHARED_KEY, 2026-09-23): that push is how a fold on the viewer's other device lands here
+window.addEventListener("storage", (e) => { if (e.key === TABGROUPS_SHARED_KEY) renderTabs(); });
 // …and so does the shell's write of which sessions each column holds (the chat split): the tab of a session moved
 // away is simply gone from this strip and a session moved here appears; an equal signature skips the rebuild (the
 // source's own dragend render already read the new sets in the same task)
@@ -21721,13 +21768,17 @@ setupSettings();
     // state the store does not hold). The write notifies (TABGROUPS_EVENT) and the listener re-renders:
     // one render path for a local toggle and a sibling pane's alike. The same click shows the section at
     // a glance in the transcript's place (snapView; showActive paints it), open or folded: the user
-    // looks at the group they just folded or opened, and a session pick puts a transcript back.
+    // looks at the group they just folded or opened, and a session pick puts a transcript back. On the
+    // PHONE the picker's heading folds through this same handler (kernel.py _CHAT_MOBILE_JS clicks the
+    // hidden header, 2026-09-23) and the tap folds and nothing else: the picker is a list over the pane,
+    // not a strip beside it, and the transcript under it stays where the reader left it.
     "toggle-group": (el) => {
       const name = el.dataset.group;
       if (!name) return;
-      snapView = name;
+      const phone = phoneLayout();
+      if (!phone) snapView = name;
       writeTabGroups(setSectionCollapsed(tabGroups(), name, el.dataset.folded !== "1"));
-      showActive();
+      if (!phone) showActive();
     },
     // the header whose section the pane shows, open and holding the tab being read (makeGroupHead): a
     // second click puts the transcript back

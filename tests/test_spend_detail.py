@@ -647,7 +647,10 @@ class SpendDetail(unittest.TestCase):
         self.assertIn('data-act=range:days>90 days ', js)
         self.assertIn('data-act=merge:toggle>merge by tag</button>', js)
         self.assertIn("JSON.stringify({range:SP.range,measure:SP.measure,order:SP.order,merge:SP.merge})", js)
-        self.assertIn("localStorage.getItem('romp:vieworder')", js, "the viewer's arrangement is the strip's own key")
+        # the same two keys view-order.ts reads, in the same order: the kernel's arrangement as this browser
+        # caches it (2026-09-23), falling back to the pre-move local key until the kernel serves one
+        self.assertIn("localStorage.getItem('romp:vieworder:shared')", js, "the viewer's arrangement is the strip's own key")
+        self.assertIn("localStorage.getItem('romp:vieworder')", js, "…with the pre-move local key behind it")
         # T293 (the user 2026-09-09): the hover crosshair — a pointer-inert hairline inside the svg at the pointer's
         # bucket, a stamp naming the bucket in words placed out of the flow (nothing moves under the pointer), and the
         # tooltip listing that bucket's sessions in spend order; all three leave with the pointer. The pure functions

@@ -11,7 +11,9 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { installDomHelpers, dispatchFrame, openExternalMessage, bridgeFunctions } from "./timeline-boot";
+import { installDomHelpers, dispatchFrame, openExternalMessage, bridgeFunctions, writeTabGroupsBlob } from "./timeline-boot";
+import { setFoldsPublisher } from "./tab-groups";
+import { setViewOrderPublisher } from "./view-order";
 
 const ROOT = path.resolve(process.cwd(), "..");
 const KERNEL = fs.readFileSync(path.join(ROOT, "bin", "romp-kernel"), "utf8");
@@ -135,14 +137,62 @@ test("bridges post the same kernel ops as the web boot", () => {
   ]);
 });
 
-test("a lane drag posts NOTHING to a kernel — it arranges this browser's own view", () => {
-  // Order moved out of the kernel (the user 2026-07-31, ./view-order): a kernel can only record an order
-  // over its OWN sids, which is exactly why hosts could never interleave. The drag writes localStorage and
-  // federation re-emits; sending a `writeOrder` op alongside would put the kernel back in charge of a
-  // per-viewer choice and make a drag here move the tabs on another machine.
-  const { sent, post } = posts();
-  bridgeFunctions(post).__rompTimelineWriteOrder(["a", "TESTHOST:b"]);
-  assert.deepEqual(sent, []);
+test("a lane drag posts the WHOLE arrangement to the local kernel, never a per-kernel writeOrder", () => {
+  // Two rulings, and only one of them moved. The ORDER is still computed here, over every attached host
+  // at once: a `writeOrder` op would hand each kernel a fragment of its own sids, which is exactly why
+  // hosts could never interleave before 2026-07-31. What the kernel gets since 2026-09-23 is the finished
+  // list, host prefixes and all, as opaque data to KEEP — so a drag here reaches the viewer's phone and
+  // their other desktop instead of stopping at this webview (the user 2026-09-23).
+  // …and only once this webview has HEARD the kernel's arrangement (review find on #2062, 2026-09-23): before
+  // that the drag is kept pending and merged over the kernel's when its viewOrder frame arrives.
+  // A webview that reloaded (its host's reconnect does that) holds the arrangement it cached and no publisher.
+  const g: any = globalThis;
+  const hadLS = "localStorage" in g, prevLS = g.localStorage;
+  const store = new Map<string, string>([["romp:vieworder:shared", JSON.stringify(["TESTHOST:b", "a"])]]);
+  g.localStorage = { getItem: (k: string) => (store.has(k) ? store.get(k)! : null), setItem: (k: string, v: string) => { store.set(k, v); }, removeItem: (k: string) => { store.delete(k); } };
+  setViewOrderPublisher(null);
+  try {
+    const { sent, post } = posts();
+    const bridges = bridgeFunctions(post);
+    bridges.__rompTimelineWriteOrder(["a", "TESTHOST:b"]);
+    assert.deepEqual(sent, [], "not heard yet: nothing published");
+    // meanwhile another device added a session to the end; the frame carries that
+    dispatchFrame({}, { type: "viewOrder", order: ["TESTHOST:b", "a", "c"], stored: true });
+    assert.deepEqual(sent, [{ type: "setViewOrder", order: ["a", "TESTHOST:b", "c"] }],
+      "the pending drag lands over the kernel's list, and the other device's session stays");
+    bridges.__rompTimelineWriteOrder(["TESTHOST:b", "a", "c"]);
+    assert.deepEqual(sent.at(-1), { type: "setViewOrder", order: ["TESTHOST:b", "a", "c"] }, "heard: a drag is published as it happens");
+    assert.ok(!sent.some((m: any) => m.type === "writeOrder" || m.type === "reorderTabs"),
+      "a kernel is never asked to order sids it does not know about");
+  } finally {
+    setViewOrderPublisher(null);
+    if (hadLS) g.localStorage = prevLS; else delete g.localStorage;
+  }
+});
+
+test("the VS Code timeline hears the kernel's FOLDS and, from then on, publishes a fold through its host pipe (2026-09-23)", () => {
+  // the Sessions pane honours the tag groups' folds; in VS Code it has no federation manager, so the viewOrder frame's folds half
+  // reaches dispatchFrame, and the view's own fold write (romp-timeline-view.js writeTabGroupsBlob → window.__rompWriteTabGroups,
+  // which timeline-main.ts sets to writeTabGroupsBlob) publishes through `post` once the kernel's folds were heard
+  const g: any = globalThis;
+  const store = new Map<string, string>();
+  const saved = [g.localStorage, g.window];
+  g.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); }, removeItem: (k: string) => { store.delete(k); } };
+  g.window = new EventTarget();
+  try {
+    const { sent, post } = posts();
+    bridgeFunctions(post);
+    assert.equal(dispatchFrame({}, { type: "viewOrder", order: [], stored: false, folds: { collapsed: ["api"], expanded: [], pinned: [] } }), true, "the frame is the timeline's to take");
+    assert.deepEqual(JSON.parse(store.get("romp:tabgroups:shared")!).collapsed, ["api"], "the kernel's folds adopted into this webview's store");
+    assert.deepEqual(sent, [], "adopting publishes nothing");
+    writeTabGroupsBlob({ on: true, collapsed: ["api", "web"], expanded: [], pinned: [], timeline: true });
+    assert.deepEqual(sent, [{ type: "setViewFolds", folds: { collapsed: ["api", "web"], expanded: [], pinned: [] } }], "heard: the view's fold goes to the kernel");
+    assert.equal(dispatchFrame({}, { type: "viewOrder", order: [], stored: true }), true, "a frame with no folds half (an older kernel): taken, nothing adopted");
+  } finally {
+    [g.localStorage, g.window] = saved;
+    setFoldsPublisher(null);
+    setViewOrderPublisher(null);   // the frame's arrangement half installed this webview's order publisher too
+  }
 });
 
 test("installDomHelpers supplies the 3 Obsidian helpers", () => {

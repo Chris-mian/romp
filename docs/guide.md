@@ -367,6 +367,15 @@ How a page looks is kept in the browser you are using. What the kernel acts on,
 Auto Nudge or Task tracking for instance, is sent to every machine you are
 connected to.
 
+The order you drag your tabs into is kept by your kernel rather than by one
+browser, so it follows you: arrange the strip on the desktop and your phone
+lists them the same way, with no reload. The last drag wins, and a phone shows
+the arrangement but cannot change it.
+
+Folded tag groups are kept the same way: a group folded on one device is folded
+on the others, and a tap on a group's heading in the phone's session list folds
+or opens it.
+
 A few settings describe one machine and stay on it. **Extra models from your
 API gateway**, under General, This machine, offers the models that machine's
 own gateway serves in every model picker, once `ROMP_ROUTER_MODELS` in its

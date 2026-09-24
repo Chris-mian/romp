@@ -480,18 +480,43 @@ function el(t, a) { const n = document.createElementNS(SVGNS, t); for (const k i
 // for both surfaces, the strip's own romp:tabgroups (this file is served raw and loads no module, so the shape is mirrored
 // here and a drift test compares): the FOLDS (collapsed / expanded, archived folded by default, the pins carried through)
 // are one truth, so a section folded here is folded on the strip; the SWITCH is the pane's own field in it (`timeline`,
-// present only while on, so the pane is exactly as it was until the user turns it on). Per browser, like the strip's.
+// present only while on, so the pane is exactly as it was until the user turns it on). The switch is per browser, like the
+// strip's; the FOLDS are every device's since 2026-09-23 (tab-groups.ts TabFolds): the kernel keeps them beside the
+// viewer's arrangement and this browser caches its copy under romp:tabgroups:shared, which is read here first, the fold
+// fields romp:tabgroups carried before that day being the fallback (and never written again).
 const TABGROUPS_KEY = 'romp:tabgroups';
+const TABGROUPS_SHARED_KEY = 'romp:tabgroups:shared';
 const TABGROUPS_EVENT = 'romp-tabgroups';
 const TABGROUPS_DEFAULT_COLLAPSED = ['archived'];   // tab-groups.ts DEFAULT_COLLAPSED (that tag exists to put sessions away)
+const TABGROUPS_FOLD_FIELDS = ['collapsed', 'expanded', 'pinned', 'followed', 'followedSeq'];   // tab-groups.ts TabFolds
+function tabGroupsObj(key) {
+  let o = null; try { const r = localStorage.getItem(key); o = r === null ? null : JSON.parse(r); } catch (e) { o = {}; }
+  return o === null ? null : ((o && typeof o === 'object' && !Array.isArray(o)) ? o : {});
+}
 function tabGroupsState() {
-  let o = {}; try { o = JSON.parse(localStorage.getItem(TABGROUPS_KEY) || '{}') || {}; } catch (e) { o = {}; }
-  if (!o || typeof o !== 'object' || Array.isArray(o)) o = {};
+  const own = tabGroupsObj(TABGROUPS_KEY) || {}, shared = tabGroupsObj(TABGROUPS_SHARED_KEY);
+  // `raw` is the store as tab-groups.ts readTabGroups returns it: this browser's switches, then the folds from the
+  // kernel's copy once this browser holds one
+  const o = Object.assign({}, own);
+  if (shared) for (const k of TABGROUPS_FOLD_FIELDS) { if (k in shared) o[k] = shared[k]; else delete o[k]; }
   const strs = (xs) => (Array.isArray(xs) ? xs.filter((x) => typeof x === 'string') : []);
   return { raw: o, on: o.on !== false, collapsed: strs(o.collapsed), expanded: strs(o.expanded), timeline: o.timeline === true };
 }
+// THE WRITE. On a page with a federation manager (the kernel's /timeline) the one implementation is on the window
+// (federation.ts __rompWriteTabGroups: tab-groups.ts writeTabGroups, which splits the blob, caches, publishes the folds to
+// the kernel and tells every pane); the VS Code timeline gets the same function from its boot (timeline-boot.ts). With
+// neither (the Obsidian view, a node test) the split is done here, the same way, and the folds stay this browser's.
 function writeTabGroupsBlob(blob) {
-  try { localStorage.setItem(TABGROUPS_KEY, JSON.stringify(blob)); } catch (e) { /* quota / private mode: the preference does not outlive the page */ }
+  try { if (typeof window !== 'undefined' && typeof window.__rompWriteTabGroups === 'function') { window.__rompWriteTabGroups(blob); return; } } catch (e) { /* no window */ }
+  try {
+    const own = tabGroupsObj(TABGROUPS_KEY) || {};
+    own.on = blob.on !== false;
+    if (blob.timeline === true) own.timeline = true; else delete own.timeline;
+    localStorage.setItem(TABGROUPS_KEY, JSON.stringify(own));
+    const folds = {};
+    for (const k of TABGROUPS_FOLD_FIELDS) if (k in blob) folds[k] = blob[k];
+    localStorage.setItem(TABGROUPS_SHARED_KEY, JSON.stringify(folds));
+  } catch (e) { /* quota / private mode: the preference does not outlive the page */ }
   try { window.dispatchEvent(new CustomEvent(TABGROUPS_EVENT)); } catch (e) { /* no window */ }
 }
 function tlGroupByTag() { return tabGroupsState().timeline; }
@@ -1622,6 +1647,11 @@ class TimelinePanel {
     try {
       // T399: a fold or the group-by-tag switch toggled in another window (the strip's own key) repaints the lanes
       window.addEventListener('storage', (e) => { if (e && e.key === TABGROUPS_KEY) this.draw(); });
+      // …and so does the kernel's copy of the folds, cached by another pane that folded or adopted a push, and the same
+      // news in THIS window (the page's federation manager adopting the kernel's push: a fold on the viewer's other
+      // device, 2026-09-23)
+      window.addEventListener('storage', (e) => { if (e && e.key === TABGROUPS_SHARED_KEY) this.draw(); });
+      window.addEventListener(TABGROUPS_EVENT, () => this.draw());
       window.addEventListener('storage', (e) => {
         if (!e || e.key !== 'romp:settings') return;
         try { const s2 = JSON.parse(e.newValue || localStorage.getItem('romp:settings') || '{}');

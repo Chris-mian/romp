@@ -11,7 +11,7 @@ import * as path from "node:path";
 import { viewTagUnion, type TagUnion } from "./session-views";
 import * as TG_MOD from "./tab-groups";
 import { sectionTabs, anySectioned, parseTabGroups, readTabGroups, writeTabGroups, isSectionCollapsed,
-         toggleSectionCollapsed, setSectionCollapsed, planStrip, reorderTagOrder, applyTagOrder, TABGROUPS_KEY,
+         toggleSectionCollapsed, setSectionCollapsed, planStrip, reorderTagOrder, applyTagOrder, TABGROUPS_KEY, TABGROUPS_SHARED_KEY,
          DEFAULT_COLLAPSED, sectionRef, isPinned, setPinned, togglePinned, prunePinned, reachableFrom, tagRenames, followTagRenames, followAdoption,
          sameTagNames, headWords, homeSectionOf, neighborOfFolded, type TabSection, type SectionRef, type TabGroupsState, type StripItem } from "./tab-groups";
 import { sectionPipTitle } from "./tab-state";
@@ -182,27 +182,34 @@ test("executed: planStrip — sections + folds; the flat strip when off or untag
   assert.deepEqual(planStrip(["loose"], unions, st, null, false).items, [{ id: "loose" }], "an untagged world: flat");
 });
 
-test("executed: the PHONE layout sections like the desktop — the same headings in the same order, every member under its header — and folds NOTHING, whatever the store says", () => {
+test("executed: the PHONE layout sections like the desktop — the same headings in the same order — and, since 2026-09-23, FOLDS like it too, item for item, from the same store", () => {
   // the kernel's phone chat page hides #tabs and builds its session list by scraping the strip's children
   // in order (a heading row per header, a row per tab copy). It listed the sessions in the raw view order
-  // while the desktop grouped them by tag (the user 2026-09-16), because the phone plan flattened: a fold
-  // there would have hidden its members from the phone's only switcher (archived, by default). Now the
-  // plan sections on the phone too, and the FOLD alone stays desktop-only: the picker's heading is a
-  // label with no fold to open, so every member renders under its header
+  // while the desktop grouped them by tag (the user 2026-09-16), because the phone plan flattened; then it
+  // sectioned but folded nothing, the picker being the phone's only switcher (#1770). The user asked to fold
+  // groups on the phone too, with the folds shared with the desktop (2026-09-23): the phone plan is now the
+  // desktop's item for item, the one exception being `packed` (a strip layout; the picker lists every heading
+  // on its own row). The picker's heading is the fold control, so a folded group's members stay a tap away.
   const unions = viewTagUnion({ ...V, tags: [...V.tags, { id: "g4", name: "archived", color: "#6b7280", members: ["old1", "old2"] }] });
   const ids = ["web", "old1", "loose", "old2", "tests"];
   const shape = (p: ReturnType<typeof planStrip>) => p.items.map((i) => ("head" in i ? `#${i.head.name ?? ""}${i.folded ? "(folded)" : ""}` : i.id));
-  for (const st of [parseTabGroups(null), { on: true, collapsed: ["infra", "qa"], expanded: [], pinned: [] }]) {
+  const unpacked = (p: ReturnType<typeof planStrip>) => p.items.map((i) => ("head" in i ? { ...i, packed: false } : i));
+  for (const [st, want] of [
+    [parseTabGroups(null), ["#qa", "tests", "#infra", "web", "#archived(folded)", "#", "loose"]],
+    [{ on: true, collapsed: ["infra", "qa"], expanded: ["archived"], pinned: [] }, ["#qa(folded)", "#infra(folded)", "#archived", "old1", "old2", "#", "loose"]],
+  ] as [TabGroupsState, string[]][]) {
     const p = planStrip(ids, unions, st, "old1", true);
     assert.equal(p.sectioned, true, "the phone sections");
-    assert.deepEqual(shape(p), ["#qa", "tests", "#infra", "web", "#archived", "old1", "old2", "#", "loose"],
-      "qa, infra, archived in union order, each member under its header, the untagged trail last — the desktop's order");
-    const desk = planStrip(ids, unions, { ...st, collapsed: [], expanded: ["archived"] }, "old1", false);
-    assert.deepEqual(p.items, desk.items, "…item for item what the desktop renders with every section open (the same headings, copies and active mark)");
-    assert.deepEqual([...p.folded], [], "visibleOrder excludes nothing on the phone");
-    assert.ok(!p.items.some((i) => "head" in i && (i.folded || i.hidden.length)), "no header folded, none standing in for a hidden member");
+    assert.deepEqual(shape(p), want, "qa, infra, archived in union order, each folded as the store says (archived by default), the untagged trail last");
+    const desk = planStrip(ids, unions, st, "old1", false);
+    assert.deepEqual(p.items, unpacked(desk), "…item for item what the desktop renders from the same store (the same headings, folds, hidden members and active mark), `packed` aside");
+    assert.deepEqual([...p.folded].sort(), [...desk.folded].sort(), "the same ids folded away: the picker lists none of them");
+    assert.ok(!p.items.some((i) => "head" in i && i.packed), "never packed on the phone: the picker lists each heading on its own row");
     assert.deepEqual(p.items.filter((i) => "head" in i && i.active).map((i) => ("head" in i ? i.head.name : "")), ["archived"], "the active tab's holder is marked, as on the desktop");
   }
+  // a member set to show through its fold (the desktop's "Show when folded") shows through on the phone too
+  const pinned = setPinned({ on: true, collapsed: ["qa"], expanded: [], pinned: [] }, { name: "qa", localId: "g1" }, "tests", true);
+  assert.deepEqual(shape(planStrip(ids, unions, pinned, "web", true)), ["#qa(folded)", "tests", "#infra", "web", "#archived(folded)", "#", "loose"]);
   assert.deepEqual(planStrip(ids, unions, { ...parseTabGroups(null), on: false }, null, true).items, ids.map((id) => ({ id })),
     "the switch off: the flat strip on the phone as on the desktop (the phone's tag menu offers the switch too)");
   // render.ts decides "phone" by the SAME media rule the kernel's page uses to swap the strip for its
@@ -322,8 +329,8 @@ test("executed: the header click sets the fold state from what it RENDERED — n
   // the header carries its rendered state; the delegate reads it
   const head = RENDER.slice(RENDER.indexOf("function makeGroupHead("), RENDER.indexOf("function sectionHeadOf("));
   assert.match(head, /head\.dataset\.folded = collapsed \? "1" : "0";/);
-  assert.match(RENDER, /if \(!name\) return;\s*\n\s*snapView = name;\s*\n\s*writeTabGroups\(setSectionCollapsed\(tabGroups\(\), name, el\.dataset\.folded !== "1"\)\);/,
-    "rendered open → fold; rendered folded → open (and the section shows in the pane: snapView)");
+  assert.match(RENDER, /if \(!name\) return;\s*\n\s*const phone = phoneLayout\(\);\s*\n\s*if \(!phone\) snapView = name;\s*\n\s*writeTabGroups\(setSectionCollapsed\(tabGroups\(\), name, el\.dataset\.folded !== "1"\)\);\s*\n\s*if \(!phone\) showActive\(\);/,
+    "rendered open → fold; rendered folded → open (and on the desktop the section shows in the pane: snapView; the phone's picker folds through the same handler and shows nothing, 2026-09-23)");
 });
 
 test("a folded section renders its header alone with the folded-away count and one MEMBER-derived pip after it — a label, not a session; cycling skips folded ids", () => {
@@ -378,7 +385,9 @@ test("headers are click-safe: data-act on the node, the action on the stable #ta
   assert.match(RENDER, /head\.dataset\.act = "toggle-group";/);
   // the click derives the next fold state from the one the header RENDERED (data-folded), never from the store, and
   // shows the section in the pane (snapView; tab-snapshot-pane.test.ts)
-  assert.match(RENDER, /"toggle-group": \(el\) => \{\s*\n\s*const name = el\.dataset\.group;\s*\n\s*if \(!name\) return;\s*\n\s*snapView = name;\s*\n\s*writeTabGroups\(setSectionCollapsed\(tabGroups\(\), name, el\.dataset\.folded !== "1"\)\);/);
+  assert.match(RENDER, /"toggle-group": \(el\) => \{\s*\n\s*const name = el\.dataset\.group;\s*\n\s*if \(!name\) return;\s*\n\s*const phone = phoneLayout\(\);\s*\n\s*if \(!phone\) snapView = name;\s*\n\s*writeTabGroups\(setSectionCollapsed\(tabGroups\(\), name, el\.dataset\.folded !== "1"\)\);/);
+  // …and the kernel's copy of the folds, cached by a sibling pane (a fold there, or the kernel's push of one made on another device)
+  assert.match(RENDER, /window\.addEventListener\("storage", \(e\) => \{ if \(e\.key === TABGROUPS_SHARED_KEY\) renderTabs\(\); \}\);/, "a fold cached by a sibling pane, or pushed from another device, repaints");
   assert.match(RENDER, /window\.addEventListener\(TABGROUPS_EVENT, \(\) => renderTabs\(\)\);/, "the same-window delivery");
   assert.match(RENDER, /window\.addEventListener\("storage", \(e\) => \{ if \(e\.key === TABGROUPS_KEY\) renderTabs\(\); \}\);/, "…and a sibling pane's (the open's reveal re-arms the prefetch inside renderTabs: strip-reveal-rearm.test.ts)");
   assert.doesNotMatch(RENDER.slice(RENDER.indexOf('"toggle-group": (el) => {'), RENDER.indexOf('"toggle-group": (el) => {') + 300), /renderTabs\(\)/,
@@ -469,7 +478,9 @@ test("executed + pinned: the one-group-per-row setting is on by default; off, th
   assert.match(SETTINGS, /stripGroupRows: boolean;/);
   // the loop's head branch appends the break and the header, nothing else, and the break is the ONE gated append;
   // the gate itself is executed here off the source text: on, every head but the first gets a break; off, none
-  const loop = RENDER.slice(RENDER.indexOf("for (const item of plan.items) {"), RENDER.indexOf("const id = item.id;"));
+  // (the loop walks the PAINT: the plan's items, plus on the phone the folded-away active tab's node — tab-groups.ts phoneStandIns)
+  assert.match(RENDER, /const paint = phoneLayout\(\) \? phoneStandIns\(plan\.items, activeId, plan\.folded\) : plan\.items;/);
+  const loop = RENDER.slice(RENDER.indexOf("for (const item of paint) {"), RENDER.indexOf("const id = item.id;"));
   assert.equal((loop.match(/makeRowBreak\(/g) ?? []).length, 1, "one break site in the loop");
   assert.equal((loop.match(/bar\.appendChild\(/g) ?? []).length, 2, "the head branch appends the break (gated) and the header; nothing else sits between a head and its tabs");
   const gate = loop.match(/if \((settings\.stripGroupRows && item\.head\.name !== null && bar\.childElementCount && !item\.packed)\) bar\.appendChild\(makeRowBreak\(false\)\);/);
@@ -546,8 +557,11 @@ test("executed: FOLDED NEIGHBOURS SHARE A ROW — two folded groups side by side
   // the trail: never folded, so it never packs onto a folded run before it and nothing packs onto it
   const last = planStrip(ids, unions, fold("qa", "infra", "archived"), "loose", false);
   assert.equal(headsOf(last).find((h) => h.head.name === null)!.packed, false, "the trail's header (its break) opens a row after a folded run");
-  // the PHONE folds nothing (#1770), so nothing packs there, whatever the store says
-  assert.ok(!planStrip(ids, unions, fold("qa", "infra", "archived"), "loose", true).items.some((i) => "head" in i && (i.packed || i.folded)), "the phone: no fold, no packing");
+  // the PHONE folds from the same store since 2026-09-23 (the user), but packs nothing: its picker lists each heading on
+  // a row of its own, so `packed` (a strip layout) is never set there
+  const onPhone = planStrip(ids, unions, fold("qa", "infra", "archived"), "loose", true);
+  assert.deepEqual(headsOf(onPhone).map((h) => [h.head.name, h.folded, h.packed]), [["qa", true, false], ["infra", true, false], ["archived", true, false], [null, false, false]],
+    "the phone: folded as the store says, never packed");
   // the flat strip has no headers, so no packing
   assert.ok(!planStrip(ids, unions, { ...fold("qa", "infra"), on: false }, "loose", false).items.some((i) => "head" in i), "switch off: flat");
   // the drag's virtual layout agrees: a packed header has no break before it, so the dragover marks it `br` only when a break precedes
@@ -1054,10 +1068,10 @@ test("executed: a rename is followed ONCE PER BROWSER — the store remembers, b
   g.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); } };
   try {
     writeTabGroups(st1);
-    assert.deepEqual(JSON.parse(store.get(TABGROUPS_KEY)!).followed, { g7: "ops" });
+    assert.deepEqual(JSON.parse(store.get(TABGROUPS_SHARED_KEY)!).followed, { g7: "ops" }, "the memory rides the FOLDS, shared with the pins it rests on (2026-09-23)");
     assert.deepEqual(readTabGroups(u1), st1);
     writeTabGroups(parseTabGroups(null));
-    assert.equal("followed" in JSON.parse(store.get(TABGROUPS_KEY)!), false, "not written when there is none");
+    assert.equal("followed" in JSON.parse(store.get(TABGROUPS_SHARED_KEY)!), false, "not written when there is none");
   } finally {
     g.localStorage = savedLS;
   }
@@ -1327,10 +1341,10 @@ test("executed: a stale pane's re-adoption of its held blob is NO NEWS — follo
   g.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); } };
   try {
     writeTabGroups(l1);
-    assert.deepEqual(JSON.parse(store.get(TABGROUPS_KEY)!).followedSeq, { g1: 5 });
+    assert.deepEqual(JSON.parse(store.get(TABGROUPS_SHARED_KEY)!).followedSeq, { g1: 5 });
     assert.deepEqual(readTabGroups(viewTagUnion(L1)), l1, "round-trips");
     writeTabGroups(l0);
-    assert.equal("followedSeq" in JSON.parse(store.get(TABGROUPS_KEY)!), false, "not written when there is none");
+    assert.equal("followedSeq" in JSON.parse(store.get(TABGROUPS_SHARED_KEY)!), false, "not written when there is none");
   } finally {
     g.localStorage = savedLS;
   }
@@ -1342,7 +1356,9 @@ test("executed: a NEWER blob with the held names is news — two panes over one 
   let writes = 0;
   const g: any = globalThis;
   const savedLS = g.localStorage;
-  g.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); writes++; } };
+  // a WRITE is a write of the folds (the pins and their memory live there since 2026-09-23; romp:tabgroups is rewritten
+  // with this browser's switches alongside, which is not a change to count)
+  g.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); if (k === TABGROUPS_SHARED_KEY) writes++; } };
   class Pane {
     held: any = null;
     adopt(v: any): boolean {
@@ -1355,7 +1371,7 @@ test("executed: a NEWER blob with the held names is news — two panes over one 
       return next !== st;
     }
   }
-  const stored = () => { const o = JSON.parse(store.get(TABGROUPS_KEY)!); return [o.pinned, o.followed, o.followedSeq]; };
+  const stored = () => { const o = JSON.parse(store.get(TABGROUPS_SHARED_KEY)!); return [o.pinned, o.followed, o.followedSeq]; };
   const reset = (st: TabGroupsState) => { store.clear(); writeTabGroups(st); writes = 0; };
   const M1 = "TESTHOST-A:m1", vis = [M1, "tests", "loose"];
   const t1 = (name: string, seq?: number) => ({ ...rt("TESTHOST-A", "t1", name, [M1]), ...(seq !== undefined ? { seq } : {}) });
@@ -1733,7 +1749,8 @@ test("executed: the pin persists with the fold state under romp:tabgroups, survi
   try {
     writeTabGroups(on);
     assert.deepEqual(readTabGroups(unions).pinned, [{ sid: "old2", name: "archived", id: "g4" }]);
-    assert.equal(JSON.parse(store.get(TABGROUPS_KEY)!).pinned[0].tag, undefined, "written in the new shape");
+    assert.equal(JSON.parse(store.get(TABGROUPS_SHARED_KEY)!).pinned[0].tag, undefined, "written in the new shape");
+    store.delete(TABGROUPS_SHARED_KEY);   // a browser holding only the pre-2026-09-23 key, in the earlier pin shape
     store.set(TABGROUPS_KEY, old);
     assert.deepEqual(readTabGroups(unions).pinned[0], { sid: "old2", name: "archived", id: "g4" }, "an old store reads migrated");
     writeTabGroups(off);
@@ -1784,10 +1801,10 @@ test("the toggle is a row in the tab menu's Tags flyout beside the Move-to rows:
   assert.doesNotMatch(adopt, /if \(!renames\.length\) return;/, "no early return on a frame without renames");
   assert.equal(RENDER.split("followAdoption(").length - 1, 1, "one call site: the adoption");
   assert.equal(RENDER.split("followTagRenames(").length - 1, 0, "…and the follow itself is reached only through it");
-  // the phone layout folds nothing, so a pin has nothing to show through: the member renders under its open
-  // header there like any other (a no-op by construction)
+  // the phone layout folds like the desktop since 2026-09-23, so a pin shows through there too: archived folded by default,
+  // old2 pinned through it, old1 folded away
   const p = planStrip(["web", "old1", "old2"], viewTagUnion(VP), setPinned(parseTabGroups(null), ARCH, "old2", true), "web", true);
-  assert.deepEqual(p.items.map((i) => ("head" in i ? `#${i.head.name}${i.folded ? "(folded)" : ""}` : i.id)), ["#infra", "web", "#archived", "old1", "old2"]);
+  assert.deepEqual(p.items.map((i) => ("head" in i ? `#${i.head.name}${i.folded ? "(folded)" : ""}` : i.id)), ["#infra", "web", "#archived(folded)", "old2"]);
   // docs: the guide says the setting survives the group's rename
   assert.match(REF, /A tab set to show when folded keeps that setting when its\s+group is renamed\./);
 });

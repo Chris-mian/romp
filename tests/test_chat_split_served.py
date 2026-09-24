@@ -36,7 +36,7 @@ driver run walks the whole story in order, each step landing in its own assertio
      state for a session it no longer shows to the shell, which hands it to the column that does;
  11. THE VANISHING TAB (the user 2026-09-12): B, column 1's ACTIVE tab, dragged into the edge while another pane's
      arrangement write reaches the new column ahead of the kernel's first strip (column 2's kernel frames held at the
-     wire until the shell has rewritten romp:vieworder): column 2 stands and lists B once its strip lands, no colEmpty
+     wire until the shell has rewritten romp:vieworder:shared): column 2 stands and lists B once its strip lands, no colEmpty
      is posted, column 1 re-points to a member of its own, and past the close backstop (shortened for the lab) a strip
      change raises no "Couldn't close" toast;
  12. the hold behind that toast is for the user's own cross: a colEmpty naming a session the kernel still lists, with no
@@ -668,7 +668,7 @@ try {   // steps 11 and 12 record their own failure rather than taking the story
 // Column 2 (step 10) closes from its cross; B comes home and is made column 1's ACTIVE tab (the user's case). Column 2's
 // kernel frames are HELD at the wire from its connect, so the window between the new column's bundle evaluating (its frame
 // handler registered with the federation manager) and the kernel's first strip landing stays open; in it the shell rewrites
-// romp:vieworder (the same list, a new spelling: what another chat pane's absorbHostReport, a drag elsewhere or another
+// romp:vieworder:shared (the same list, a new spelling: what another chat pane's absorbHostReport, a drag elsewhere or another
 // dashboard window does on a busy board), a real cross-context storage event in every column. Before the fix column 2's
 // manager re-emitted the merged order from its EMPTY store, the page took that as the board and posted colEmpty for B,
 // the shell closed the column and told column 1 to hold B back: no column showed B, and fifteen seconds later the
@@ -699,7 +699,7 @@ out.s11.bundleUp = await page.waitForFunction(() => { const f = document.getElem
 // than the bundle's own evaluation, so the write waits for the first held frame, bounded, rather than assuming it
 await Promise.race([heldOnce, new Promise((r) => setTimeout(r, T))]);
 out.s11.heldAtWrite = col2Held.length;
-await page.evaluate(() => { const cur = localStorage.getItem("romp:vieworder") || "[]"; const next = cur.includes(", ") ? cur.replace(/, /g, ",") : cur.replace(/,/g, ", "); localStorage.setItem("romp:vieworder", next === cur ? cur + " " : next); });
+await page.evaluate(() => { const cur = localStorage.getItem("romp:vieworder:shared") || "[]"; const next = cur.includes(", ") ? cur.replace(/, /g, ",") : cur.replace(/,/g, ", "); localStorage.setItem("romp:vieworder:shared", next === cur ? cur + " " : next); });
 // the page's reaction to the event settles in its own task, the shell's (a colEmpty) one message hop later: one bounded beat
 await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
 out.s11.beforeRelease = { frames: await page.evaluate(() => window.__rompChatFrameIds()), cols: await page.evaluate(() => localStorage.getItem("romp-chat-cols")), log: await shellLog() };

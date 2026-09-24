@@ -56,7 +56,7 @@ test("the tabOrder frame applies the skeleton list BEFORE applyTabOrder, so its 
 test("renderTabs draws a skeleton tab BEFORE the placeholder branch; both draw the chip through ONE shared helper", () => {
   const rt = fn("renderTabs");
   // (a sectioned strip stamps the copy's group on the skeleton and the placeholder alike — T264b, flipTabs keys per copy)
-  assert.match(rt, /const s = sessions\.get\(id\);\s*\n(?:\s*\/\/[^\n]*\n)?\s*if \(renderKind\(skeletonTabs, id, !!s\) === "skeleton"\) \{\s*\n\s*const sk = makeSkeletonTab\(id\);\s*\n\s*if \(copyGroup !== undefined\) sk\.dataset\.copy = copyGroup \?\? "";[^\n]*\n\s*bar\.appendChild\(sk\); continue;\s*\n\s*\}\s*\n\s*if \(!s\) \{\s*\n\s*const ph = makePlaceholderTab\(id\);/,
+  assert.match(rt, /const s = sessions\.get\(id\);\s*\n(?:\s*\/\/[^\n]*\n)?\s*if \(renderKind\(skeletonTabs, id, !!s\) === "skeleton"\) \{\s*\n\s*const sk = makeSkeletonTab\(id\);\s*\n\s*if \(copyGroup !== undefined\) sk\.dataset\.copy = copyGroup \?\? "";[^\n]*\n\s*markAway\(sk, item\);\s*\n\s*bar\.appendChild\(sk\); continue;\s*\n\s*\}\s*\n\s*if \(!s\) \{\s*\n\s*const ph = makePlaceholderTab\(id\);/,
     "skeleton first: a stale session entry must not make the tab read as loaded");
   assert.match(rt, /const st = applyTabStatus\(tab, s\);/, "the loaded tab's chip comes from the shared helper");
   assert.match(rt, /appendTabAfterWidgets\(tab, s\);/, "…and its after-the-name widgets (the gauge, the hot-key keycap; T379)");
