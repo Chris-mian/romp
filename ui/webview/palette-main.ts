@@ -201,8 +201,8 @@ installMenuEcho();
   // chat.splitDown (Mod+Shift+\) splits this column top and bottom: its active session moves to a new bottom pane
   registerCommand({ id: "chat.splitDown", title: "Split this column: move the session to a bottom pane", run: () => { if (w.__rompSplitDownChat) w.__rompSplitDownChat(); } });
   registerCommand({ id: "chat.closeSplit", title: "Close this column", run: () => { if (w.__rompCloseSplit) w.__rompCloseSplit(); } });
-  // The keyboard path across columns, palette-only and unbound (Alt+Arrow is pane focus and Ctrl+Alt+Arrow an OS
-  // binding on some desktops; the palette's rebinding covers anyone who wants a chord): the focused column's
+  // The keyboard path across columns, palette-only and unbound (Alt+Arrow is pane focus, Ctrl+Alt+Arrow the session
+  // pair's since 2026-09-23; the palette's rebinding covers anyone who wants a chord): the focused column's
   // active session to the column on its right (past the last: a new one, the shell checks the cap) or on its
   // left. A keystroke that can do nothing says so through the bell, never nothing silently.
   const columnNotice = (why: string): void => { try { if (w.__rompNotify) w.__rompNotify("warn", why); } catch (e) { /* no bell yet */ } };
@@ -224,7 +224,8 @@ installMenuEcho();
   registerCommand({ id: "chat.moveToNextColumn", title: "Move this session to the next column", run: () => moveActiveSession(1) });
   registerCommand({ id: "chat.moveToPrevColumn", title: "Move this session to the previous column", run: () => moveActiveSession(-1) });
   // Cycle the focus between chat columns (the user 2026-09-10): unbound by default — the browser owns most
-  // tab-cycling chords — and set in Keyboard shortcuts; with one column there is nothing to cycle.
+  // tab-cycling chords, and Ctrl+Alt+Arrow went to the session pair — and set in Keyboard shortcuts; with one
+  // column there is nothing to cycle.
   function cycleSplit(dir: 1 | -1): void {
     const ids: string[] = w.__rompChatColumnIds ? w.__rompChatColumnIds() : ["f-chat"];   // cycle focus between COLUMNS only
     if (ids.length < 2) return;
@@ -243,8 +244,16 @@ installMenuEcho();
   // follow the strip's one rule; chatPost aims it at the column last worked in and shows a hidden chat pane first.
   // Not "Switch to …": that prefix is the per-tab hot key's title, which the dialog's solo heading strips and the
   // served split test lists by (its CI run caught the first spelling, 2026-09-23).
-  registerCommand({ id: "chat.nextTab", title: "Go to the next session", run: () => chatPost({ type: "nextTab" }) });
-  registerCommand({ id: "chat.prevTab", title: "Go to the previous session", run: () => chatPost({ type: "prevTab" }) });
+  // The pair stands down while a full-pane surface holds the column — the picture viewer steps on the same arrows (it
+  // ignores modified ones since the review, but a press must not do two things), the file view and browser own their
+  // keys — the list the pane's type-to-focus gate keeps. The message carries the reader's gesture: the pane's switch
+  // announces it as such, so the feed's current-session section follows at once (review, 2026-09-23).
+  const fullPaneUp = (): boolean => {
+    try { return !!chatPane()?.contentDocument?.querySelector("#romp-fileview, #romp-filebrowse, #romp-lightbox"); } catch (e) { return false; }
+  };
+  const stepSession = (type: "nextTab" | "prevTab"): void => { if (fullPaneUp()) return; chatPost({ type, gesture: true }); };
+  registerCommand({ id: "chat.nextTab", title: "Go to the next session", run: () => stepSession("nextTab") });
+  registerCommand({ id: "chat.prevTab", title: "Go to the previous session", run: () => stepSession("prevTab") });
   // Per-tab hot keys (the user 2026-09-10): a session with a hot key is a command "Switch to <name>" whose chord
   // lives in the bindings store like any other, so the dispatcher below, the conflict check and the shortcuts
   // dialog cover it. The set of such sessions (romp:tabkeys) is read at boot, before any pane has loaded, and
@@ -254,7 +263,7 @@ installMenuEcho();
     const f = (w.__rompChatTarget && w.__rompChatTarget(sid)) || pane("f-chat");   // the column that holds it (the partition, 2026-09-11), else the first
     // the composer takes the focus too: the switch is for typing there next, and the focus moving INTO that column's
     // document is what carries the shell's focus ring across (a window focus() alone need not fire it)
-    try { f!.contentWindow!.focus(); f!.contentWindow!.postMessage({ type: "jumpSession", id: sid }, "*"); f!.contentWindow!.postMessage({ type: "focusComposer" }, "*"); } catch (e) { /* chat not loaded */ }
+    try { f!.contentWindow!.focus(); f!.contentWindow!.postMessage({ type: "jumpSession", id: sid, gesture: true }, "*"); f!.contentWindow!.postMessage({ type: "focusComposer" }, "*"); } catch (e) { /* chat not loaded */ }
   }
   const hotkeySids = new Set<string>();   // the sessions whose command this window has registered
   function registerTabHotkey(sid: string, name: string): void {

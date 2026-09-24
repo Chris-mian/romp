@@ -33,9 +33,11 @@ export const DEFAULT_CHORDS: Record<string, string> = {
   "chat.splitDown": "Mod+Shift+\\",
   // LITERAL Ctrl once more (the user 2026-09-23): the pair the VS Code view already binds to Ctrl+Alt+arrows, so the
   // two surfaces answer to the same keys on Linux and Windows. VS Code's Mac form is Cmd+Alt+arrows, which the browser
-  // itself owns for its own tabs, so a Mac gets Control+Option+arrows here. Some desktops bind Ctrl+Alt+arrows too
-  // (a workspace switch, a graphics driver's screen rotation) and take the key before the page; the shortcuts dialog
-  // rebinds. The strip's bare ←/→ stay: they switch only while nothing is being typed, this chord from the composer too.
+  // itself owns for its own tabs, so a Mac gets Control+Option+arrows here. Where something binds Ctrl+Alt+arrows
+  // itself — GNOME's workspace switch, VoiceOver's cursor on a Mac, a graphics driver's screen rotation — it takes
+  // the key before the page; the shortcuts dialog rebinds. A chord the reader had already SAVED for another command
+  // keeps it: keybindings' chordMap lets a saved binding outrank a default, and the dialog marks the default as
+  // yielding. The strip's bare ←/→ stay: they switch only while nothing is being typed, this chord from the composer too.
   "chat.nextTab": "Ctrl+Alt+ArrowRight",
   "chat.prevTab": "Ctrl+Alt+ArrowLeft",
 };

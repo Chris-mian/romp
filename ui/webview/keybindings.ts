@@ -118,16 +118,40 @@ export function effectiveChord(id: string, defaultChord: string | undefined, ove
   return defaultChord ? resolveChord(defaultChord, mac) : "";
 }
 
-// chord → command id for the dispatcher, built from the full command list. Collisions can only enter
-// via a hand-edited store (the dialog refuses them) — the LAST registered command wins there, and the
-// dialog shows both so the loser is visible, not silently dead.
+// chord → command id for the dispatcher, built from the full command list. A chord the reader SAVED for a
+// command outranks any command's DEFAULT on the same chord (review, 2026-09-23): a default that lands on a chord
+// someone had already bound — the session pair shipping on Ctrl+Alt+arrows, where a saved "Focus the next chat
+// column" could sit — must not take the key from them; the dialog marks such a default as yielding (yieldsTo).
+// Two SAVED bindings on one chord can only enter via a hand-edited store (the dialog refuses them) — the LAST
+// registered command wins there, and the dialog shows both so the loser is visible, not silently dead.
 export function chordMap(cmds: { id: string; chord?: string }[], overrides: Bindings, mac: boolean): Map<string, string> {
   const m = new Map<string, string>();
-  for (const c of cmds) {
+  const saved = new Set<string>();
+  for (const c of cmds) {                                   // the reader's own bindings first…
+    if (overrides[c.id] === undefined) continue;
     const ch = effectiveChord(c.id, c.chord, overrides, mac);
-    if (ch) m.set(ch, c.id);
+    if (ch) { m.set(ch, c.id); saved.add(ch); }
+  }
+  for (const c of cmds) {                                   // …then every default whose chord no saved binding holds
+    if (overrides[c.id] !== undefined) continue;
+    const ch = effectiveChord(c.id, c.chord, overrides, mac);
+    if (ch && !saved.has(ch)) m.set(ch, c.id);
   }
   return m;
+}
+
+// The command whose SAVED binding holds `id`'s default chord — the one `id` yields to in chordMap — or null: `id`
+// carries a saved binding of its own (or a deliberate unbind), has no default, or its default chord is free.
+export function yieldsTo(id: string, cmds: { id: string; chord?: string }[], overrides: Bindings, mac: boolean): string | null {
+  if (overrides[id] !== undefined) return null;
+  const c = cmds.find((x) => x.id === id);
+  const ch = c && c.chord ? resolveChord(c.chord, mac) : "";
+  if (!ch) return null;
+  for (const o of cmds) {
+    if (o.id === id || !overrides[o.id]) continue;
+    if (resolveChord(overrides[o.id], mac) === ch) return o.id;
+  }
+  return null;
 }
 
 // The command already holding a chord (the conflict the dialog names), or null.
@@ -161,9 +185,12 @@ export function titleWithKey(base: string, id: string): string {
 // ── the dispatch decision (pure: the wiring calls this per keydown) ───────────────────────────────
 
 // Modifier-less (or Shift-only) chords must never fire while typing — same rule the chat's bare-arrow
-// handlers follow. Chords with a real modifier fire regardless of focus.
-export function dispatchable(e: { ctrlKey: boolean; altKey: boolean; metaKey: boolean; repeat?: boolean }, typing: boolean): boolean {
+// handlers follow. Chords with a real modifier fire regardless of focus. A keydown inside an input method's
+// composition (isComposing, or the legacy keyCode 229) is the composition's, never a chord — the type-to-focus
+// handler's rule, here too (review, 2026-09-23).
+export function dispatchable(e: { ctrlKey: boolean; altKey: boolean; metaKey: boolean; repeat?: boolean; isComposing?: boolean; keyCode?: number }, typing: boolean): boolean {
   if (e.repeat) return false;
+  if (e.isComposing || e.keyCode === 229) return false;
   if (typing && !e.ctrlKey && !e.altKey && !e.metaKey) return false;
   return true;
 }

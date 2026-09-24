@@ -7891,6 +7891,8 @@ function startTabRename(id: string, copy?: string) {   // `copy`: which copy of 
 // in the row above/below (tabs wrap via flex-wrap).
 function onTabKey(e: KeyboardEvent) {
   if (!order.length) return;
+  if (e.ctrlKey || e.altKey || e.metaKey) return;   // a modified key on a focused tab is a chord, the shell's (the session pair): the dispatcher takes its
+  //                                                   first press and skips its auto-repeats, which must not step here as bare arrows (review, 2026-09-23)
   if (!activeId) {   // from the unfocused pane an arrow lands on the first visible tab (T357)
     if ((e.key === "ArrowRight" || e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "ArrowDown") && pickFirstVisibleTab()) { e.preventDefault(); focusActiveTab(); }
     return;
@@ -12960,9 +12962,20 @@ function postChatTabs(ids: string[]): void {
   try { window.parent.postMessage({ romp: "chatTabs", tabs }, "*"); } catch (e) { /* no shell */ }
 }
 let activeTabNonce = 0;   // one per announcement (T416 round two): the kernel echoes it on the relayed activeChat frame, so the feed's pending record clears on the echo of its own switch and never on a stranger's
+// A switch the reader made through a MESSAGE — the shell's session pair and hot keys, the VS Code host's next/prev
+// commands — runs in the message handler, where inInputEvent reads false; the sender says it was a gesture
+// (`gesture: true` on the message) and the handler runs the switch under this flag, so notifyActive announces it
+// as the reader's own (review, 2026-09-23: the feed's current-session section kept the old session until the pointer
+// left its card, though the comment below had counted a hot key among the gestures).
+let gestureHeld = false;
+function asGesture(fn: () => void): void {
+  const was = gestureHeld;
+  gestureHeld = true;
+  try { fn(); } finally { gestureHeld = was; }
+}
 function notifyActive() {
   const nonce = ++activeTabNonce;
-  const gesture = inInputEvent();   // the reader's own switch (a strip click, a hot key) passes the feed's hover-freeze; a kernel-driven one (a focus frame, a re-activation) defers there like a push
+  const gesture = gestureHeld || inInputEvent();   // the reader's own switch (a strip click; a hot key, the session pair or the host's command through asGesture) passes the feed's hover-freeze; a kernel-driven one (a focus frame, a re-activation) defers there like a push
   if (vscodeApi) vscodeApi.postMessage({ type: "activeTab", id: activeId, nonce });
   // the same fact to the shell, which hands it to this page's feed pane (T416): the feed's current-session section
   // moves on it without waiting for the kernel's relay of the post above, which then reconciles
@@ -17764,7 +17777,11 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
       // leaving tab's chip (the user 2026-07-01). A feed click that seeds a chip sets it AFTER this switch.
       composerCitations.delete(activeId);
     }
+    // The slash menu and the mention card follow the TEXT (refreshComposerMenus, below the swap): one left open over the
+    // leaving draft must not stand over the entering one, where Enter would insert into it (review, 2026-09-23: "/" then
+    // the session pair replaced the entering draft with "/compact "); the clear path runs the same two.
     ta.value = drafts.get(id) ?? "";
+    refreshComposerMenus?.();
     growComposer(ta);
     renderComposerChips(id);   // the entering tab's own citation chip (if any)
     renderStagedStrip(id);     // …and its staged stack (per-tab; the strip follows the switch)
@@ -17790,14 +17807,15 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
 
 function cycleTab(dir: number) {
   if (pickFirstVisibleTab()) return;            // from the unfocused pane: the first visible tab (T357)
+  if (!activeId) return;
   const ord = visibleOrder();                   // never cycle onto a view-hidden session
-  if (ord.length < 2 || !activeId) return;
   const i = ord.indexOf(activeId);
-  if (i < 0) {                                  // folded away: step from its header's place (onTabKey's rule)
+  if (i < 0) {                                  // folded away: step from its header's place (onTabKey's rule) — BEFORE the count below: one tab on screen is somewhere to step to (review, 2026-09-23)
     const nb = neighborOfFolded(lastStripItems, activeId, dir > 0 ? 1 : -1);
     if (nb) setActive(nb);
     return;
   }
+  if (ord.length < 2) return;
   setActive(ord[(i + dir + ord.length) % ord.length]);
 }
 
@@ -19544,8 +19562,8 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     const body = document.querySelector("#mcp-panel .mcp-list") as HTMLElement | null;
     if (body && mcpPanelSid) loadMcpPanel(mcpPanelSid, body);   // refetch — never an optimistic row
   }
-  else if (m.type === "nextTab") cycleTab(1);
-  else if (m.type === "prevTab") cycleTab(-1);
+  else if (m.type === "nextTab") asGesture(() => cycleTab(1));    // the shell's session pair or the VS Code host's command: the reader's own act, whichever posted it
+  else if (m.type === "prevTab") asGesture(() => cycleTab(-1));
   else if (m.type === "settingRefused" && typeof m.text === "string" && m.text) {
     // the kernel refused a gesture this page posted (its store could not be read): the optimistic state ends
     // on THIS event, not on the next push, and the reason toasts (the warn toast is this pane's soft-refusal
@@ -19766,7 +19784,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // feed jump (the `focus` path above); one without a tab opens through the host, the exact message
   // a picker row sends.
   else if (m.type === "jumpSession" && typeof m.id === "string") {
-    if (order.includes(m.id)) { revealSelfPane(); closingTabs.delete(m.id); setActive(m.id); }
+    if (order.includes(m.id)) { revealSelfPane(); closingTabs.delete(m.id); if (m.gesture === true) asGesture(() => setActive(m.id)); else setActive(m.id); }   // a hot key says gesture: true
     else if (vscodeApi) vscodeApi.postMessage({ type: "openSession", id: m.id });
   }
   // The host asks US to confirm (in-page, no native dialogs): ending a live
@@ -20054,6 +20072,7 @@ interface SlashCmd { name: string; description?: string; argumentHint?: string; 
 // Re-rank an OPEN @-mention card against the current roster (set by setupComposer). Null before the
 // composer is wired, and a no-op while no card is up. mentionRosterChanged calls it on every roster change.
 let refreshMentionCard: (() => void) | null = null;
+let refreshComposerMenus: (() => void) | null = null;   // the slash menu AND the mention card re-read the box (setActive's draft swap)
 // Empty the message box (set by setupComposer): the ONE path every clear takes, so the @-mention card and
 // the slash menu see it go empty. A bare `ta.value = ""` fires no input event, so with the card up a Send
 // click or Cmd/Ctrl+Enter would leave it open over the emptied composer, where the next Enter inserts a stale
@@ -20825,6 +20844,7 @@ function setupComposer() {
     updateSlash(); updateMention();
   };
   clearComposerBox = clearBox;
+  refreshComposerMenus = () => { updateSlash(); updateMention(); };
   // ↑/↓/⏎/Tab/Esc while the card is OPEN; true when the key was the card's, so the composer's own
   // Enter-to-send, history and Escape-to-tabs handlers below do not also fire. A modifier passes through,
   // and so does every key of an IME composition: Enter commits the IME's text and the arrows walk its

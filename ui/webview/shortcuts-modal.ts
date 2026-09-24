@@ -8,7 +8,7 @@
 import { commandList } from "./commands";
 import { fuzzyMatch } from "./fuzzy";
 import {
-  bindable, builtInOwner, chordOf, conflictOf, displayChord, effectiveChord,
+  bindable, builtInOwner, chordOf, conflictOf, displayChord, effectiveChord, yieldsTo,
   loadOverrides, saveOverride, BUILT_IN, KEYS_EVENT,
 } from "./keybindings";
 
@@ -233,6 +233,7 @@ export function initShortcutsModal(mac: boolean, doc: Document = document): Shor
       if (q && !fuzzyMatch(q, c.title)) continue;
       const row = doc.createElement("div");
       row.className = "rkeys-row" + (c.id === recId ? " recording" : "");
+      row.dataset.cmd = c.id;   // the row's command, for anything that must tell a per-tab hot key ("session.hotkey.<sid>") from a command whose title happens to start alike (review, 2026-09-23)
       const t = doc.createElement("span");
       t.className = "rkeys-title";
       t.textContent = c.title;
@@ -269,6 +270,16 @@ export function initShortcutsModal(mac: boolean, doc: Document = document): Shor
           chip.className = "rkeys-chip";
           chip.textContent = displayChord(eff, mac);
           row.appendChild(chip);
+          // a DEFAULT on a chord the reader saved for another command yields to it in the dispatcher (keybindings'
+          // chordMap): the row says so, so the loser is visible, not silently dead (review, 2026-09-23)
+          const winner = yieldsTo(c.id, bindableCommands(), overrides, mac);
+          if (winner) {
+            const y = doc.createElement("span");
+            y.className = "rkeys-none";
+            const other = bindableCommands().find((x) => x.id === winner);
+            y.textContent = "yields to \u201c" + (other ? other.title : winner) + "\u201d";
+            row.appendChild(y);
+          }
         } else {
           const none = doc.createElement("span");
           none.className = "rkeys-none";
