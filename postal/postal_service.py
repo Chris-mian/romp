@@ -1823,25 +1823,29 @@ def resolve_recipient(to, frm_id=""):
                          "that happens to share your name, address it as host:name." % bare}
 
     direct = [a for a in direct_all if not _postal_off(a["id"])]
+    # every candidate list_agents shows, a master-isolated one included: a sender who sees two rows under a name must
+    # be refused, never quietly handed the reachable one when it meant the other
+    shown = [a for a in direct_all if _listed(_mail_off_why(a["id"]))]
     peer_cands = []
     if peers_on():
         ph, hit = peer_route(to)
         peer_cands = [(ph, hit)] if ph else list(hit)
 
-    if len(direct) + len(peer_cands) > 1:
+    if len(shown) + len(peer_cands) > 1:
         labels = []
-        for a in direct:
+        for a in shown:
             # Two live sessions HERE share the name: no address can separate them, so show the id
             # rather than print the same candidate twice and call it a choice.
-            labels.append("%s:%s%s" % (here, a["name"],
-                                       (" [%s]" % a["id"][:8]) if len(direct) > 1 else ""))
+            labels.append("%s:%s%s%s" % (here, a["name"],
+                                         (" [%s]" % a["id"][:8]) if len(shown) > 1 else "",
+                                         "" if a in direct else " (not reachable)"))
         labels += ["%s:%s" % (h, a.get("name") or bare) for h, a in peer_cands]
-        hint = ("Address it as host:name to say which one you mean." if len(direct) <= 1 else
+        hint = ("Address it as host:name to say which one you mean." if len(shown) <= 1 else
                 "Two sessions on this host answer to that name, so no address distinguishes them. "
                 "Ask the user which they meant, or have one renamed.")
         return {"kind": "error", "status": 409,
                 "error": "'%s' is ambiguous: %d live sessions answer to it (%s). Nothing was sent. %s"
-                         % (bare, len(direct) + len(peer_cands), ", ".join(sorted(labels)), hint)}
+                         % (bare, len(shown) + len(peer_cands), ", ".join(sorted(labels)), hint)}
 
     if direct:
         return {"kind": "direct", "agent": direct[0]}
@@ -5999,7 +6003,7 @@ def cli_send(argv):
         # the CALLER's own identity is judged before any --from label substitutes a synthetic one, for every closed
         # door (the review: --from was a door around the thread's own-send refusal, the incident's shape; then around
         # a mailbox the user toggled off too)
-        sys.stderr.write("[romp mail] %s\n" % {"thread": THREAD_MAIL_OFF_SENDER, "unreadable": UNREADABLE_REG_SENDER}.get(own, ISOLATION_SENDER))
+        sys.stderr.write("[romp mail] %s\n" % {"thread": THREAD_MAIL_OFF_SENDER, "unreadable": UNREADABLE_REG_SENDER, "master": MASTER_SENDER}.get(own, ISOLATION_SENDER))
         return 1
     if not mid:
         why = _identity_refusal()

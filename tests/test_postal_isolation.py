@@ -506,5 +506,52 @@ class CliJudgesIsolationToo(unittest.TestCase):
         finally:
             pm._self_identity, pm.ensure, pm._http = saved
 
+    def test_a_master_isolated_caller_is_stopped_with_the_master_words(self):
+        _flags({pm.POSTAL_ALL_KEY: {"postalServiceOff": True}})
+        import io
+        saved = (pm._self_identity, pm.ensure, pm._http)
+        calls = []
+        try:
+            pm._self_identity = lambda: (SENDER, "api"); pm.ensure = lambda: True; pm._http = lambda *a, **k: calls.append(a) or {}
+            err = io.StringIO(); real = sys.stderr; sys.stderr = err
+            try:
+                rc = pm.cli_send(["web", "a note"])
+            finally:
+                sys.stderr = real
+            self.assertEqual((rc, calls), (1, []))
+            self.assertIn(pm.MASTER_SENDER, err.getvalue())
+        finally:
+            pm._self_identity, pm.ensure, pm._http = saved
+
+
+class ASharedNameWithAMasterIsolatedSession(unittest.TestCase):
+    """Two live sessions under one name, one reachable and one only the master isolates: list_agents shows both, so
+    a send by that name is refused as ambiguous rather than handed to the reachable one."""
+    A, B = "aaaaaaaa-1111-2222-3333-444444444444", "bbbbbbbb-1111-2222-3333-444444444444"
+
+    def setUp(self):
+        self._saved = pm._kernel_sessions_checked
+        rows = [{"id": self.A, "name": "alice"}, {"id": self.B, "name": "alice"}, {"id": SENDER, "name": "api"}]
+        pm._kernel_sessions_checked = lambda threads=False: (rows, True)
+
+    def tearDown(self):
+        pm._kernel_sessions_checked = self._saved
+        try:
+            pm.SESSION_FLAGS.unlink()
+        except OSError:
+            pass
+
+    def test_the_send_is_refused_and_names_the_unreachable_candidate(self):
+        _flags({pm.POSTAL_ALL_KEY: {"postalServiceOff": True}, self.B: {"postalServiceOff": False},
+                SENDER: {"postalServiceOff": False}})
+        res = pm.resolve_recipient("alice", SENDER)
+        self.assertEqual((res["kind"], res["status"]), ("error", 409), res)
+        self.assertIn("[aaaaaaaa] (not reachable)", res["error"]); self.assertIn("[bbbbbbbb]", res["error"])
+
+    def test_a_hand_toggled_namesake_stays_out_of_the_choice(self):
+        _flags({self.A: {"postalServiceOff": True}, SENDER: {"postalServiceOff": False}})
+        res = pm.resolve_recipient("alice", SENDER)
+        self.assertEqual((res["kind"], res["agent"]["id"]), ("direct", self.B))
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
