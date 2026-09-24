@@ -39,7 +39,7 @@ import { sanitizeMd } from "./md-sanitize";
 import { noticeBodyNodes, noticeAttachmentNodes } from "./notice-face";   // the one face the feed card, its modal and the chat box share
 import { applySections, resolveSec, stallText, secChoice, cardTreeExpanded, clearedTag, parkedTag, nodeStatusClass, TREE_INDENT_EM, CLEARED_TIP, registerSectionHost,
          replaceSectionChoices, configureSectionSync, buildSectionElements, cardSpin, applySpin, applyDistillLanding, stateBadges, DISTILL_FAIL_RE, sectionActs,
-         type AskTreeNode, type NodeLogRow, type SectionEnv, type SecChoice } from "./card-sections";   // the card's sections, one builder with the chat box's row (plans/needs-you.md)
+         type AskTreeNode, type NodeLogRow, type SectionEnv, type SecChoice, unregisterSectionHost } from "./card-sections";   // the card's sections, one builder with the chat box's row (plans/needs-you.md)
 import { initFileView, setFileViewIdentity, hostStub } from "./file-view";
 import { initFileBrowse, openFileBrowse } from "./file-browse";
 import { VIEW_STATE_KEY, parseViewState, serializeViewState, pruneViewState, capViewState, type FeedViewState, threadKey, threadKeys } from "./feed-view-state";
@@ -1523,7 +1523,8 @@ function makeAskCard(it: AskItem): HTMLElement {
     setTimeout(() => {
       const twins = cardTwins(it.itemId).filter((c) => c.classList.contains("dismissing"));
       if (!twins.length) return;
-      for (const c of twins) { c.remove(); if (askEls.get(it.itemId) === c) askEls.delete(it.itemId); if (fsAskEls.get(it.itemId) === c) fsAskEls.delete(it.itemId); }
+      // …and the registry (card-sections.ts): a departed host never waits for a read of its item or a Collapsed flip
+      for (const c of twins) { c.remove(); unregisterSectionHost(it.itemId, c); if (askEls.get(it.itemId) === c) askEls.delete(it.itemId); if (fsAskEls.get(it.itemId) === c) fsAskEls.delete(it.itemId); }
       dropDismissed([it.itemId]);
     }, 180);
   };
@@ -4456,9 +4457,9 @@ function clearSessionCards(sid: string): void {
   const leaving: [HTMLElement, () => boolean, () => void][] = [];
   for (const m of members) {
     const c = askEls.get(m.itemId);
-    if (c) leaving.push([c, () => askEls.get(m.itemId) === c, () => askEls.delete(m.itemId)]);
+    if (c) leaving.push([c, () => askEls.get(m.itemId) === c, () => { askEls.delete(m.itemId); unregisterSectionHost(m.itemId, c); }]);
     const f = fsAskEls.get(m.itemId);   // the focused section's copy leaves with its card (T347)
-    if (f) leaving.push([f, () => fsAskEls.get(m.itemId) === f, () => fsAskEls.delete(m.itemId)]);
+    if (f) leaving.push([f, () => fsAskEls.get(m.itemId) === f, () => { fsAskEls.delete(m.itemId); unregisterSectionHost(m.itemId, f); }]);
   }
   for (const [tid, g] of Array.from(groupEls)) {
     if (turns.has(tid) && ((g as any)._g as AskGroup | undefined)?.sid === sid) leaving.push([g, () => groupEls.get(tid) === g, () => groupEls.delete(tid)]);
@@ -4675,7 +4676,7 @@ function renderFocusSection(list: HTMLElement, buckets: Record<Column, Entry[]>,
   }
   // a copy whose card left the focused session's view — cleared, folded into another turn, or the focus
   // moved on — goes now; the board's copy below has its own cache and its own exit
-  for (const id of Array.from(fsAskEls.keys())) if (!desired.has("f:a:" + id)) { fsAskEls.get(id)?.remove(); fsAskEls.delete(id); }
+  for (const id of Array.from(fsAskEls.keys())) if (!desired.has("f:a:" + id)) { const f = fsAskEls.get(id); f?.remove(); if (f) unregisterSectionHost(id, f); fsAskEls.delete(id); }
   for (const tid of Array.from(fsGroupEls.keys())) if (!desired.has("f:g:" + tid)) { fsGroupEls.get(tid)?.remove(); fsGroupEls.delete(tid); }
 }
 // reconcileCol's twin for ONE of the section's columns: the same keyed in-place reconcile (a card whose
@@ -4744,6 +4745,7 @@ function paintFocusFold(): void {
 function removeFocusSection(): void {
   const sec = document.getElementById("feed-focus") as any;
   if (sec) { (sec._rule as HTMLElement | undefined)?.remove(); sec.remove(); }   // the rule is the section's sibling
+  for (const [id, f] of Array.from(fsAskEls)) unregisterSectionHost(id, f);   // the copies leave the registry with the section
   fsAskEls.clear(); fsGroupEls.clear();
 }
 
@@ -5165,6 +5167,7 @@ function renderBody(list: HTMLElement) {
     //                     `standalone` array) that threw a ReferenceError on an EMPTY feed → the inbox-zero
     //                     wordmark never rendered (the user 2026-07-08; payload-audit fallout). Goal cards are
     //                     the only feed unit now, so an empty asks list IS an empty feed.
+    for (const [id, c] of Array.from(askEls)) unregisterSectionHost(id, c);   // an emptied board leaves nothing registered
     askEls.clear(); groupEls.clear();
     skipFlipOnce = false;   // this IS the release paint when the board emptied while away — the snap is spent
     removeFocusSection();   // an empty board is the wordmark alone; the section returns with the cards (T347)
@@ -5325,7 +5328,7 @@ function renderBody(list: HTMLElement) {
     const parent = subgoalParent.get(id), first = flipFirst.get("a:" + id);
     if (parent && first && parent !== leaving) absorbIntoParent(leaving, first.rect, parent);
     else leaving.remove();
-    askEls.delete(id);
+    askEls.delete(id); unregisterSectionHost(id, leaving);   // a card that left the payload leaves the registry now, not at the next read of its item or a Collapsed flip
   }
   for (const tid of Array.from(groupEls.keys())) if (!desired.has("g:" + tid) && undismissed(groupEls.get(tid))) { groupEls.get(tid)?.remove(); groupEls.delete(tid); }
 
@@ -6129,7 +6132,7 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     if (m.ok && dismisses && !held) {
       pendingCleared.add(m.itemId);   // a push already in flight must not paint it back before the kernel's rebuild lands
       for (const c of twins) c.dispatchEvent(new MouseEvent("mouseleave"));   // removed under the pointer: the card's own leave logic (freezeLeave, the hover highlight off or back to the pin), as the clear paths dispatch it (round six, low)
-      for (const c of twins) { c.remove(); if (askEls.get(m.itemId) === c) askEls.delete(m.itemId); if (fsAskEls.get(m.itemId) === c) fsAskEls.delete(m.itemId); }
+      for (const c of twins) { c.remove(); unregisterSectionHost(m.itemId, c); if (askEls.get(m.itemId) === c) askEls.delete(m.itemId); if (fsAskEls.get(m.itemId) === c) fsAskEls.delete(m.itemId); }
       dropDismissed([m.itemId]);
     } else if (!held) {
       for (const c of twins) {

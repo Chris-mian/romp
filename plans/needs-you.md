@@ -316,6 +316,22 @@ standing set's: the log is append-only within an episode, so the longer parse is
 first, and a shorter file arrives only through the absent arm, which records length zero; a memoized fault returning through a memo hit
 after a different fault files its judge row, so one row per episode holds across every ending.
 
+### Two fixes after the box content round (2026-09-24, a contributor's post-merge note on PR 2124)
+
+- **A remote row's sender opens on its own kernel.** A session frame's `status.notices` rows are the chat box's rows, and
+  federation prefixes them like the feed's cards in EVERY id-bearing field, not the item id alone: the delegation origin
+  (`origin.peerSid` prefixed and `origin.peerHost` set to the frame's host when the card's kernel recorded the sender as its
+  own, an empty `peerHost`) and the awaiting box's peers (`awaiting.peers[].sid` and `host`, the same rule). One helper does
+  the rewrite for a feed card and for a notices row (`_prefixOriginAndPeers`, called by `_prefixIdBearing` and by the
+  `status.notices` pass in `prefixInbound`), so the badge's `data-sid` carries the host and `routeOutbound` sends the click
+  to that kernel. Before, the row's badge carried the bare sid and the click opened the sender on the LOCAL kernel.
+- **The section registry is exact.** The twin set per item (`card-sections.ts`, `hosts`) holds a host only while its
+  element shows the item: the feed unregisters a card where it drops it from its maps (a clear's finish, a session's cards
+  leaving, the focused copy's exit, the board and the section emptying, a card leaving the payload), and the chat page
+  unregisters a row where `renderNotices` drops it and where a completed action removes it. Nothing waits for the next read
+  of the same item or for a Collapsed flip; `sectionHostsRaw` is the test-only view of the set that drops nothing as it reads,
+  so a pin can say the registry holds nothing for an id that left the payload.
+
 ### Completed is safe to clear unread
 
 Nothing left undone, offered as a next step, or asked about may land in Completed: those are Needs you's. That is the
@@ -353,6 +369,10 @@ relies on: a card in Completed asks nothing of the user, so a Clear all over Com
   `test_held_mail_chat_served.py`, `test_kernel_mobile.py` re-pointed to the words and the token.
 - Phase three: a chat lab for the box (a row per item that is not a hard block; Reply and Clear each remove
   theirs; the switch hides the box and leaves the ring).
+- The two fixes after the box content round: `federation-notice.test.ts` (a remote session frame whose row carries a
+  local-sender origin and awaiting peers: prefixed sid, the host as peerHost, the click routed to that host);
+  `feed-render-incremental.test.ts` (a card leaves the payload and `sectionHostsRaw` holds nothing for its id, no pick and
+  no flip between; a detached host is read by the raw view and dropped by `sectionHosts`).
 
 ## Privacy
 

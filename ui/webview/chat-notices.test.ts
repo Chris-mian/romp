@@ -40,7 +40,7 @@ test("the box: rows keyed by the notice id and reconciled in place, the shared n
   assert.match(r, /let bar = host\.querySelector<HTMLElement>\("\.ntc-bar"\);\s*\n\s*if \(!bar\) \{ bar = buildNoticeBar\(\); host\.prepend\(bar\); \}/, "the bar (the header and the gear) is built once and kept");
   assert.match(r, /lab\.textContent = "Needs you · " \+ rows\.length;/, "the title with the count");
   assert.match(r, /let prev: HTMLElement = bar;/, "the rows follow the bar in the frame's order");
-  assert.match(r, /for \(const r of Array\.from\(host\.querySelectorAll<HTMLElement>\("\.ntc-row"\)\)\) if \(!want\.has\(r\.dataset\.item \|\| ""\)\) r\.remove\(\);/, "a row that left leaves");
+  assert.match(r, /for \(const r of Array\.from\(host\.querySelectorAll<HTMLElement>\("\.ntc-row"\)\)\) if \(!want\.has\(r\.dataset\.item \|\| ""\)\) \{ unregisterSectionHost\(r\.dataset\.item \|\| "", r\); r\.remove\(\); \}/, "a row that left leaves, and leaves the item's twin set as it goes (the registry is exact)");
   assert.match(r, /if \(!row\) \{ row = buildNoticeRow\(n, s\.id\);/); assert.match(r, /updateNoticeRow\(row, n, s\.id\);/, "an existing row is updated in place");
   const u = fn("updateNoticeRow");
   assert.match(u, /if \(body && row\._body !== \(n\.body \|\| ""\)\) \{ body\.replaceChildren\(\.\.\.noticeBodyNodes\(n\.body \|\| ""\)\);/, "the body through the shared face (low e)");
@@ -80,7 +80,7 @@ test("the kernel's answer re-arms the row on a refusal, saying why in the row, a
   assert.match(h, /document\.querySelector<HTMLElement>\(noticeRowSelector\(m\.itemId\)\)/, "the row by the answer's id (a remote host's is prefixed on the way in, like the row's)");
   // `held` (the second executed review of PR 1935, carried here): a delivery whose dismissal's write refused keeps the row with its
   // buttons spent and says so; a plain success drops the row; a refusal re-arms the buttons and says why
-  assert.match(h, /if \(m\.ok && !m\.held\) \{ row\.remove\(\);/);
+  assert.match(h, /if \(m\.ok && !m\.held\) \{ unregisterSectionHost\(m\.itemId, row\); row\.remove\(\);/, "a row a completed action removes leaves the item's twin set too");
   assert.match(h, /if \(!m\.ok\) for \(const b of Array\.from\(row\.querySelectorAll\("button"\)\) as HTMLButtonElement\[\]\) \{ b\.disabled = false; b\.textContent = \(b as any\)\._idle \|\| b\.textContent; \}/);
   assert.match(h, /e\.textContent = \(m\.ok \? "That action ran, but " : "That action was refused: "\) \+ String\(m\.error \|\| "the kernel did not say why"\); e\.style\.display = "";/, "one shape for both refusal rows: a sentence, as the err path's title is (the round-three verifier)");
   const FEEDSRC = fs.readFileSync(path.join(UI, "feed.ts"), "utf8");
@@ -89,7 +89,7 @@ test("the kernel's answer re-arms the row on a refusal, saying why in the row, a
   assert.match(FEEDSRC, /else if \(held\) feedToast\("The card's action ran, but " \+ String\(m\.error \|\| "the card could not be dismissed"\) \+ "\."\);/);
   assert.match(RENDER, /const BOXES_BELOW = \["notices", "bg-tasks", "footer"\];/); assert.match(RENDER, /for \(const boxId of BOXES_BELOW\) \{/, "the bottom-box rule covers the approval box (low a); the list is shared with the footprint record (the review of PR 1926)");
   const FED = fs.readFileSync(path.join(UI, "federation.ts"), "utf8");
-  assert.match(FED, /out\.status = \{ \.\.\.out\.status, notices: out\.status\.notices\.map\(\(n: any\) => \(n && typeof n === "object" && typeof n\.itemId === "string"\) \? \{ \.\.\.n, itemId: prefixNoticeId\(host, n\.itemId\) \} : n\) \};/, "the slice's ids wear the host (medium 2)");
+  assert.match(FED, /out\.status = \{ \.\.\.out\.status, notices: out\.status\.notices\.map\(\(n: any\) => \(n && typeof n === "object" && typeof n\.itemId === "string"\) \? _prefixOriginAndPeers\(host, \{ \.\.\.n, itemId: prefixNoticeId\(host, n\.itemId\) \}\) : n\) \};/, "the slice's ids wear the host (medium 2), and each row's sender and peers take the same rewrite a card gets (a contributor's post-merge note on PR 2124)");
 });
 
 test("a refused act re-arms the row the kernel's reply names, with the reason in the row (the second review of PR 1967)", () => {

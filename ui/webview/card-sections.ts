@@ -93,8 +93,10 @@ export interface SectionEnv {
 export type SecChoice = "bg" | "summary" | "subgoals" | "tasks" | "stall" | "none";
 const SEC_CHOICES: readonly string[] = ["bg", "summary", "subgoals", "tasks", "stall", "none"];
 
-// the twin set per item: every host element that shows the item's sections (a feed card, its focused-section copy, the chat box's row);
-// hosts that left the document are dropped on the next read, so nothing has to unregister
+// the twin set per item: every host element that shows the item's sections (a feed card, its focused-section copy, the chat box's row).
+// The set is EXACT: a host is unregistered where it leaves (the feed's map deletions, the chat box's row drops), and a host that left
+// the document is dropped on the next read as a belt; before, a departed card stayed registered until a read of the same item or a
+// Collapsed flip, and every focus change added registered copies (a contributor's post-merge note on PR 2124, 2026-09-24)
 const hosts = new Map<string, Set<HTMLElement>>();
 export function registerSectionHost(itemId: string, a: HTMLElement): void {
   let set = hosts.get(itemId);
@@ -112,6 +114,9 @@ export function sectionHosts(itemId: string): HTMLElement[] {
   if (!set.size) hosts.delete(itemId);
   return Array.from(set);
 }
+/** The raw set, for tests alone: what the registry holds for an item WITHOUT dropping disconnected hosts as it reads (sectionHosts
+ *  does), so a pin can say a card that left the payload left the registry through the unregister on its way out, not through the read. */
+export function sectionHostsRaw(itemId: string): HTMLElement[] { return Array.from(hosts.get(itemId) || []); }
 // THE CHOICE ACROSS DOCUMENTS (plans/needs-you.md, the row carries what the card carries): the card lives in the feed page and the Needs you
 // row in the chat page, two documents in the shell, each with its own copy of this module and its own secChoice. EVERY write to the choice
 // goes through setSectionChoice or replaceSectionChoices below (a press, the feed's hydration from localStorage, its prune to the live card
