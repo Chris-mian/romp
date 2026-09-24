@@ -35,12 +35,14 @@ test("the box: rows keyed by the notice id and reconciled in place, the shared n
   const r = fn("renderNotices");
   assert.match(r, /const host = document\.getElementById\("notices"\);/);
   assert.match(r, /const rows: ChatNotice\[\] = \(s && s\.status && s\.status\.notices\) \|\| \[\];/);
-  assert.match(r, /if \(!s \|\| !activeId \|\| !rows\.length \|\| !settings\.needsBox\) \{ host\.replaceChildren\(\); host\.style\.display = "none"; return; \}/, "hidden with no row, and under the gear's switch (phase three)");
-  assert.doesNotMatch(r.replace(/if \(!s \|\| !activeId \|\| !rows\.length \|\| !settings\.needsBox\) \{ host\.replaceChildren\(\);[^\n]*/, ""), /host\.replaceChildren\(\)/, "with rows, the box is never rebuilt whole: a press must survive a frame (the review of PR 1890, medium 1)");
+  assert.match(r, /if \(!s \|\| !activeId \|\| !rows\.length \|\| !settings\.needsBox\) \{ for \(const r of Array\.from\(host\.querySelectorAll<HTMLElement>\("\.ntc-row"\)\)\) unregisterSectionHost\(r\.dataset\.item \|\| "", r\); host\.replaceChildren\(\); host\.style\.display = "none"; return; \}/, "hidden with no row, and under the gear's switch (phase three); every row leaves the registry first (the verifier of PR 2141)");
+  assert.doesNotMatch(r.replace(/if \(!s \|\| !activeId \|\| !rows\.length \|\| !settings\.needsBox\) \{ for \(const r of Array\.from\(host\.querySelectorAll<HTMLElement>\("\.ntc-row"\)\)\) unregisterSectionHost\(r\.dataset\.item \|\| "", r\); host\.replaceChildren\(\);[^\n]*/, ""), /host\.replaceChildren\(\)/, "with rows, the box is never rebuilt whole: a press must survive a frame (the review of PR 1890, medium 1)");
   assert.match(r, /let bar = host\.querySelector<HTMLElement>\("\.ntc-bar"\);\s*\n\s*if \(!bar\) \{ bar = buildNoticeBar\(\); host\.prepend\(bar\); \}/, "the bar (the header and the gear) is built once and kept");
   assert.match(r, /lab\.textContent = "Needs you · " \+ rows\.length;/, "the title with the count");
   assert.match(r, /let prev: HTMLElement = bar;/, "the rows follow the bar in the frame's order");
   assert.match(r, /for \(const r of Array\.from\(host\.querySelectorAll<HTMLElement>\("\.ntc-row"\)\)\) if \(!want\.has\(r\.dataset\.item \|\| ""\)\) \{ unregisterSectionHost\(r\.dataset\.item \|\| "", r\); r\.remove\(\); \}/, "a row that left leaves, and leaves the item's twin set as it goes (the registry is exact)");
+  assert.match(r, /if \(!s \|\| !activeId \|\| !rows\.length \|\| !settings\.needsBox\) \{ for \(const r of Array\.from\(host\.querySelectorAll<HTMLElement>\("\.ntc-row"\)\)\) unregisterSectionHost\(r\.dataset\.item \|\| "", r\); host\.replaceChildren\(\); host\.style\.display = "none"; return; \}/,
+    "the box emptied whole (no rows, the switch off, a snapshot) unregisters every row BEFORE replaceChildren detaches it: the drop loop never runs on that road (the verifier of PR 2141)");
   assert.match(r, /if \(!row\) \{ row = buildNoticeRow\(n, s\.id\);/); assert.match(r, /updateNoticeRow\(row, n, s\.id\);/, "an existing row is updated in place");
   const u = fn("updateNoticeRow");
   assert.match(u, /if \(body && row\._body !== \(n\.body \|\| ""\)\) \{ body\.replaceChildren\(\.\.\.noticeBodyNodes\(n\.body \|\| ""\)\);/, "the body through the shared face (low e)");

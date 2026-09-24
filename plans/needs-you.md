@@ -324,7 +324,9 @@ after a different fault files its judge row, so one row per episode holds across
   own, an empty `peerHost`) and the awaiting box's peers (`awaiting.peers[].sid` and `host`, the same rule). One helper does
   the rewrite for a feed card and for a notices row (`_prefixOriginAndPeers`, called by `_prefixIdBearing` and by the
   `status.notices` pass in `prefixInbound`), so the badge's `data-sid` carries the host and `routeOutbound` sends the click
-  to that kernel. Before, the row's badge carried the bare sid and the click opened the sender on the LOCAL kernel.
+  to that kernel. Before, the row's badge carried the bare sid and the click opened the sender on the LOCAL kernel. The
+  delegated-to badge (`handoffTo`: peer, peerSid, peerHost) takes the origin's rule in the same helper, since its click routes
+  the same way; `waitingOn` carries a peer's NAME, display text with no click, and stays as it is.
 - **The section registry is exact.** The twin set per item (`card-sections.ts`, `hosts`) holds a host only while its
   element shows the item: the feed unregisters a card where it drops it from its maps (a clear's finish, a session's cards
   leaving, the focused copy's exit, the board and the section emptying, a card leaving the payload), and the chat page

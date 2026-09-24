@@ -15567,7 +15567,9 @@ function renderNotices(): void {
   if (!host) return;
   const s = activeId && !snapView ? liveSession(activeId) : null;
   const rows: ChatNotice[] = (s && s.status && s.status.notices) || [];
-  if (!s || !activeId || !rows.length || !settings.needsBox) { host.replaceChildren(); host.style.display = "none"; return; }   // the gear's Needs you box switch hides it; the ring stays
+  // the box emptied whole (a switch to a session with no rows, the gear's Needs you switch off, a snapshot view): every row leaves the item's
+  // twin set before replaceChildren detaches it, since the drop loop below never runs on this road (the verifier of PR 2141, round one)
+  if (!s || !activeId || !rows.length || !settings.needsBox) { for (const r of Array.from(host.querySelectorAll<HTMLElement>(".ntc-row"))) unregisterSectionHost(r.dataset.item || "", r); host.replaceChildren(); host.style.display = "none"; return; }   // the gear's Needs you box switch hides it; the ring stays
   host.style.display = "";
   let bar = host.querySelector<HTMLElement>(".ntc-bar");
   if (!bar) { bar = buildNoticeBar(); host.prepend(bar); }

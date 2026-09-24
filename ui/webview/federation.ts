@@ -236,12 +236,16 @@ export function prefixInbound(host: string, msg: any): any {
  *  peerHost means the sender lives on some OTHER host (that kernel recorded which): keep it, and keep peerSid bare, since the
  *  viewer may be that very host, where the bare uuid opens directly. The awaiting box's delegation peers (awaiting.peers) take
  *  the same rule: a peer the card's own kernel resolved (host "") is LOCAL TO THAT KERNEL, so attribute it here and prefix its
- *  sid for routing; an already-hosted peer passes through untouched (the user 2026-08-23). One helper for both shapes: the
- *  notices rows had the item id prefixed and nothing else, so a remote row's sender opened on the local kernel (a
- *  contributor's post-merge note on PR 2124, 2026-09-24). */
+ *  sid for routing; an already-hosted peer passes through untouched (the user 2026-08-23). The delegated-to badge (handoffTo:
+ *  peer, peerSid, peerHost) takes the origin's rule, since its click routes the same way (the verifier of PR 2141, round one);
+ *  waitingOn carries a peer's NAME, display text with no click, and is left alone. One helper for both shapes: the notices rows
+ *  had the item id prefixed and nothing else, so a remote row's sender opened on the local kernel (a contributor's post-merge
+ *  note on PR 2124, 2026-09-24). */
 function _prefixOriginAndPeersInPlace(host: string, out: any): void {
   if (out.origin && typeof out.origin === "object" && typeof out.origin.peerSid === "string" && !out.origin.peerHost)
     out.origin = { ...out.origin, peerHost: host, peerSid: prefixId(host, out.origin.peerSid) };
+  if (out.handoffTo && typeof out.handoffTo === "object" && typeof out.handoffTo.peerSid === "string" && !out.handoffTo.peerHost)
+    out.handoffTo = { ...out.handoffTo, peerHost: host, peerSid: prefixId(host, out.handoffTo.peerSid) };
   if (out.awaiting && typeof out.awaiting === "object" && Array.isArray(out.awaiting.peers))
     out.awaiting = { ...out.awaiting, peers: out.awaiting.peers.map((p: Record<string, unknown>) =>
       p && typeof p === "object" && typeof p.sid === "string" && !p.host

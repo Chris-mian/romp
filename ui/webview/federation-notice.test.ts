@@ -125,10 +125,11 @@ test("the viewer's cleared overlay never clears a notice card: the kernel ships 
 });
 
 test("a remote session frame's rows carry their sender the way the feed's cards do: a local-sender origin takes the host as peerHost and a prefixed peerSid, the awaiting peers likewise, and the click routes to that host (a contributor's post-merge note on PR 2124)", () => {
-  const PSID = "11111111-2222-3333-4444-000000000777", HOSTED = "11111111-2222-3333-4444-000000000778";
+  const PSID = "11111111-2222-3333-4444-000000000777", HOSTED = "11111111-2222-3333-4444-000000000778", HANDED = "11111111-2222-3333-4444-000000000779";
   const frame = { type: "session", id: SID, status: { state: "blocked", notices: [
     { itemId: `notice:${SID}:m1:1`, key: "m1", rev: 1, title: "New message from api", body: "hello", producer: "postal", actions: [],
       origin: { peer: "api", peerHost: "", peerSid: PSID, color: null, live: true },
+      handoffTo: { peer: "tests", peerHost: "", peerSid: HANDED },
       awaiting: { peers: [{ sid: PSID, host: "", name: "api" }, { sid: HOSTED, host: "OTHER", name: "docs" }] } },
     { itemId: `notice:${SID}:m2:1`, key: "m2", rev: 1, title: "From another host", body: "x", producer: "postal", actions: [],
       origin: { peer: "docs", peerHost: "OTHER", peerSid: HOSTED, color: null, live: true } } ] } };
@@ -138,6 +139,9 @@ test("a remote session frame's rows carry their sender the way the feed's cards 
   assert.deepEqual([r1.origin.peerHost, r1.origin.peerSid], ["TESTHOST", "TESTHOST:" + PSID], "a sender the card's own kernel recorded as local is attributed to that host and its sid prefixed, so the badge's data-sid routes there");
   assert.deepEqual(r1.awaiting.peers.map((p: any) => [p.host, p.sid]), [["TESTHOST", "TESTHOST:" + PSID], ["OTHER", HOSTED]], "a peer the kernel resolved as its own takes the host; an already-hosted peer passes through untouched");
   assert.deepEqual([r2.origin.peerHost, r2.origin.peerSid], ["OTHER", HOSTED], "a sender on some OTHER host keeps its record and its bare sid");
+  assert.deepEqual([r1.handoffTo.peerHost, r1.handoffTo.peerSid], ["TESTHOST", "TESTHOST:" + HANDED], "the delegated-to badge takes the origin's rule on a row (the verifier of PR 2141): its click routes to the recipient's kernel");
+  const cardIn = prefixInbound("TESTHOST", { type: "feed", asks: [{ itemId: SID + ":g1", sid: SID, name: "web", column: "working", t: 1, handoffTo: { peer: "tests", peerHost: "", peerSid: HANDED }, waitingOn: "tests" }] });
+  assert.deepEqual([cardIn.asks[0].handoffTo.peerHost, cardIn.asks[0].handoffTo.peerSid, cardIn.asks[0].waitingOn], ["TESTHOST", "TESTHOST:" + HANDED, "tests"], "…and on a feed card; waitingOn is a peer's name, display text, left alone");
   assert.deepEqual(routeOutbound({ type: "openSession", id: r1.origin.peerSid }), [{ host: "TESTHOST", msg: { type: "openSession", id: PSID } }], "the click on the row's badge reaches the sender's kernel, not the local one");
   assert.equal(frame.status.notices[0].origin.peerSid, PSID, "a COPY: the inbound frame is not mutated");
   assert.equal(prefixInbound("", frame).status.notices[0].origin.peerHost, "", "the local host is the identity");
