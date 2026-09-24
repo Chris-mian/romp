@@ -654,6 +654,215 @@ class Harness(unittest.TestCase):
         row = [r for r in labels if r["id"] == e["id"]][0]
         self.assertIsNotNone(row.get("tierOne"), "label() reads tier one via the seedStart window for an opener-less ending: %r" % row)
 
+    def test_evict_document_and_the_label_loop_keep_the_event_model_caches_flat(self):
+        """The 2026-09-24 memory fix: the label/arm loops parse many one-shot documents, and neither event-model cache's own
+        bound helps, so they grow to the cap. evict_document drops a document from both caches, and the label loop calls it per
+        ending so the caches stay flat across the corpus instead of one entry per ending."""
+        em = self.je._event_model()
+        # the function: parsing then evicting a document leaves both caches as they were
+        em._JSONL_CACHE.clear(); em._ASM_CACHE.clear()
+        for i in range(6):
+            sid = "evi%d" % i
+            p = self.pdir / (sid + ".jsonl")
+            p.write_text("".join(json.dumps(r) + "\n" for r in [uline(sid, T0, "ask%d" % i, "u1"), aline(sid, T0 + 30, "ok", "a1", "u1")]))
+            em.parse_session(str(p), rompuuid=sid)
+        self.assertGreaterEqual(len(em._ASM_CACHE), 6, "without eviction the assembly cache holds one per document")
+        em._JSONL_CACHE.clear(); em._ASM_CACHE.clear()
+        peak = 0
+        for i in range(6):
+            sid = "evi%d" % i; p = self.pdir / (sid + ".jsonl")
+            em.parse_session(str(p), rompuuid=sid); em.evict_document(str(p))
+            peak = max(peak, len(em._ASM_CACHE))
+        self.assertLessEqual(peak, 1, "evict_document keeps the assembly cache flat across documents: peak %d" % peak)
+        self.assertEqual((len(em._ASM_CACHE), len(em._JSONL_CACHE)), (0, 0), "both caches empty after evicting every document")
+        # eviction goes through the counted pops, not a bare dict clear: the record BYTE weight returns (a bare dict pop would
+        # leave _JSONL_CACHE_BYTES stale) and the assembly index is RELEASED (a dropped _asm_release never gives the atoms back).
+        # The test's bare clears above leave the byte counter stale, so set it to a known floor first (review 2026-09-24).
+        em._JSONL_CACHE.clear(); em._ASM_CACHE.clear(); em._JSONL_CACHE_BYTES[0] = 0
+        sid = "byt0"; p = self.pdir / (sid + ".jsonl")
+        p.write_text("".join(json.dumps(r) + "\n" for r in [uline(sid, T0, "a longer ask so the record has weight", "u1"), aline(sid, T0 + 30, "ok done", "a1", "u1")]))
+        em.parse_session(str(p), rompuuid=sid)
+        self.assertGreater(em.record_cache_stats()["bytes"], 0, "the parse held record bytes")
+        em.evict_document(str(p))
+        self.assertEqual(em.record_cache_stats()["bytes"], 0, "evict_document returns the record byte weight through _cache_pop_locked (a bare dict pop leaves it stale)")
+        # a dropped release: an assembly entry carrying a lazy index must have it RELEASED when the entry is popped (a whole
+        # parse's entry has no index, so drive it with a stub index keyed to the leaf; a bare dict pop would skip the release)
+        released = []
+        em._ASM_CACHE.clear()
+        em._ASM_CACHE["k-release"] = {"path": str(p), "cands": (), "index": type("_Ix", (), {"release": lambda self: released.append(1)})()}
+        em.evict_document(str(p))
+        self.assertEqual(released, [1], "evict_document releases the popped assembly entry's index (a dropped _asm_release skips it)")
+        self.assertNotIn("k-release", em._ASM_CACHE, "and pops the entry")
+        # the label loop calls it per ending (the call site): both caches stay flat over a real corpus, not one-per-ending
+        dest, m = self._corpus(name="evictloop")
+        em._JSONL_CACHE.clear(); em._ASM_CACHE.clear()
+        self.je.label(dest, os.path.join(self.td, "lbl-evict"), str(self.state), claude_bin=self.fake)
+        self.assertLessEqual(len(em._ASM_CACHE), 1, "the label loop evicts each ending: assembly cache flat, not %d of %d" % (len(em._ASM_CACHE), len(m["endings"])))
+
+    def test_an_excused_ending_is_still_scored_and_a_strict_subset_silence_is_not_comparable(self):
+        """The cross-arm rule as REVERSED by the manager (2026-09-24): an ending unplanned in EVERY arm whose own turn had no
+        planner unit (plannableUnits 0) is excused from the COMPARABILITY verdict only, never from the metrics. Its scored top
+        still counts a leak and a flap: every excused ending sits in every arm's results, so the arms compare on one set without
+        a skip, and the skip would drop the closer's verdicts the candidates exist to change. An ending unplanned in a STRICT
+        SUBSET of arms still marks that arm not comparable."""
+        dest, m = self._corpus(name="xarm")
+        e_leak = self._ending(m, SIDS[0], 0)["id"]           # the excused ending; its top is completed then re-opened -> a leak
+        e_one = self._ending(m, SIDS[1], 0)["id"]            # unplanned in A only -> a strict-subset silence
+        el = self._ending(m, SIDS[0], 0)
+        self._live_store_with_done(SIDS[0], float(el["startT"]), float(el["cutT"]),
+                                   [{"node": SIDS[0] + ":g1", "op": "followup", "t": float(el["cutT"]) + 7200}])   # a re-open after the cut
+        leak_builds = [{"g1": {"column": "completed", "scored": True}},   # majority completed (a leak) with a per-build disagreement (a flap)
+                       {"g1": {"column": "completed", "scored": True}},
+                       {"g1": {"column": "needs_input", "scored": True}}]
+        run_root = os.path.join(self.td, "runs-xarm")
+        os.makedirs(run_root)
+        Path(run_root, "arms.json").write_text(json.dumps({"arms": ["A", "B", "C"]}))
+        def write_arm(arm, unplanned, leak=False):
+            os.makedirs(os.path.join(run_root, arm))
+            endings = {}
+            for x in m["endings"]:
+                d = {"class": x["class"], "builds": [{}] * 3}
+                if x["id"] == e_leak:
+                    d["plannableUnits"] = 0                  # the own turn had nothing for the planner: excused (comparability only)
+                    if leak:
+                        d["builds"] = leak_builds
+                endings[x["id"]] = d
+            Path(run_root, arm, "results.json").write_text(json.dumps(
+                {"arm": arm, "failures": 0, "buildsPerCard": 3, "finished": True, "callsByJudge": {"planner": 5, "closer": 5},
+                 "endingsUnplanned": unplanned, "endings": endings}))
+        write_arm("A", [e_leak, e_one], leak=True)           # A carries the excused ending's scored, leaking, flapping top
+        write_arm("B", [e_leak])
+        write_arm("C", [e_leak])
+        rows = self.je.report(dest, run_root, str(self.state))
+        by = {r["arm"]: r for r in rows}
+        self.assertEqual(by["A"]["excusedEndings"], [e_leak], "the corpus-wide-unplanned ending with no planner unit is excused")
+        self.assertEqual((by["A"]["leaks"], by["A"]["flaps"]), (1, 1), "the excused ending is STILL scored: its re-opened top is a leak and its per-build disagreement a flap")
+        self.assertEqual(by["A"]["endings"], len(m["endings"]), "every ending is in the count; the excuse removes none")
+        self.assertFalse(by["A"]["comparable"], "A has an ending the others planned (e_one): not comparable")
+        self.assertTrue(by["B"]["comparable"] and by["C"]["comparable"], "B and C's only unplanned is the excused one: comparable")
+        table = (Path(run_root) / "table.md").read_text()
+        self.assertIn("corpus-unplanned", table)
+        self.assertIn("complete: all 3 expected arms finished", table)
+
+    def test_the_excuse_needs_two_finished_arms_and_a_workless_turn(self):
+        """The excuse gates (manager 2026-09-24). It fires only over a COMPLETE run (arms.json names the expected arms, at least
+        two, every one present and finished; the intersection over the arms present excuses wrongly on a one-arm or partial run)
+        AND when the ending's own turn was GROUNDED workless (plannableUnits 0); a candidate with plannable units was silenced by
+        a seal-boundary fault or a dead planner and is NOT excused, so every arm reads not comparable."""
+        dest, m = self._corpus(name="partial")
+        e_all = m["endings"][0]["id"]
+        def build(tag, arms, expected=("A", "B"), plannable=0):   # arms: list of (name, unplanned, finished)
+            run_root = os.path.join(self.td, "runs-" + tag)
+            os.makedirs(run_root)
+            Path(run_root, "arms.json").write_text(json.dumps({"arms": list(expected)}))
+            for name, unplanned, finished in arms:
+                os.makedirs(os.path.join(run_root, name))
+                endings = {x["id"]: {"class": x["class"], "builds": [{}] * 3} for x in m["endings"]}
+                endings[e_all]["plannableUnits"] = plannable   # the recorded own-turn planner-unit count the report grounds on
+                Path(run_root, name, "results.json").write_text(json.dumps(
+                    {"arm": name, "failures": 0, "buildsPerCard": 3, "finished": finished, "callsByJudge": {"planner": 5, "closer": 5},
+                     "endingsUnplanned": unplanned, "endings": endings}))
+            return {r["arm"]: r for r in self.je.report(dest, run_root, str(self.state))}, run_root
+        # one of two expected arms present: nothing excused, not comparable, partial
+        by, run_root = build("one-present", [("A", [e_all], True)])
+        self.assertEqual(by["A"]["excusedEndings"], [], "an expected arm is missing: nothing is excused")
+        self.assertFalse(by["A"]["comparable"], "A's unplanned ending is not excused when the run is incomplete")
+        self.assertNotIn("comparableDenominator", by["A"], "no separate denominator: the metrics run over every ending")
+        self.assertIn("partial: 1 of 2 arms finished", (Path(run_root) / "table.md").read_text())
+        # both present but one unfinished: still nothing excused
+        by2, _ = build("one-unfinished", [("A", [e_all], True), ("B", [e_all], False)])
+        self.assertEqual(by2["A"]["excusedEndings"], [], "an unfinished arm blocks the excuse")
+        self.assertFalse(by2["A"]["comparable"], "the shared unplanned ending is not excused while B is unfinished")
+        # both present, finished, and the ending's own turn was workless: excused, both comparable
+        by3, _ = build("both-workless", [("A", [e_all], True), ("B", [e_all], True)], plannable=0)
+        self.assertEqual(by3["A"]["excusedEndings"], [e_all], "two finished arms and a workless turn: the shared ending is excused")
+        self.assertTrue(by3["A"]["comparable"] and by3["B"]["comparable"], "the shared workless-turn ending is excused: both comparable")
+        # both present and finished, but the shared ending's own turn HAD plannable units: a fault, not a workless turn -> not excused
+        by4, rr4 = build("both-with-units", [("A", [e_all], True), ("B", [e_all], True)], plannable=2)
+        self.assertEqual(by4["A"]["excusedEndings"], [], "a candidate with plannable units is a seal-boundary fault / dead planner: NOT excused")
+        self.assertFalse(by4["A"]["comparable"] or by4["B"]["comparable"], "an unplanned ending with plannable units marks EVERY arm not comparable")
+        self.assertIn("not excused", (Path(rr4) / "table.md").read_text())
+        # a ONE-arm expected set: no excuse at all (an excuse needs at least two arms)
+        by5, rr5 = build("one-arm", [("A", [e_all], True)], expected=("A",), plannable=0)
+        self.assertEqual(by5["A"]["excusedEndings"], [], "one expected arm: no excuse even for a workless turn")
+        self.assertFalse(by5["A"]["comparable"], "a one-arm root reads not comparable over its unplanned endings")
+        self.assertIn("one arm expected", (Path(rr5) / "table.md").read_text())
+
+    def test_run_arm_inprocess_evicts_each_ending_from_the_event_model_caches(self):
+        """Medium (manager 2026-09-24): run_arm_inprocess parses one document per ending and must evict each so the arm's
+        event-model caches stay flat instead of growing one entry per ending (the OOM the label loop hit). Wrapping load_judge
+        captures the arm's jd; after the whole corpus its em caches hold at most one document."""
+        dest, m = self._corpus(name="evictarm")
+        captured = {}
+        orig = self.je.load_judge
+        def patched(*a, **k):
+            jd = orig(*a, **k)
+            captured["jd"] = jd
+            return jd
+        self.je.load_judge = patched
+        self.addCleanup(lambda: setattr(self.je, "load_judge", orig))
+        env = {k: os.environ.get(k) for k in ("XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "ROMP_CLAUDE_BIN")}
+        self.addCleanup(lambda: [os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v) for k, v in env.items()])
+        self.je.run_arm_inprocess(dest, "current", None, os.path.join(self.td, "r-evictarm"), None, self.fake, now=T0 + 10**6)
+        em = captured["jd"].em
+        self.assertLessEqual(len(em._ASM_CACHE), 1, "run_arm_inprocess evicts each ending: assembly cache flat, not %d of %d" % (len(em._ASM_CACHE), len(m["endings"])))
+        self.assertLessEqual(len(em._JSONL_CACHE), 1, "run_arm_inprocess evicts each ending: record cache flat, not %d of %d" % (len(em._JSONL_CACHE), len(m["endings"])))
+
+    def test_a_seal_boundary_fault_is_not_excused_and_marks_every_arm_not_comparable(self):
+        """The grounded excuse's key case (the contributor's fixture, manager 2026-09-24): with the seed boundary set PAST the
+        cut on some endings, the seal seals the ending's OWN turn, so the planner is silent in every arm with no failure row.
+        The intersection alone would excuse these and read every arm comparable (the prior head did); grounding the excuse in
+        the ending's own turn (plannable units counted from the cut, not the seed boundary) keeps them NOT excused, so every arm
+        reads not comparable. The report re-derives the count when the arm did not record it (the launch-head arms)."""
+        dest, m = self._corpus(name="sealfault")
+        mf = Path(dest, "manifest.json")
+        man = json.loads(mf.read_text())
+        faulted = [e["id"] for e in man["endings"][:2]]
+        for e in man["endings"]:
+            if e["id"] in faulted:
+                e["seedStart"] = float(e["cutT"]) + 1        # the seed boundary past the cut: the seal seals the ending's own turn
+        mf.write_text(json.dumps(man))
+        run_root = os.path.join(self.td, "runs-sealfault")
+        env = {k: os.environ.get(k) for k in ("XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "ROMP_CLAUDE_BIN")}
+        self.addCleanup(lambda: [os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v) for k, v in env.items()])
+        for arm in ("A", "B"):
+            self.je.run_arm_inprocess(dest, arm, None, run_root, None, self.fake, now=T0 + 10**6)
+        Path(run_root, "arms.json").write_text(json.dumps({"arms": ["A", "B"]}))
+        # the faulted endings recorded plannable units > 0 (their own turn had work the seal wrongly sealed)
+        resA = json.loads(Path(run_root, "A", "results.json").read_text())
+        self.assertTrue(all(resA["endings"][eid].get("plannableUnits") for eid in faulted),
+                        "the fixture's faulted endings must carry work in their own turn: %r" % {eid: resA["endings"][eid].get("plannableUnits") for eid in faulted})
+        by = {r["arm"]: r for r in self.je.report(dest, run_root, str(self.state))}
+        for arm in ("A", "B"):
+            self.assertTrue(set(faulted) <= set(by[arm]["endingsUnplanned"]), "the seal silenced the planner on the faulted endings in %s: %r" % (arm, by[arm]["endingsUnplanned"]))
+            self.assertEqual([e for e in faulted if e in by[arm]["excusedEndings"]], [], "a faulted ending is not excused in %s" % arm)
+            self.assertFalse(by[arm]["comparable"], "%s reads not comparable over the faulted endings" % arm)
+        # the report-time PARSE fallback: strip the recorded counts (as the launch-head arms lack them) and re-report -> same verdict
+        for arm in ("A", "B"):
+            rp = Path(run_root, arm, "results.json"); r = json.loads(rp.read_text())
+            for eid in r["endings"]:
+                r["endings"][eid].pop("plannableUnits", None)
+            rp.write_text(json.dumps(r))
+        by2 = {r["arm"]: r for r in self.je.report(dest, run_root, str(self.state))}
+        for arm in ("A", "B"):
+            self.assertEqual([e for e in faulted if e in by2[arm]["excusedEndings"]], [], "the parse fallback keeps a faulted ending not excused in %s" % arm)
+            self.assertFalse(by2[arm]["comparable"], "the parse fallback keeps %s not comparable" % arm)
+
+    def test_run_refuses_a_second_launch_with_a_different_arm_set(self):
+        """The expected-arms record is written ONCE per run root (manager 2026-09-24): a later `run` with a different arm set
+        would silently change what "every arm" means for the excuse, so it is refused before any arm runs; the same set is a
+        no-op re-launch."""
+        dest, _ = self._corpus(name="armset")
+        run_root = os.path.join(self.td, "runs-armset")
+        os.makedirs(run_root)
+        Path(run_root, "arms.json").write_text(json.dumps({"arms": ["baseline", "candidate"]}))
+        with self.assertRaises(SystemExit):
+            self.je.main(["run", "--corpus", dest, "--run-root", run_root, "--claude-bin", self.fake,
+                          "--budget-usd", "inf", "--arm", "baseline", "--arm", "other"])
+        self.assertEqual(json.loads(Path(run_root, "arms.json").read_text())["arms"], ["baseline", "candidate"],
+                         "the record is unchanged after the refusal, and no arm ran")
+        self.assertFalse(list(Path(run_root).glob("*/results.json")), "no arm results were written")
+
     def test_a_crashed_ending_is_named_in_endings_crashed_from_a_real_run(self):
         """Round-four low: endingsCrashed is populated by a REAL crashed pass (not only measure's pass-through). A planner that
         raises for one ending files pass-crash, and that ending is named in endingsCrashed and the arm reads not comparable."""
@@ -1646,6 +1855,8 @@ class Harness(unittest.TestCase):
         (self.state / "names" / sid).write_text("boom\t%s\t#abcdef\n" % self.cwd)
         real = self.je._event_model()
         class _Boom:
+            def __getattr__(self, n):
+                return getattr(real, n)            # delegate everything else (evict_document, etc.) to the real event model
             def parse_session(self, path, **k):
                 if sid in str(path):
                     raise ValueError("a transcript the fold cannot read")
@@ -1824,6 +2035,8 @@ class Harness(unittest.TestCase):
         class _Boom:
             def parse_session(self, *a, **k):
                 raise ValueError("synthetic parse boom")
+            def evict_document(self, *a):
+                pass
         saved = self.je._EM[0]
         self.je._EM[0] = _Boom()
         try:
