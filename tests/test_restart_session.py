@@ -36,7 +36,8 @@ from pathlib import Path
 from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
-BIN = os.path.join(os.path.dirname(HERE), "bin")
+ROOT = os.path.dirname(HERE)
+BIN = os.path.join(ROOT, "bin")
 
 # Hermetic state BEFORE the loads — they resolve their state root at import time.
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
@@ -48,6 +49,7 @@ load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
 load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 km = load_source("romp_kernel_restart", os.path.join(BIN, "romp-kernel"))
 sb = load_source("romp_sdk_backend_restart", os.path.join(BIN, "romp_sdk_backend.py"))
+cb = load_source("romp_codex_backend_restart", os.path.join(ROOT, "kernel", "codex_backend.py"))
 
 SID = "3a7c0001-2222-3333-4444-555555555555"      # a running session named web (this module's own sid)
 OTHER = "3a7c0002-2222-3333-4444-555555555555"    # one this kernel has never heard of
@@ -229,6 +231,20 @@ class RestartDoor(unittest.TestCase):
         self.door(SID, self.client)
         self.assertEqual([t for _, t, _, _ in self.frames()], ["restartFailed"])
         self.assertIn("the control channel is gone", self.sent[0][1]["text"])
+
+    def test_a_codex_session_is_refused_in_words_not_with_an_attribute_error(self):
+        # CodexBackend duck-types the backend interface without subclassing SessionBackend, so it inherits no
+        # relaunch: the door met the missing method as an AttributeError and sent its text as the toast (the review
+        # of #2059, 2026-09-24). A backend with no relaunch primitive answers the base refusal, as the move door does.
+        def no_client():
+            raise RuntimeError("this lab runs no Codex app-server")
+        self.be = cb.CodexBackend(tempfile.mkdtemp(), client_factory=no_client, log=lambda m: None)
+        self.assertFalse(hasattr(self.be, "relaunch"), "the case pinned here: the Codex backend has no relaunch")
+        self.door(SID, self.client)
+        self.assertEqual(self.frames(), [("chat", "restartFailed", SID, "win-A")])
+        text = self.sent[0][1]["text"]
+        self.assertIn("no way to relaunch", text, "the base refusal's words, which point at End and Revive")
+        self.assertNotIn("has no attribute", text, "never a Python error as the toast")
 
     def test_a_sid_this_kernel_does_not_have_is_refused_before_any_backend_is_asked(self):
         self.door(OTHER, self.client)
