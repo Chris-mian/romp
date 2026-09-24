@@ -6114,7 +6114,7 @@ class SdkSession:
             except Exception:
                 self.backend._log("persist queue (%s): %s" % (self.name, traceback.format_exc()))
 
-    def interrupt(self):
+    def interrupt(self, climb=True):
         """Escalating stop (the user 2026-07-10, terminal parity). The old body was `if self.loop and
         self.client: <control request>` — a wedged CLI ignored the request ('no current client', 14
         deep in manager.log while nimbus sat unresponsive) and a missing client made the press a
@@ -6122,9 +6122,20 @@ class SdkSession:
         recovery. Now every press climbs interrupt_action's ladder — control request, SIGINT the CLI,
         SIGKILL (its stream death runs the existing crash-heal + resume) — and every rung logs what it
         did. The episode resets when a turn settles or a fresh turn starts, so a later stop is polite
-        again."""
+        again.
+
+        climb=False is a Restart's ask (SdkBackend.relaunch): the polite rung when this episode has not
+        used it, and never a signal. A restart is not a kill, and a CLI the ladder killed under an armed
+        reconnect left the session with no CLI, since the reconnect waits for a result that never comes
+        (the post-merge review of #2059, 2026-09-24). False when that ask sent nothing."""
         with self._lock:
-            action, self._intr_level = interrupt_action(self._intr_level, bool(self.loop and self.client))
+            action, level = interrupt_action(self._intr_level, bool(self.loop and self.client))
+            if climb or action == "control":
+                self._intr_level = level
+        if not climb and action != "control":
+            self.backend._log("interrupt (%s): a restart asks a turn to stop politely only; %s not sent"
+                              % (self.name, action))
+            return False
         if action == "control":
             # Flip the in-flight flag SYNCHRONOUSLY, here on the kernel thread, before scheduling the async
             # _do_interrupt. The kernel stamps _interrupt_clicked and pushes the instant it returns from this
@@ -6134,8 +6145,9 @@ class SdkSession:
             self._interrupted = True
             self.loop.call_soon_threadsafe(
                 lambda: asyncio.ensure_future(self._do_interrupt()))
-            return
+            return True
         self._signal_cli(signal.SIGINT if action == "sigint" else signal.SIGKILL, action)
+        return True
 
     def _signal_cli(self, sig, action):
         """Deliver an escalated interrupt as a real signal to this session's own CLI (the child of THIS
@@ -15298,11 +15310,14 @@ class SdkBackend:
         self._poke()
         return True
 
-    def interrupt(self, sid: str) -> bool:
+    def interrupt(self, sid: str, climb: bool = True) -> bool:
         s = self.sessions.get(sid)
         if not s:
             return False
-        s.interrupt()
+        if climb:
+            s.interrupt()
+        elif not s.interrupt(climb=False):       # a Restart's ask (relaunch): nothing was sent, so nothing to mark
+            return False
         append_state(self.state_dir, sid, "idle", int(time.time()) - 1, by="interrupt")
         self._poke()
         return True
@@ -15809,7 +15824,9 @@ class SdkBackend:
         A RUNNING TURN IS CUT, and the dashboard's confirm says so before it gets here: the reconnect is
         ARMED first and the turn is then interrupted, so the arm exists before the interrupted turn's
         result fires it (the deferred reconnect the ResultMessage handler runs — the CLI is never torn
-        down under a live turn, whichever order the two land in). A queued-but-not-started turn is not
+        down under a live turn, whichever order the two land in). The interrupt is the polite control
+        request, once per stop episode, and never Stop's SIGINT or SIGKILL: a Restart clicked again on a CLI
+        ignoring the request waits for the turn to end instead of killing it. A queued-but-not-started turn is not
         interrupted: there is nothing running to cut, and the armed reconnect fires at the next turn end.
 
         A session with no live object (dormant, or one this kernel has not started this life) has no
@@ -15828,10 +15845,13 @@ class SdkBackend:
         with s._lock:
             running = s.inflight > 0          # a turn in flight NOW (busy() also counts a queued one: nothing to cut there)
         s.request_reconnect()                 # armed first — see the docstring's order
-        if running:
-            self.interrupt(sid)
+        # the polite rung only, never Stop's ladder: a click again while the CLI ignores the request must not
+        # signal it (SdkSession.interrupt's climb=False; the post-merge review of #2059, 2026-09-24)
+        asked = running and self.interrupt(sid, climb=False)
         self._log("relaunch (%s): %s; its CLI is replaced by a fresh one resuming the same conversation"
-                  % (s.name, "the running turn is cut" if running else "idle, reconnecting now"))
+                  % (s.name, "the running turn is cut" if asked else
+                     "the running turn was already asked to stop, and the fresh CLI comes up when it ends" if running else
+                     "idle, reconnecting now"))
         self._poke()
         return ""
 
