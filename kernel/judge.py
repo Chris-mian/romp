@@ -516,7 +516,7 @@ JUDGE_FAIL_CAP = 3                       # the same rule for every other retryin
 PLACEMENTS_V = 16                        # placements-identity schema version (plan P2, the user 2026-07-06).
 #                                          v16: a resumed fork's root the conversation continues from is stitched to
 #                                          the linked file's tail (em.FileAdapter._stitch_resume_forks), so pre-cut
-#                                          history that hung off a non-first root and was filed as rewound now parses
+#                                          history that hung off a non-first root and was filed as cleared now parses
 #                                          out. v15's shape, a GROWN atom set. Same seal.
 #                                          v15 (2026-09-23): a parallel tool batch's branch beside the spine is kept
 #                                          (em.FileAdapter._batch_head). The CLI parents each call's result at the record

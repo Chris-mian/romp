@@ -2897,7 +2897,8 @@ class FileAdapter:
         no goal anchored on it is archived. A root counts only ahead of its file's first parented
         user or assistant record, so a later in-file /clear keeps its history dropping. Sidechain
         roots are skipped; a sub-agent branch is its own thread. A seeded file's pre-cut first uuid
-        is stitched outright: the checkpoint carries no leaf or child information to walk."""
+        is stitched outright, for parity with the whole parse: on a restore it is inert, since pre-cut
+        membership comes from the stored verdicts and a tail holding a parentless record refuses the restore."""
         if not self.resume_links:
             return
         last_of, openers, seeded = self._resume_fork_ends()
@@ -5174,7 +5175,7 @@ _ASM_CKPT_V = 9                       # 2: atom rows carry [offset, len], nt for
 #                                          dropped, so a v7 document restores a history the whole parse no longer builds; refused once
 #                                          (`version`) at the deploy boot and rewritten at the next settle, as v7 was
 #                                       9: a resumed fork's continued root is stitched to the linked file's tail (_stitch_resume_forks):
-#                                          its pre-cut records' verdict is "a", not "r"; refused once (`version`) and rewritten, as v8 was
+#                                          its pre-cut records' verdict is "a", not "c"; refused once (`version`) and rewritten, as v8 was
 _MAT_CAP = _env_or("ROMP_ASM_INDEX_CAP", max(500_000, _machine_memory_bytes() // (32 * 1024)))
 _MAT_LRU = collections.OrderedDict()  # (id(LazyAtoms), row) → (weakref.ref(LazyAtoms), row): eviction drops the memo, never a field
 #                                       in place. The list is held WEAKLY (measured 2026-09-15): a strong reference here kept every

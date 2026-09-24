@@ -211,7 +211,7 @@ class StringRowsAndRestoreSplit(Harness):
 
     def test_the_previous_version_is_refused_once_and_the_next_settle_writes_version_9(self):
         # the deploy boot of the resumed-fork root stitch (the batch keep's was the same road): every version 8 document
-        # (stored verdicts that filed a resumed fork's pre-cut history as rewound) is refused ONCE under `version` and the
+        # (stored verdicts that filed a resumed fork's pre-cut history as cleared) is refused ONCE under `version` and the
         # settle that follows the whole parse writes the version 9 document; the boot after restores
         path = self._compacting()
         d = _doc(path)

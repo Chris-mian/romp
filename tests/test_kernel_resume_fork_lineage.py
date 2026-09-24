@@ -94,6 +94,8 @@ def turn_texts(sess):
     return "\n".join(out)
 
 
+CYCLE_WALK_LIMIT_SECS = 10
+
 class ResumeForkStitch(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
@@ -174,7 +176,7 @@ class ContinuedRootStitches(unittest.TestCase):
                             aline(T0 + 380, "Review finished.", "f2", "f1")])
         self.assertEqual(adapter.parent_of.get("f1"), "u2", "the root the reply chains on")
         self.assertIsNone(adapter.parent_of.get("r-att"), "a sibling root is not stitched")
-        self.assertIsNone(adapter.parent_of.get("sc1"), "a sidechain root is never stitched")
+        self.assertIsNone(adapter.parent_of.get("sc1"), "the sidechain root beside the continued root stays parentless")
         self.assertNotIn("r-att", em._membership_of(adapter)["rewind"], "nobody rewound the note")
 
     def test_a_note_that_is_still_the_leaf_carries_the_history(self):
@@ -206,7 +208,14 @@ class ContinuedRootStitches(unittest.TestCase):
         self.assertIn("u1", em._membership_of(adapter)["clear"])
 
     def test_a_parent_cycle_in_the_fork_ends_the_walk_without_a_stitch(self):
-        adapter = _adapter([uline(T0 + 320, "loop a", "f1", "f2"), aline(T0 + 380, "loop b", "f2", "f1")])
+        import threading
+        built = {}
+        t = threading.Thread(target=lambda: built.setdefault("a", _adapter(
+            [uline(T0 + 320, "loop a", "f1", "f2"), aline(T0 + 380, "loop b", "f2", "f1")])), daemon=True)
+        t.start()
+        t.join(CYCLE_WALK_LIMIT_SECS)
+        self.assertFalse(t.is_alive(), "the walk over a parent cycle ends")   # a hang fails here, not in CI's timeout
+        adapter = built["a"]
         self.assertEqual((adapter.parent_of.get("f1"), adapter.parent_of.get("f2")), ("f2", "f1"))
 
 
