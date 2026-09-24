@@ -41,9 +41,12 @@ class PythonJobCeiling(unittest.TestCase):
     minutes then; sixty since 2026-09-24, when the release dispatch (run 35976250043) had the 3.13 macOS cell green in
     38 min 52 s and the 3.10 macOS cell cancelled at 40 min 20 s with no failure in its log, the same cells having taken
     33 to 35 minutes on the dispatch five hours before. The 3.10 cell reached 90 percent 36 min 40 s into its pytest
-    step and the 3.13 cell's pytest step ended about 5.5 minutes after its own 90 percent, so the 3.10 suite sits near
-    42 to 43 minutes; the rule (the suite plus the 600 s per-test timeout plus setup) gives 53 to 54, the floor is 54
-    and the ceiling 60, so a revert to 40 goes red. Linux 25 to 35 the same day by the same rule: the 3.10
+    step, and its own tail from there to the pytest step's end ran 6 min 56 s and 9 min 46 s on runs 35952964334 and
+    35623182872 (the 3.13 cell's 5 min 38 s and 4 min 51 s are the wrong term: the three StateIsolationOrder tests
+    take 193 s and 279 s on 3.10), so the cut cell's suite sits near 43.5 to 46.5 minutes; the rule (the suite plus
+    the 600 s per-test timeout plus setup) gives 54.5 to 57, the floor is 57 and the ceiling 60, so a revert to 40 or
+    to the first cut's 55 goes red, and the next growth step is splitting or sharding the 3.10 cell, not a higher cap.
+    Linux 25 to 35 the same day by the same rule: the 3.10
     Linux cell took 19 min 34 s on the dispatch of 2026-09-24 03:48 UTC (run 35952964334), under six minutes short of
     the cap where about 20 plus 10 plus setup is about 31; its floor is 30 and its ceiling 45."""
     def setUp(self):
@@ -56,10 +59,11 @@ class PythonJobCeiling(unittest.TestCase):
         m = re.search(r"^    timeout-minutes: \$\{\{ matrix\.os == 'macos-latest' && (\d+) \|\| (\d+) \}\}$", self.head, re.M)
         self.assertTrue(m, "the python job's timeout-minutes is not the per-cell expression (macos-latest && N || M)")
         macos, linux = int(m.group(1)), int(m.group(2))
-        self.assertGreaterEqual(macos, 54, "the macOS cells need the margin: on run 35976250043 (2026-09-24) the 3.13 cell was green at "
+        self.assertGreaterEqual(macos, 57, "the macOS cells need the margin: on run 35976250043 (2026-09-24) the 3.13 cell was green at "
                                 "38 min 52 s and the 3.10 cell cancelled at 40 min 20 s by the 40-minute cap, at 90 percent 36 min 40 s "
-                                "into its pytest step, so its suite sits near 42 to 43 minutes; that plus the 600 s per-test timeout "
-                                "plus setup is 53 to 54, so a cap below 54 cuts a green run")
+                                "into its pytest step with its own tail from there 6 min 56 s to 9 min 46 s on runs 35952964334 and "
+                                "35623182872, so its suite sits near 43.5 to 46.5 minutes; that plus the 600 s per-test timeout plus "
+                                "setup is 54.5 to 57, so a cap below 57 cuts a green run (the next step is sharding the cell, not a raise)")
         self.assertLessEqual(macos, 60, "past an hour a hung macOS cell eats the dispatch")
         self.assertGreaterEqual(linux, 30, "the Linux cells need the margin: the 3.10 Linux cell took 19 min 34 s on run 35952964334 "
                                 "(2026-09-24) under a 25-minute cap; about 20 minutes of suite plus the 600 s per-test timeout plus "
@@ -71,17 +75,21 @@ class ExtensionJobCeiling(unittest.TestCase):
     """The vscode-extension job runs the served labs, which grow with every lab added: PR 1790's run was cancelled at the
     job's 25-minute ceiling after 25 min 04 s mid lab (2026-09-16), and under the 40-minute cap that followed, PR 2061's red
     run 35821212036 (attempt 1) was cut at 40 min 15 s. Sixty minutes (2026-09-23): the rule is a served step of up to 38 min
-    plus the 600 s per-test timeout plus about 2 min of earlier steps, about 50; the served step took 35.97 to 37.92 min over
-    main's sixteen runs after the raise, the closest call the run on 23c2a9960 ending its served step at 40 min 09 s. The
-    floor is 50, not 60, so the pin keeps the file's range style and a revert to 40 goes red on it."""
-    def test_the_extension_job_gets_sixty_minutes_and_never_reverts_below_fifty(self):
+    plus the 600 s per-test timeout plus about 2 min of earlier steps, about 50. After the raise the served step took 31.62
+    to 39.15 min over the sixty green main runs from 2026-09-23 06:37 UTC to 2026-09-24 10:44 UTC (35.97 to 37.77 over the
+    sixteen consecutive runs from f824eb06 to f2108d89, and 37.92 on 23c2a9960 shortly before them), the closest call the
+    run on b598eae9 ending its served step 41 min 19 s after the job started; with a step of up to 39 min the rule's figure
+    is about 51, the floor, and the ceiling stays 60, so the pin keeps the file's range style and a revert to 40 or 50
+    goes red on it."""
+    def test_the_extension_job_gets_sixty_minutes_and_never_reverts_below_the_rules_figure(self):
         src = open(WF).read()
         m = re.search(r"^  vscode-extension:\n((?:    .*\n|\n)+?)    defaults:\n", src, re.M)
         self.assertTrue(m, "the extension job's head moved: re-anchor this pin")
         t = re.search(r"^    timeout-minutes: (\d+)$", m.group(1), re.M)
         self.assertTrue(t, "the extension job has no plain timeout-minutes line")
-        self.assertGreaterEqual(int(t.group(1)), 50, "the served step ran 35.97 to 37.92 min on main after 2026-09-23 (40 min 09 s to its end at the closest call): "
-                                                     "up to 38 min plus the 600 s per-test timeout plus about 2 min of earlier steps is about 50, so a cap below it cuts a green run")
+        self.assertGreaterEqual(int(t.group(1)), 51, "the served step ran 31.62 to 39.15 min over the sixty green main runs after the raise (2026-09-23 to "
+                                                     "2026-09-24; 41 min 19 s to its end at the closest call, b598eae9): up to 39 min plus the 600 s per-test "
+                                                     "timeout plus about 2 min of earlier steps is about 51, so a cap below it cuts a green run")
         self.assertLessEqual(int(t.group(1)), 60, "past an hour a hung lab eats the run")
 
 
