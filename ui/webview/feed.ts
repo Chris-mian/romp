@@ -869,7 +869,7 @@ function setFeedOnly(sid: string | null): void {
   try { sid ? sessionStorage.setItem("romp:feedOnly", sid) : sessionStorage.removeItem("romp:feedOnly"); } catch { /* ignore */ }
 }
 // The SEARCH query (the user 2026-08-23): type-to-filter by session name, host prefix included —
-// "snape" keeps every session on that machine. Same storage lifetime as the session filter: survives
+// "TESTHOST" keeps every session on that machine. Same storage lifetime as the session filter: survives
 // this tab's reloads, never a fresh window (a filter persisting for days reads as silently lost cards).
 let feedSearchQ = "";
 try { feedSearchQ = sessionStorage.getItem("romp:feedSearch") || ""; } catch { /* storage blocked */ }
