@@ -30,8 +30,9 @@ class TabFlags(unittest.TestCase):
         self.assertIn("_postal_isolation_flag(sid)", inspect.getsource(km._mail_off_why_k),
                       "the one reader resolves isolation through the shared flag helper")
         iso_src = inspect.getsource(km._postal_isolation_flag)
-        self.assertIn('for flag in ("postalServiceOff", "postalOff")', iso_src,
-                      "the legacy fallback lives in that helper, the session's own key winning either way")
+        self.assertIn('for flag in ("postalServiceOff", "postalOff")', inspect.getsource(km._postal_own_flag),
+                      "the legacy fallback lives in the own-key helper, the session's own key winning either way")
+        self.assertIn("own = _postal_own_flag(sid)", iso_src)
         self.assertIn('_session_flag(POSTAL_ALL_KEY, "postalServiceOff")', iso_src,
                       "a session with no key of its own takes the master default")
 

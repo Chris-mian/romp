@@ -155,18 +155,19 @@ class PostalIsolated(unittest.TestCase):
 class KernelAndBusAgree(unittest.TestCase):
     """The kernel's and the bus's isolation readers, fed the same flags file, give the same answer."""
     OTHER = "99999999-8888-7777-6666-555555555555"
-    SHAPES = [                                                            # (flags, isolated for SID, for OTHER)
-        ({}, False, False),
-        ({"*": {"postalServiceOff": True}}, True, True),
-        ({"*": {"postalServiceOff": False}}, False, False),
-        ({"*": {"notify": True}}, False, False),
-        ({"*": {"postalServiceOff": True}, SID: {"postalServiceOff": False}}, False, True),
-        ({"*": {"postalServiceOff": True}, SID: {"postalServiceOff": None}}, True, True),
-        ({SID: {"postalServiceOff": None, "postalOff": True}}, True, False),
-        ({SID: {"postalServiceOff": None}}, False, False),
-        ({SID: {"postalOff": True}}, True, False),
-        ({SID: {"postalServiceOff": False, "postalOff": True}}, False, False),
-        ({SID: {"postalServiceOff": True, "postalOff": False}}, True, False),
+    SHAPES = [                                                            # (flags, reason for SID, for OTHER)
+        ({}, "", ""),
+        ({"*": {"postalServiceOff": True}}, "master", "master"),
+        ({"*": {"postalServiceOff": False}}, "", ""),
+        ({"*": {"notify": True}}, "", ""),
+        ({"*": {"postalServiceOff": True}, SID: {"postalServiceOff": False}}, "", "master"),
+        ({"*": {"postalServiceOff": True}, SID: {"postalServiceOff": None}}, "master", "master"),
+        ({"*": {"postalServiceOff": True}, SID: {"postalServiceOff": True}}, "isolation", "master"),
+        ({SID: {"postalServiceOff": None, "postalOff": True}}, "isolation", ""),
+        ({SID: {"postalServiceOff": None}}, "", ""),
+        ({SID: {"postalOff": True}}, "isolation", ""),
+        ({SID: {"postalServiceOff": False, "postalOff": True}}, "", ""),
+        ({SID: {"postalServiceOff": True, "postalOff": False}}, "isolation", ""),
     ]
 
     def setUp(self):
@@ -185,7 +186,8 @@ class KernelAndBusAgree(unittest.TestCase):
             pm._FLAGS_LAST[0] = None
             for sid, want in zip((SID, self.OTHER), expected):
                 with self.subTest(shape=shape, sid=sid):
-                    self.assertEqual((km._postal_isolated(sid), pm._postal_off(sid)), (want, want))
+                    self.assertEqual((km._mail_off_why_k(sid), pm._mail_off_why(sid)), (want, want))
+                    self.assertEqual((km._postal_isolated(sid), pm._postal_off(sid)), (bool(want), bool(want)))
 
 
 class RouteGates(unittest.TestCase):

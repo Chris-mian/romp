@@ -4326,7 +4326,7 @@ def _codex_postal_call(tool, sid, name, args):
             _set_working_note(sid, text)
             if not text.strip():
                 return True, "Cleared your 'working on' note."
-            return True, (_CODEX_WORKING_UNSEEN % text if _mail_off_why_k(sid) else "Published — others see: working on '%s'." % text)
+            return True, (_CODEX_WORKING_UNSEEN % text if _mail_off_why_k(sid) not in ("", "master") else "Published — others see: working on '%s'." % text)
         if tool == "check_sent":
             status, body, written = _codex_postal_http("GET", "/sent?id=%s" % quote(sid), tool=tool, sid=sid)
             if status != 200:
@@ -4414,7 +4414,8 @@ def _codex_inbox_text(msgs, me_id):
     return "\n".join(out)
 
 
-_CODEX_NO_AGENTS_LISTED = "(no reachable romp sessions; sessions whose mail is off are not listed)"   # the bus's NO_AGENTS_LISTED
+_CODEX_NO_AGENTS_LISTED = "(no reachable romp sessions; a session whose own mailbox is off is not listed)"   # the bus's NO_AGENTS_LISTED
+_CODEX_MASTER_OFF_TAG = "  (mail off by the master default: not reachable)"   # the bus's MASTER_OFF_TAG
 _CODEX_WORKING_UNSEEN = ("Saved, but your own mail is off, so no peer sees it: working on '%s'. It shows "
                         "once your mail is back on.")   # the bus's WORKING_UNSEEN
 
@@ -4443,7 +4444,8 @@ def _codex_agents_text(agents, me_id):
             st = a.get("state", "")
             stale = "  (idle now — claim may be stale)" if st and st != "working" else ""
             wk = "  — %s%s" % (a["working"], stale)
-        lines.append("  %s%s%s%s%s" % (disp, tag, (" · %s" % short) if short else "", br, wk))
+        off = _CODEX_MASTER_OFF_TAG if a.get("mailOff") == "master" else ""
+        lines.append("  %s%s%s%s%s%s" % (disp, tag, off, (" · %s" % short) if short else "", br, wk))
     return "\n".join(lines)
 
 
@@ -29448,18 +29450,24 @@ def _postal_isolation_flag(sid):
     """Postal isolation for `sid`, most-specific-wins: its own key decides either way, else the MASTER default
     under POSTAL_ALL_KEY. Isolation is the sane default for many setups, so the master carries it and a session
     opts back IN with an explicit False. The bus's _mail_off_why resolves it identically over the same file."""
+    own = _postal_own_flag(sid)
+    return own if own is not None else _session_flag(POSTAL_ALL_KEY, "postalServiceOff")
+
+
+def _postal_own_flag(sid):
+    """The session's own isolation key (the legacy one included), or None when it has none and the master decides."""
     for flag in ("postalServiceOff", "postalOff"):
         own = _session_flag_raw(sid, flag)
         if own is not None:
             return own
-    return _session_flag(POSTAL_ALL_KEY, "postalServiceOff")
+    return None
 
 
 def _mail_off_why_k(sid):
     """Why the session can neither send nor receive mail, the kernel's twin of the bus's _mail_off_why over the same
     two files: "unreadable" (its record cannot be read: the bus holds everything), "thread" (a comment thread not yet
-    broken out, _thread_mail_off), "isolation" (the mailbox flag the timeline lane's icon writes, legacy key included,
-    or the master default), or "" (mail on). Rides the rows as mailOffWhy so the tab hover and the Sessions pane can
+    broken out, _thread_mail_off), "isolation" (the mailbox flag the timeline lane's icon writes, legacy key included),
+    "master" (no key of its own, and the master default isolates), or "" (mail on). Rides the rows as mailOffWhy so the tab hover and the Sessions pane can
     say which."""
     if _reg_unreadable(sid):
         return "unreadable"
@@ -29468,7 +29476,9 @@ def _mail_off_why_k(sid):
     iso = _postal_isolation_flag(sid)                      # reads the flags (noting a fault)
     if _flags_unknown_cold():
         return "flags"                     # the flags cannot be read and none are known: closed under the door's own word
-    return "isolation" if iso else ""
+    if not iso:
+        return ""
+    return "isolation" if _postal_own_flag(sid) is not None else "master"
 
 
 def _flags_unknown_cold():
@@ -29487,7 +29497,7 @@ def _mail_off_fields(sid):
     """The two row fields every listing carries for a session's mailbox, from ONE derivation of the reason (the review of
     T356's follow-ups: the chat row, the thread rows and the Sessions pane ledgers each derived it twice, _postal_isolated
     then _mail_off_why_k, a whole sweep each): postalServiceOff (EFFECTIVE: a comment thread reads off until broken out)
-    and mailOffWhy (thread, isolation, an unreadable record, or "")."""
+    and mailOffWhy (thread, isolation, master, an unreadable record, flags, or "")."""
     why = _mail_off_why_k(sid)
     return {"postalServiceOff": bool(why), "mailOffWhy": why}
 
