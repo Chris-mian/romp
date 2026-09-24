@@ -51790,7 +51790,12 @@ def _ws_inflate(data, cap):
             if total > cap:
                 return None, "a compressed message that inflates past %d bytes" % cap
             out.append(piece)
-            if not z.unconsumed_tail:
+            # the stream ended, or its input is spent. A message may end in a BFINAL block (RFC 7692 §7.2.3.4), which
+            # leaves the tail appended above past the stream's end, and once an earlier piece filled the step CPython
+            # keeps such leftovers in unconsumed_tail as well as unused_data: stopping on the tail alone called again on
+            # the ended stream, got nothing, and refused a legal message as not inflating (post-merge review of #2106,
+            # 2026-09-24)
+            if z.eof or not z.unconsumed_tail:
                 break
             if not piece:                        # no output and input left over: zlib is not moving (cannot happen with a
                 return None, "a compressed message that does not inflate"   # positive max_length, guarded so the loop cannot spin)
