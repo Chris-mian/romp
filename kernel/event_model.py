@@ -4901,6 +4901,34 @@ def _asm_full(key, leaf_path, candidate_files, links, rompuuid, postal_index, sd
     return _asm_serve(entry)
 
 
+def evict_document(leaf_path):
+    """Drop one leaf document's entries from BOTH parse caches: the record cache (_JSONL_CACHE) and the assembly cache
+    (_ASM_CACHE). Neither cache's own bound helps a loop that parses many ONE-SHOT documents (the judge experiment's
+    per-ending passes): the assembly cache stops at _ASM_CACHE_MAX (256) and the record cache's byte budget is half of
+    physical memory, so both grow to the cap over hundreds of endings, and a whole-instance clear would nuke a live kernel's
+    hot entries. Calling this after each document keeps both flat. Record entries pop through _cache_pop_locked under the
+    record lock so the byte count stays right; assembly entries (found by the leaf `path` their _asm_full stamped) pop under
+    _ASM_LOCK and release through _asm_release OUTSIDE the lock, so a lazy index gives its materialized atoms back (a bare dict
+    clear skips both, as _asm_full's comment notes). Absent entries are no-ops. Returns (asm_dropped, record_dropped)."""
+    leaf = str(leaf_path)
+    popped, files = [], {leaf}
+    with _ASM_LOCK:
+        for k in [k for k, e in _ASM_CACHE.items() if e.get("path") == leaf]:
+            e = _ASM_CACHE.pop(k, None)
+            if e is not None:
+                popped.append(e)
+                files.update(e.get("cands") or ())
+    for e in popped:
+        _asm_release(e)                              # OUTSIDE _ASM_LOCK: release takes _MAT_LOCK, never nested with it
+    dropped = 0
+    with _JSONL_CACHE_LOCK:
+        for f in files:
+            if f in _JSONL_CACHE:
+                _cache_pop_locked(f)
+                dropped += 1
+    return len(popped), dropped
+
+
 def _asm_gates(entry, leaf_path, candidate_files, links):
     """None -> full parse. Else (delta, leaf_records): the leaf's appended records (possibly
     empty) and the records list they came from, gate-checked per the block comment above."""
