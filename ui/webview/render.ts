@@ -15049,6 +15049,8 @@ function noticeRowPlain(row: HTMLElement, n: ChatNotice): void {
   const acts = row.querySelector<HTMLElement>(".ntc-actions"), note = row.querySelector<HTMLElement>(".ntc-note");
   if (!acts || !note) return;
   acts.replaceChildren(); note.style.display = "none";
+  row.classList.toggle("ntc-fault", n.kind === "goal" && n.fix === "credential");   // the fault's row: its body (the refusal's explanation) shows at the items
+  //                                                                                    too, where every other body waits for the full context (the box arc's round three)
   if (n.kind === "goal" && n.fix === "credential") {   // the judges' credential refused: the fix is the one action (the gear's Billing block); no Clear, which would hide the fault while the refusals go on
     acts.appendChild(noticeButton("Fix credential…", "ntc-ok", "ntc-fix", 0));
     return;
@@ -15114,37 +15116,47 @@ function noticeMoreButton(row: HTMLElement, body: HTMLElement | null): void {
   if (!b) { b = document.createElement("button"); b.className = "ntc-btn ntc-more"; b.dataset.act = "ntc-more"; body?.after(b); }
   b.textContent = open ? "Less" : "More"; (b as any)._idle = b.textContent;
 }
-function buildNoticeHead(): HTMLElement {
+function buildNoticeBar(): HTMLElement {
+  // THE BAR (the box arc's round three, the second contributor's post-merge review of PR 2105): the header and the gear are SIBLINGS in a flex
+  // bar, never a button inside the role=button header (axe nested-interactive in the shell); the bar takes the header's sticky position, its
+  // opaque ground, its rule and its dense padding, and the rows anchor to it. The header keeps focus after a mouse click as a button does
+  // (Enter then advances the level; printable keys still reach the composer): one rule for the header, More and Clear, kept on purpose
+  const bar = document.createElement("div"); bar.className = "ntc-bar";
+  bar.dataset.act = "ntc-fold";    // the bar too is the fold control: every strip of it toggles the level (the box arc's round three, the second contributor's review of
+  //                                  PR 2120: with the padding on the bar and the action on the header alone, the bar's edges and the strip beside the gear went dead); the
+  //                                  gear inside resolves to its own action first (the delegate takes the closest), and the focus ring stays the header's
   const head = document.createElement("div"); head.className = "ntc-head";
   head.dataset.act = "ntc-fold";   // the header line is the box's fold control (the user 2026-09-23): a click advances the level, on the box's delegate
   // THE KEYBOARD ROUTE (the second contributor's post-merge review of PR 2093): level 0 hides every row, so a header the keyboard could not
   // reach left Tab and Shift+Tab nothing to stop on inside the box, where before the levels they reached every row's buttons. A button role
   // and a tab stop, as the tab group head has; Enter or Space press the header through its click, the delegate's path, with focus kept on it
-  // (a key on the gear below is the gear's own); the expanded state moves with the level (applyNoticeBoxLevel), which also puts the next step
+  // (the gear is the header's sibling in the bar, so no key on it reaches the header); the expanded state moves with the level (applyNoticeBoxLevel), which also puts the next step
   // in the header's title, never an aria-label, which would drop "Needs you · N" from the name; the caret is decoration
   head.setAttribute("role", "button"); head.tabIndex = 0;
-  head.addEventListener("keydown", (e) => { if (e.target !== head) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); head.click(); } });
+  head.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); head.click(); } });   // no target guard: the header has no
+  //                                          focusable descendant (the gear is its sibling), so every key here is the header's own
   const caret = el("span", "ntc-caret"); caret.setAttribute("aria-hidden", "true"); head.appendChild(caret);
   head.appendChild(el("span", "ntc-dot"));
   const label = el("span", "ntc-label"); label.id = "ntc-label"; head.appendChild(label);
-  head.setAttribute("aria-labelledby", "ntc-label");   // the name is the label alone, "Needs you · N": without this the gear below, nested in the button,
-  //                                                    was folded into the header's name (the round-one verifier of PR 2105: "Needs you · 4 Needs you box settings")
+  head.setAttribute("aria-labelledby", "ntc-label");   // the name is the label alone, "Needs you · N" (the round-one verifier of PR 2105: with the gear
+  //                                                    nested in the header its label was folded into the name; the gear is a sibling now, and the reference stays)
+  bar.appendChild(head);
   // THE BOX'S OWN GEAR (the second contributor's post-merge review of PR 2093: the strip's gear, the one section-targeted opener, lands on
-  // Tab strip with the box's section out of view above it): the shell's gear glyph at the header's right end, opening the settings' Chat tab
-  // scrolled to the "Boxes below the transcript" section (gear.js showSection), so the switch is reachable from the box the person is
-  // looking at; drawn only where a settings card can open, as the strip's gear is
+  // Tab strip with the box's section out of view above it): the shell's gear glyph at the bar's right end, beside the header, opening the
+  // settings' Chat tab scrolled to the "Boxes below the transcript" section (gear.js showSection), so the switch is reachable from the box
+  // the person is looking at; drawn only where a settings card can open, as the strip's gear is
   if ((window as any).__rompShowStrip || inRompShell()) {
     const gear = el("button", "ntc-gear") as HTMLButtonElement; gear.type = "button"; gear.dataset.act = "ntc-gear";
     gear.title = "Needs you box settings"; gear.setAttribute("aria-label", "Needs you box settings"); gear.textContent = GEAR_GLYPH;
-    head.appendChild(gear);
+    bar.appendChild(gear);
   }
-  return head;
+  return bar;
 }
 // THE BOX'S THREE LEVELS (the user 2026-09-23, who wanted the box collapsed by default like the awaiting box and opened in steps): 0, the
 // header line alone (the label and the count); 1, the items (each row's title and its buttons); 2, the full context (the background paragraph
 // under each title, with its disclosure where the brief runs long, and the attachment). The level is the PAGE's state for the session,
 // never a timer: kept in openFolds, the ONE fold store (ui/CLAUDE.md; the second contributor's post-merge review of PR 2093: a Map of its own
-// stood outside the census of the merged keys and every reset that walks the store), as two boolean keys per session, one per level above 0,
+// stood outside the census of the merged keys, notice-vocab.test.ts), as two boolean keys per session, one per level above 0,
 // set together by the header's click; the per-frame re-render only reads them (renderNotices never writes the level), and the page's reload
 // resets them. The header's title names the next step; the caret points right below the last level and down at it, the awaiting box's
 // grammar; a click at the last level folds the box back to its header line. A judges' credential row FLOORS the box at level 1 while it
@@ -15158,11 +15170,23 @@ function setNoticeBoxLevel(sid: string, level: number): void {
 }
 function noticeBoxFloor(rows: ChatNotice[]): number { return rows.some((n) => n.kind === "goal" && n.fix === "credential") ? 1 : 0; }
 function noticeBoxShownLevel(sid: string, rows: ChatNotice[]): number { return Math.max(noticeBoxLevelOf(sid), noticeBoxFloor(rows)); }
+// the level the next click STORES: the one after the shown level, never below the floor (the box arc's round three: at the floor two clicks
+// from the items stored 0, so the box dropped to its header line when the credential row left). One helper for the click and the header's
+// title, so "Collapse" is said only where the next click folds the box to its header line
+function noticeBoxNextLevel(sid: string, rows: ChatNotice[]): number { return Math.max((noticeBoxShownLevel(sid, rows) + 1) % 3, noticeBoxFloor(rows)); }
+// the header's title names the step the next click takes, BY THE TRANSITION (the round-one verifier of PR 2120: at the floor from the full
+// context the next click reaches the items, and "Show the items" read wrong while the items already showed): ascending, "Show the items" or
+// "Show the full context"; descending, "Collapse" where the next level is the header line, else "Hide the full context"
+function noticeBoxStepTitle(sid: string, rows: ChatNotice[]): string {
+  const shown = noticeBoxShownLevel(sid, rows), next = noticeBoxNextLevel(sid, rows);
+  if (next > shown) return next === 1 ? "Show the items" : "Show the full context";
+  return next === 0 ? "Collapse" : "Hide the full context";
+}
 function applyNoticeBoxLevel(host: HTMLElement, sid: string, rows: ChatNotice[]): void {
   const level = noticeBoxShownLevel(sid, rows);
   host.classList.toggle("ntc-l0", level === 0); host.classList.toggle("ntc-l1", level === 1); host.classList.toggle("ntc-l2", level === 2);
   const head = host.querySelector<HTMLElement>(".ntc-head");
-  if (head) { head.setAttribute("aria-expanded", level > 0 ? "true" : "false"); head.title = level === 0 ? "Show the items" : level === 1 ? "Show the full context" : "Collapse"; }
+  if (head) { head.setAttribute("aria-expanded", level > 0 ? "true" : "false"); head.title = noticeBoxStepTitle(sid, rows); }
   const caret = host.querySelector<HTMLElement>(".ntc-head .ntc-caret");
   if (caret) caret.textContent = level === 2 ? "\u25be" : "\u25b8";
 }
@@ -15173,13 +15197,13 @@ function renderNotices(): void {
   const rows: ChatNotice[] = (s && s.status && s.status.notices) || [];
   if (!s || !activeId || !rows.length || !settings.needsBox) { host.replaceChildren(); host.style.display = "none"; return; }   // the gear's Needs you box switch hides it; the ring stays
   host.style.display = "";
-  let head = host.querySelector<HTMLElement>(".ntc-head");
-  if (!head) { head = buildNoticeHead(); host.prepend(head); }
-  const lab = head.querySelector<HTMLElement>(".ntc-label"); if (lab) lab.textContent = "Needs you · " + rows.length;
+  let bar = host.querySelector<HTMLElement>(".ntc-bar");
+  if (!bar) { bar = buildNoticeBar(); host.prepend(bar); }
+  const lab = bar.querySelector<HTMLElement>(".ntc-label"); if (lab) lab.textContent = "Needs you · " + rows.length;
   applyNoticeBoxLevel(host, s.id, rows);   // the level the page holds for this session (a credential row floors it), before the rows so a fresh row lands under the right classes
   const want = new Set(rows.map((n) => n.itemId));
   for (const r of Array.from(host.querySelectorAll<HTMLElement>(".ntc-row"))) if (!want.has(r.dataset.item || "")) r.remove();
-  let prev: HTMLElement = head;   // the rows follow the header, in the frame's order
+  let prev: HTMLElement = bar;   // the rows follow the bar (the header and the gear), in the frame's order
   for (const n of rows) {
     let row = host.querySelector<NoticeRowEl>(noticeRowSelector(n.itemId).replace("#notices ", ""));
     if (!row) { row = buildNoticeRow(n, s.id); prev.after(row); }
@@ -15204,6 +15228,13 @@ function renderNoticeDisclosures(): void {
 function renderBgTasks() {
   const host = document.getElementById("bg-tasks");
   if (!host) return;
+  // THE HEADER KEEPS THE KEYBOARD (the box arc's round three, the second contributor's post-merge review of PR 2105): this render empties the box
+  // and builds a new header on every call, the one its own click makes included, so Enter toggled the rows and dropped focus to the body (a
+  // second Enter reached the bare-area handler and the composer), and a push changing an awaited field or a full session frame dropped it too.
+  // As the tab strip does across its rebuild: remember whether the header holds a KEYBOARD focus (:focus-visible, so a mouse click does not
+  // change where the next Enter goes) and refocus the new header once it stands
+  const refocusHead = !!document.activeElement && document.activeElement.classList.contains("bg-fold-head") && host.contains(document.activeElement)
+    && document.activeElement.matches(":focus-visible");
   host.replaceChildren();
   const s = activeId && !snapView ? liveSession(activeId) : null;   // (snapView: the pane shows a section, not this session)
   const tasks: BgTask[] = (s && s.bgTasks && s.bgTasks.tasks) || [];
@@ -15293,6 +15324,7 @@ function renderBgTasks() {
   }
   head.appendChild(lab);
   host.appendChild(head);
+  if (refocusHead) head.focus();
   if (!open) return;
   if (!groups.length && !leftovers.length) {
     // nothing enumerable (a judge stamp, an overlay row, an older kernel): the full sentence, the legacy
@@ -21317,7 +21349,7 @@ setupSettings();
     "ntc-deny-step": (el) => { const p = pick(el); if (p) noticeRowDenyStep(p[0], Number(el.dataset.idx)); },
     "ntc-deny-note": (el) => { const p = pick(el); if (!p) return; const t = (p[0].querySelector<HTMLTextAreaElement>(".ntc-note")?.value || "").trim(); go(p[0], p[1], p[2], el as HTMLButtonElement, t ? { note: t } : undefined); },
     "ntc-deny-bare": (el) => { const p = pick(el); if (p) go(p[0], p[1], p[2], el as HTMLButtonElement); },
-    "ntc-fold": () => { if (!activeId) return; const s = liveSession(activeId); setNoticeBoxLevel(activeId, (noticeBoxShownLevel(activeId, (s && s.status && s.status.notices) || []) + 1) % 3); renderNotices(); },   // the header line: one click the items, a second the full context, a third folds back; the page's state, never a timer (the user 2026-09-23)
+    "ntc-fold": () => { if (!activeId) return; const s = liveSession(activeId); setNoticeBoxLevel(activeId, noticeBoxNextLevel(activeId, (s && s.status && s.status.notices) || [])); renderNotices(); },   // the header line: one click the items, a second the full context, a third folds back; the page's state, never a timer (the user 2026-09-23)
     "ntc-gear": () => openSettingsOn("chat", "boxes"),   // the box's own gear: the settings' Chat tab scrolled to the section that holds the box's switch
     "ntc-more": (el) => { const row = rowOf(el); if (!row) return; const key = "notice:" + (row.dataset.item || "") + ":brief"; if (openFolds.has(key)) openFolds.delete(key); else openFolds.add(key); row.classList.toggle("ntc-open", openFolds.has(key)); noticeMoreButton(row, row.querySelector<HTMLElement>(".ntc-body")); },   // the brief's disclosure: no latch, a toggle (the second contributor's review)
     "ntc-back": (el) => { const row = rowOf(el); const n = row && noticeOf(row); if (row && n) noticeRowPlain(row, n); },

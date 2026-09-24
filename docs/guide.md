@@ -37,9 +37,9 @@ A path or a markdown link in the chat opens the file in the viewer, rendered. A
 passage selected there lands in the composer as a quote, labelled with the file
 and the line it came from.
 
-Tabs carry the state of their sessions. A tab wears a ring while its session
-needs you, tags group the strip into sections, and a tab can take a hot key of
-your own.
+Tabs carry the state of their sessions. A tab shows a count dot while its
+session needs you and a red ring while it is stopped, tags group the strip into
+sections, and a tab can take a hot key of your own.
 
 What a session needs from you sits in a box above its composer, folded to a
 header with the count. Click the header to see the items, again for the full

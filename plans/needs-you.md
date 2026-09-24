@@ -211,7 +211,10 @@ The box's shape after its first weeks (the user 2026-09-23, who wanted the box c
 steps, Reply and Clear only for now, and a switch they could find): collapsed to its header line until clicked, one click the items, a
 second the full context, the level the page's state for the session and never a timer; the goal row offers Reply and Clear, the Continue
 offer stored and its wire kept for a later return with no button; the switch heads its own settings section, **Boxes below the transcript**,
-under Chat.
+under Chat. Since then: while a judges' credential row shows, the box stands open at the items (the floor), so the fault is never hidden under
+the header line; the header takes the keyboard (a button with a tab stop, Enter or Space advancing the level), its title naming the step the next click
+takes (**Show the items**, **Show the full context**, **Hide the full context**, or **Collapse** where the next click folds the box to its header
+line); and in the shell and VS Code the header's bar carries the box's own gear, which opens the settings at that section.
 
 Every clear or undo account the kernel sends carries its Undo stack (`batches`: the ids an earlier undo left owed first, then the
 clears log's batches by stamp, newest first; `owedBatch`: the owed ids alone; `batchesTotal`: the count of log batches before the
