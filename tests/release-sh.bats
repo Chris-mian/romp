@@ -62,7 +62,7 @@ case "\$1 \$2" in
   # Auto-merge really lands the branch on origin/main, so the script's post-merge
   # fast-forward has something to pull and VERSION genuinely changes on main. Simulating
   # the merge as a no-op would let the bump path "pass" while proving nothing.
-  # `gh pr create` prints the PR URL; the script reads the NUMBER off its tail and addresses
+  # \`gh pr create\` prints the PR URL; the script reads the NUMBER off its tail and addresses
   # every later call by that number (a fork-headed branch is unresolvable by name — see below).
   # STUB_RELEASE_422 = refuse the first N \`release create\` calls the way GitHub refuses a body over
   # its ceiling (HTTP 422 "body is too long"), then accept; the script's short-body fallback rides it.
@@ -543,10 +543,12 @@ RSTUB
 # there under this order and scrub; on such a box the gate is CI green on the tip through
 # --skip-tests. Every call below lands in one sequence log, so the ORDER is what these pin.
 
-_stub_npm() {                           # $1 = "ok" | "build-fails"
+_stub_npm() {                           # $1 = "ok" | "typecheck-fails" | "test-fails" | "build-fails"
     cat > "$TEST_DIR/npm" <<NPMSTUB
 #!/bin/sh
 echo "npm \$*" >> "$TEST_DIR/seq.log"
+if [ "\$1 \$2" = "run typecheck" ] && [ "$1" = "typecheck-fails" ]; then exit 1; fi
+if [ "\$1" = "test" ] && [ "$1" = "test-fails" ]; then exit 1; fi
 if [ "\$1 \$2" = "run build" ] && [ "$1" = "build-fails" ]; then exit 1; fi
 exit 0
 NPMSTUB
@@ -566,12 +568,23 @@ PYSTUB
     chmod +x "$TEST_DIR/python3"
 }
 
-_stub_node() {                          # $1 = "browser" | "no-browser": playwright's executablePath answer, a file that exists or one that does not
-    if [ "$1" = "browser" ]; then printf '#!/bin/sh\nexit 0\n' > "$TEST_DIR/chromium"; chmod +x "$TEST_DIR/chromium"; fi
+_stub_node() {                          # $1 = "both" | "full-only" | "shell-only" | "none": which of playwright's two Chromium downloads are complete
+    mkdir -p "$TEST_DIR/pw/chromium-1" "$TEST_DIR/pw/chromium_headless_shell-1"
+    case "$1" in both|full-only) : > "$TEST_DIR/pw/chromium-1/INSTALLATION_COMPLETE" ;; esac
+    case "$1" in both|shell-only) : > "$TEST_DIR/pw/chromium_headless_shell-1/INSTALLATION_COMPLETE" ;; esac
     cat > "$TEST_DIR/node" <<NODESTUB
 #!/bin/sh
 echo "node \$*" >> "$TEST_DIR/seq.log"
-printf '%s' "$TEST_DIR/chromium"
+cat <<LISTING
+Chrome for Testing 1.0 (playwright chromium v1)
+  Install location:    $TEST_DIR/pw/chromium-1
+  Download url:        https://example.test/chrome-linux64.zip
+FFmpeg (playwright ffmpeg v1)
+  Install location:    $TEST_DIR/pw/ffmpeg-1
+Chrome Headless Shell 1.0 (playwright chromium-headless-shell v1)
+  Install location:    $TEST_DIR/pw/chromium_headless_shell-1
+  Download url:        https://example.test/chrome-headless-shell-linux64.zip
+LISTING
 NODESTUB
     chmod +x "$TEST_DIR/node"
 }
@@ -579,7 +592,7 @@ NODESTUB
 _with_extension_deps() { mkdir -p "$REPO/vscode-extension/node_modules"; }
 
 @test "release: with the extension deps present, the webview typecheck, suite and BUILD run before the Python suite, in that order" {
-    _stub_gh; _stub_npm ok; _stub_node browser; _stub_python3_recording; _with_extension_deps
+    _stub_gh; _stub_npm ok; _stub_node both; _stub_python3_recording; _with_extension_deps
     run env PATH="$(_env_path)" "$REPO/scripts/release.sh"
     [ "$status" -eq 0 ]
     [ "$(grep -c '^npm run build$' "$TEST_DIR/seq.log")" -eq 1 ]
@@ -593,8 +606,28 @@ _with_extension_deps() { mkdir -p "$REPO/vscode-extension/node_modules"; }
     [ "$b" -lt "$p" ]
 }
 
+@test "release: a failing webview typecheck stops the release BEFORE the Python suite, and nothing is tagged" {
+    _stub_gh; _stub_npm typecheck-fails; _stub_node both; _stub_python3_recording; _with_extension_deps
+    run env PATH="$(_env_path)" "$REPO/scripts/release.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"webview typecheck failed"* ]]
+    [ "$(grep -c '^python3 -m pytest tests/' "$TEST_DIR/seq.log")" -eq 0 ]
+    run git -C "$REPO" tag -l
+    [ -z "$output" ]
+}
+
+@test "release: a failing webview suite stops the release BEFORE the Python suite, and nothing is tagged" {
+    _stub_gh; _stub_npm test-fails; _stub_node both; _stub_python3_recording; _with_extension_deps
+    run env PATH="$(_env_path)" "$REPO/scripts/release.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"webview suite failed"* ]]
+    [ "$(grep -c '^python3 -m pytest tests/' "$TEST_DIR/seq.log")" -eq 0 ]
+    run git -C "$REPO" tag -l
+    [ -z "$output" ]
+}
+
 @test "release: a failing webview build stops the release BEFORE the Python suite, and nothing is tagged" {
-    _stub_gh; _stub_npm build-fails; _stub_node browser; _stub_python3_recording; _with_extension_deps
+    _stub_gh; _stub_npm build-fails; _stub_node both; _stub_python3_recording; _with_extension_deps
     run env PATH="$(_env_path)" "$REPO/scripts/release.sh"
     [ "$status" -ne 0 ]
     [[ "$output" == *"webview build failed"* ]]
@@ -603,36 +636,72 @@ _with_extension_deps() { mkdir -p "$REPO/vscode-extension/node_modules"; }
     [ -z "$output" ]
 }
 
-@test "release: the Python suite runs without the live kernel's exports, and with the served labs required and chromium declared when playwright's chromium is installed" {
-    _stub_gh; _stub_npm ok; _stub_node browser; _stub_python3_recording; _with_extension_deps
+@test "release: the Python suite runs without any ROMP_ name the shell carries except the suite's own knobs, and with the served labs required and chromium declared when both Chromium parts are installed" {
+    _stub_gh; _stub_npm ok; _stub_node both; _stub_python3_recording; _with_extension_deps
+    # six names the live kernel exports, one no list would think of (ROMP_STATE_TAG: the rule is every ROMP_ name), and
+    # one of the suite's own knobs, which must pass through
     run env PATH="$(_env_path)" ROMP_MANAGER_PID=4242 ROMP_SERVE_HOST=0.0.0.0 \
         ROMP_SID=cccccccc-1111-2222-3333-444444444444 ROMP_SESSION_NAME=web ROMP_KERNEL_PORT=7433 ROMP_POSTAL_PORT=25302 \
+        ROMP_STATE_TAG=tag-of-the-live-box ROMP_TESTS_SYSTEM_TMPDIR="$TEST_DIR/systmp" \
         "$REPO/scripts/release.sh"
     [ "$status" -eq 0 ]
     [ -s "$TEST_DIR/suite-env.txt" ]
-    [ "$(grep -c -E '^(ROMP_MANAGER_PID|ROMP_SERVE_HOST|ROMP_SID|ROMP_SESSION_NAME|ROMP_KERNEL_PORT|ROMP_POSTAL_PORT)$' "$TEST_DIR/suite-env.txt")" -eq 0 ]
+    [ "$(grep -c -E '^(ROMP_MANAGER_PID|ROMP_SERVE_HOST|ROMP_SID|ROMP_SESSION_NAME|ROMP_KERNEL_PORT|ROMP_POSTAL_PORT|ROMP_STATE_TAG)$' "$TEST_DIR/suite-env.txt")" -eq 0 ]
+    [ "$(grep -c '^ROMP_TESTS_SYSTEM_TMPDIR$' "$TEST_DIR/suite-env.txt")" -eq 1 ]
     [ "$(grep -c '^ROMP_SERVED_TESTS_REQUIRE=1$' "$TEST_DIR/suite-served.txt")" -eq 1 ]
     [ "$(grep -c '^ROMP_SERVED_TESTS_ENGINES=chromium$' "$TEST_DIR/suite-served.txt")" -eq 1 ]
     grep -q '^python3 -m pytest tests/ -q$' "$TEST_DIR/seq.log"
 }
 
 @test "release: an engines list the shell declares reaches the served labs as it stands, beside the require flag" {
-    _stub_gh; _stub_npm ok; _stub_node browser; _stub_python3_recording; _with_extension_deps
+    _stub_gh; _stub_npm ok; _stub_node both; _stub_python3_recording; _with_extension_deps
     run env PATH="$(_env_path)" ROMP_SERVED_TESTS_ENGINES=chromium,firefox "$REPO/scripts/release.sh"
     [ "$status" -eq 0 ]
     [ "$(grep -c '^ROMP_SERVED_TESTS_REQUIRE=1$' "$TEST_DIR/suite-served.txt")" -eq 1 ]
     [ "$(grep -c '^ROMP_SERVED_TESTS_ENGINES=chromium,firefox$' "$TEST_DIR/suite-served.txt")" -eq 1 ]
 }
 
-@test "release: node deps present but no browser: the served labs are not required, and the line says their gate is CI" {
-    _stub_gh; _stub_npm ok; _stub_node no-browser; _stub_python3_recording; _with_extension_deps
+@test "release: node deps present but no browser: the served labs are not required, and the line says their gate is CI and the remedy runs from the extension directory" {
+    _stub_gh; _stub_npm ok; _stub_node none; _stub_python3_recording; _with_extension_deps
     run env PATH="$(_env_path)" "$REPO/scripts/release.sh"
     [ "$status" -eq 0 ]
     [[ "$output" == *"node deps present, no browser"* ]]
+    [[ "$output" == *"cd vscode-extension && npx playwright install chromium"* ]]
     [[ "$output" == *"their gate is CI's extension job on the tip"* ]]
     [ -s "$TEST_DIR/suite-env.txt" ]
     [ "$(grep -c '^ROMP_SERVED_TESTS_REQUIRE$' "$TEST_DIR/suite-env.txt")" -eq 0 ]
     [ "$(grep -c '^python3 -m pytest tests/ -q$' "$TEST_DIR/seq.log")" -eq 1 ]
+}
+
+@test "release: the full Chromium alone is a partial install: the labs are not required, and the line names the missing headless shell" {
+    _stub_gh; _stub_npm ok; _stub_node full-only; _stub_python3_recording; _with_extension_deps
+    run env PATH="$(_env_path)" "$REPO/scripts/release.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"partial browser install"* ]]
+    [[ "$output" == *"the headless shell the labs launch is not"* ]]
+    [ "$(grep -c '^ROMP_SERVED_TESTS_REQUIRE$' "$TEST_DIR/suite-env.txt")" -eq 0 ]
+    [ "$(grep -c '^python3 -m pytest tests/ -q$' "$TEST_DIR/seq.log")" -eq 1 ]
+}
+
+@test "release: the headless shell alone is a partial install: the labs are not required, and the line names the missing full Chromium" {
+    _stub_gh; _stub_npm ok; _stub_node shell-only; _stub_python3_recording; _with_extension_deps
+    run env PATH="$(_env_path)" "$REPO/scripts/release.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"partial browser install"* ]]
+    [[ "$output" == *"the full Chromium is not"* ]]
+    [ "$(grep -c '^ROMP_SERVED_TESTS_REQUIRE$' "$TEST_DIR/suite-env.txt")" -eq 0 ]
+    [ "$(grep -c '^python3 -m pytest tests/ -q$' "$TEST_DIR/seq.log")" -eq 1 ]
+}
+
+@test "release: writing the gh stub runs no gh of its own (the heredoc's backticks are escaped)" {
+    # the stub is written by an UNQUOTED heredoc, so an unescaped backtick pair in its comments runs as a command while
+    # the file is written: a spy gh first on PATH records any such run
+    mkdir -p "$TEST_DIR/spy"
+    printf '#!/bin/sh\necho "spy gh $*" >> "%s/spy.log"\nexit 0\n' "$TEST_DIR" > "$TEST_DIR/spy/gh"
+    chmod +x "$TEST_DIR/spy/gh"
+    PATH="$TEST_DIR/spy:$PATH" _stub_gh
+    [ "$(cat "$TEST_DIR/spy.log" 2>/dev/null | wc -l)" -eq 0 ]
+    [ -x "$TEST_DIR/gh" ]
 }
 
 @test "release: without the extension deps the script says the served labs are not proven here, and does not require them" {

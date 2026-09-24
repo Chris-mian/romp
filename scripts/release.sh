@@ -241,21 +241,28 @@ if [ "$dry_run" -eq 0 ]; then
 fi
 
 # ── 4. the tests ──────────────────────────────────────────────────────
-# The names a romp session's shell carries from the live kernel. The suite's conftest floors the
-# state root and the ports and every lab kernel is built from a list of names, but a run from such
-# a shell still hands these to the labs' node drivers and to every test that copies its environment.
-# Scrubbed for the Python run, so the suite sees the machine the way CI's runner does: parity with
-# CI, so that what the local run says is comparable with CI's, not a diagnosis of anything.
+# A romp session's shell carries the live kernel's exports (the manager pid, the serve host, the
+# session's sid and name, the ports, the state tag, the shutdown grace, and whatever a later kernel
+# adds). The suite's conftest floors the state root and the ports and every lab kernel is built from
+# a list of names, but a run from such a shell still hands the rest to the labs' node drivers and to
+# every test that copies its environment. The rule, not a list: EVERY ROMP_ name the environment
+# carries is removed for the Python run, except the suite's own knobs (ROMP_SERVED_TESTS_*, which
+# this script sets below, ROMP_TESTS_*, and ROMP_UI_BENCH_REQUIRE, the ones tests/conftest.py
+# documents), so the suite sees the machine the way CI's runner does: parity with CI, so that what
+# the local run says is comparable with CI's, not a diagnosis of anything.
 #
 # The served labs on a box that runs a live romp: at the v0.17.0 cut (2026-09-24) two federation labs
 # (the task-tracking federation lab and the send-bubble remote lab) were red in the local run on the
 # shared box and green in CI on the same tip, and they stay red there with the tip's bundle built and
 # these names removed; the cause is open. On such a box the gate for the tag is CI green on the tip,
 # through --skip-tests, the documented road.
-LIVE_KERNEL_EXPORTS="ROMP_MANAGER_PID ROMP_SUPERVISED ROMP_SID ROMP_SESSION_NAME ROMP_SERVE_HOST ROMP_STATE_DIR ROMP_KERNEL_PORT ROMP_SERVE_PORT ROMP_MANAGER_PORT ROMP_POSTAL_PORT"
+SUITE_KNOB_PATTERN='^(ROMP_SERVED_TESTS_|ROMP_TESTS_|ROMP_UI_BENCH_REQUIRE$)'
 scrubbed() {
     local unset_args="" name
-    for name in $LIVE_KERNEL_EXPORTS; do unset_args="$unset_args -u $name"; done
+    for name in $(env | sed -n 's/^\(ROMP_[A-Za-z0-9_]*\)=.*/\1/p' | sort -u); do
+        if printf '%s' "$name" | grep -Eq "$SUITE_KNOB_PATTERN"; then continue; fi
+        unset_args="$unset_args -u $name"
+    done
     # shellcheck disable=SC2086
     env $unset_args "$@"
 }
@@ -278,18 +285,34 @@ else
         step sh -c 'cd vscode-extension && npm test' || die "the webview suite failed: NOT releasing."
         say "building the webview (the served labs serve this build)..."
         step sh -c 'cd vscode-extension && npm run build' || die "the webview build failed: NOT releasing."
-        # The served labs run as CI runs them only where a browser can run them: playwright's pinned
-        # Chromium, asked for by path (the package answers with the path whether or not the download
-        # happened, so the file itself is checked). With it, a skip in a served lab (an absent dep, a
-        # kernel that never served) is a failure carrying its reason, never a silent pass of this gate,
-        # and the engines declared are the ones CI declares (chromium alone unless the shell says
-        # otherwise), so a leg for an engine this box does not carry stays an optional skip instead of
-        # turning into a failure. Without the browser the labs skip here and the line says so.
-        browser="$(cd vscode-extension && node -e "process.stdout.write(require('playwright').chromium.executablePath())" 2>/dev/null || true)"
-        if [ -n "$browser" ] && [ -x "$browser" ]; then
+        # The served labs run as CI runs them only where a browser can run them. Playwright's pinned
+        # Chromium is TWO downloads: the full Chromium (the pane bench prefers it) and the headless shell
+        # (what the labs' headless launch runs), so both must be here to require the labs: with the full
+        # binary alone every lab is required and fails at launch after the whole Python run; with the
+        # shell alone the labs run unrequired. Playwright's own listing says where each lives (its
+        # install --dry-run, no network), and each directory carries INSTALLATION_COMPLETE once its
+        # download finished. With both, a skip in a served lab (an absent dep, a kernel that never
+        # served) is a failure carrying its reason, never a silent pass of this gate, and the engines
+        # declared are the ones CI declares (chromium alone unless the shell says otherwise), so a leg
+        # for an engine this box does not carry stays an optional skip instead of turning into a
+        # failure. Without both the labs skip here and the line names what is missing; the remedy runs
+        # from the extension directory, where npx resolves the PINNED playwright (in the repo root it
+        # resolves whatever playwright is newest and installs a revision the pinned one never finds).
+        listing="$(cd vscode-extension && node node_modules/playwright-core/cli.js install --dry-run chromium 2>/dev/null || true)"
+        pw_dir() { printf '%s\n' "$listing" | awk -v key="(playwright $1 v" 'index($0, key) { grab = 1; next } grab && /Install location:/ { sub(/.*Install location:[ \t]*/, ""); print; exit }'; }
+        full_dir="$(pw_dir chromium)"; shell_dir="$(pw_dir chromium-headless-shell)"
+        have_full=0; have_shell=0
+        if [ -n "$full_dir" ] && [ -f "$full_dir/INSTALLATION_COMPLETE" ]; then have_full=1; fi
+        if [ -n "$shell_dir" ] && [ -f "$shell_dir/INSTALLATION_COMPLETE" ]; then have_shell=1; fi
+        remedy="cd vscode-extension && npx playwright install chromium"
+        if [ "$have_full" -eq 1 ] && [ "$have_shell" -eq 1 ]; then
             served_env=(ROMP_SERVED_TESTS_REQUIRE=1 "ROMP_SERVED_TESTS_ENGINES=${ROMP_SERVED_TESTS_ENGINES:-chromium}")
+        elif [ "$have_full" -eq 1 ]; then
+            say "node deps present, a partial browser install (the full Chromium is here, the headless shell the labs launch is not; $remedy completes it): the served labs skip here; their gate is CI's extension job on the tip."
+        elif [ "$have_shell" -eq 1 ]; then
+            say "node deps present, a partial browser install (the headless shell is here, the full Chromium is not; $remedy completes it): the served labs skip here; their gate is CI's extension job on the tip."
         else
-            say "node deps present, no browser (npx playwright install chromium adds it): the served labs skip here; their gate is CI's extension job on the tip."
+            say "node deps present, no browser ($remedy adds it): the served labs skip here; their gate is CI's extension job on the tip."
         fi
     else
         say "vscode-extension/node_modules is absent: skipping the webview suite and build (npm ci to include them);"
