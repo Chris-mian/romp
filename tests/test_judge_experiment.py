@@ -524,6 +524,31 @@ class Harness(unittest.TestCase):
             self.assertNotIn("s3#work", store["placements"], "the turn unit at the cut is left to plan")
             self.assertNotIn("s4#work", store["placements"], "the turn unit after the cut is left to plan")
 
+    def test_own_turn_plannable_count_counts_only_work_and_live_units(self):
+        """The excuse fix (PR 2143): the count is only the units the ARM's planner plans with an UNCONDITIONAL model call from a
+        sealable own-turn position (work / live). A `prompt` (opener) is the opener judge's; a `nudge` is resolve-or-noop whose
+        own-turn instance is never sealed (so an unplanned one is one of the kernel's no-call roads, not a fault); a `delegation`
+        drives no planner call in the arm (no courier runs). So work + delegation counts 1 (only work), a NUDGE-ONLY own turn
+        counts 0 (excused), a work unit counts. The pre-fix code (phase != 'prompt') counted nudge and delegation: this reds it."""
+        import types as _t
+        session = {"turns": [[{"id": "s1"}, {"id": "s2"}, {"id": "s3"}, {"id": "s4"}]]}
+        jd = _t.SimpleNamespace()
+        jd.episode_floor = lambda fsid: None
+        jd._segs = lambda turn, store: turn
+        jd._unit_key = lambda seg, phase: "%s#%s" % (seg, phase)
+        jd._placed_key = lambda placements, key, live=None, floor=None: False   # none placed
+        store = {"placements": {}}
+        jd.plan_units = lambda session, store, floor=None, lazy_text=True: [("s1", "prompt", 100), ("s2", "nudge", 100), ("s3", "work", 100), ("s4", "delegation", 100)]
+        self.assertEqual(self.je.own_turn_plannable_count(jd, "fsid", session, store), 1, "only the work unit counts; prompt (opener), nudge and delegation (no courier in the arm) do not")
+        jd.plan_units = lambda session, store, floor=None, lazy_text=True: [("s2", "nudge", 100)]
+        self.assertEqual(self.je.own_turn_plannable_count(jd, "fsid", session, store), 0, "a nudge-only own turn counts zero: an unplanned own-turn nudge is a no-call road, not a fault")
+        jd.plan_units = lambda session, store, floor=None, lazy_text=True: [("s4", "delegation", 100)]
+        self.assertEqual(self.je.own_turn_plannable_count(jd, "fsid", session, store), 0, "a delegation-only own turn counts zero: the arm runs no courier, so it drives no planner call in any arm")
+        jd.plan_units = lambda session, store, floor=None, lazy_text=True: [("s3", "work", 100), ("s3b", "live", 100)]
+        jd._segs = lambda turn, store: [{"id": "s3"}, {"id": "s3b"}]
+        session = {"turns": [[{"id": "s3"}, {"id": "s3b"}]]}
+        self.assertEqual(self.je.own_turn_plannable_count(jd, "fsid", session, store), 2, "work and live both count: they reach plan_llm unconditionally")
+
     def test_a_minted_top_scores_by_the_seedstart_boundary_not_startt(self):
         """PR 2099 review low 3: a top the arm mints in the ending's own turn WITHOUT filing a done or block on it records as
         SCORED, by the seedStart cut boundary. For an opener-less ending startT is None, so reverting the boundary to startT
@@ -861,6 +886,36 @@ class Harness(unittest.TestCase):
         em = captured["jd"].em
         self.assertLessEqual(len(em._ASM_CACHE), 1, "run_arm_inprocess evicts each ending: assembly cache flat, not %d of %d" % (len(em._ASM_CACHE), len(m["endings"])))
         self.assertLessEqual(len(em._JSONL_CACHE), 1, "run_arm_inprocess evicts each ending: record cache flat, not %d of %d" % (len(em._JSONL_CACHE), len(m["endings"])))
+
+    def test_a_nudge_only_unplanned_ending_reads_arms_comparable_via_the_parse(self):
+        """The excuse fix (PR 2143), report level: a run whose only unplanned-in-every-arm ending is NUDGE-ONLY (its own turn a romp
+        Nudge, which drives no planner model call on an absent/resolved goal) reads all arms COMPARABLE through the parse
+        fallback. The pre-fix count treated the nudge as a plannable unit and read every arm not comparable."""
+        nsid = "11111111-2222-4444-8888-00000000abcd"
+        g = nsid + ":g1"
+        recs = [uline(nsid, T0, "add a retry to the uploader", "nu0", None),
+                aline(nsid, T0 + 30, "Added the retry.", "na0", "nu0"),
+                uline(nsid, T0 + 600, "<!-- romp-injected --><!-- romp-goal-id: %s --> where does this stand?" % g, "nu1", "na0"),
+                aline(nsid, T0 + 630, "Still going.", "na1", "nu1")]
+        (self.pdir / (nsid + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in recs))
+        (self.state / "names" / nsid).write_text("web\t%s\t#abcdef\n" % self.cwd)
+        dest, m = self._corpus(name="nudgecorpus")
+        ne = self._ending(m, nsid, 1)                        # the turn-1 ending: its own turn is the romp Nudge
+        run_root = os.path.join(self.td, "runs-nudge")
+        env = {k: os.environ.get(k) for k in ("XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "ROMP_CLAUDE_BIN")}
+        self.addCleanup(lambda: [os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v) for k, v in env.items()])
+        for arm in ("A", "B"):
+            self.je.run_arm_inprocess(dest, arm, None, run_root, None, self.fake, now=T0 + 10**6)
+        Path(run_root, "arms.json").write_text(json.dumps({"arms": ["A", "B"]}))
+        for arm in ("A", "B"):                               # the nudge ending planned nothing (its goal-id resolves to no node in the fresh seed -> the kernel's no-resolvable-target road, one of its three no-call roads); strip the recorded count to force the PARSE fallback (as the launch-head arms had none)
+            rp = Path(run_root, arm, "results.json"); r = json.loads(rp.read_text())
+            self.assertIn(ne["id"], r["endingsUnplanned"], "the nudge ending is unplanned in arm %s: %r" % (arm, r["endingsUnplanned"]))
+            for e in r["endings"].values():
+                e.pop("plannableUnits", None)
+            rp.write_text(json.dumps(r))
+        by = {r["arm"]: r for r in self.je.report(dest, run_root, str(self.state))}
+        self.assertIn(ne["id"], by["A"]["excusedEndings"], "the nudge-only ending is excused (own-turn nudge counts 0 plannable units, via the parse): %r" % by["A"]["excusedEndings"])
+        self.assertTrue(by["A"]["comparable"] and by["B"]["comparable"], "both arms read comparable: the only unplanned ending is a no-call nudge (a no-resolvable-target road)")
 
     def test_a_seal_boundary_fault_is_not_excused_and_marks_every_arm_not_comparable(self):
         """The grounded excuse's key case (the contributor's fixture, manager 2026-09-24): with the seed boundary set PAST the
