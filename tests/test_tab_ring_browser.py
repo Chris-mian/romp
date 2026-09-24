@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """THE IDENTITY RING on a two-row tab strip, served: a hermetic kernel serves six synthetic notes-api sessions
-(TESTHOST, one flat row of tabs, the chat lens narrowed to no tags) into a narrow viewport, so the six tabs wrap onto
+(TESTHOST, an ungrouped list of six tabs, the chat lens narrowed to no tags) into a narrow viewport, so the six tabs wrap onto
 TWO rows. The test measures that a SECOND-ROW active tab keeps its own top edge and its identity ring whole, in both
 themes: the strip wraps to at least two rows, a tab sits on the second row and is the active one, it wears the
 `colored` identity ring as an INSET box shadow, and the T134 hairline (`--box-border`) runs directly above it, one css
@@ -8,7 +8,7 @@ pixel over the tab's own top edge, so the 1px row gap the hairlines need never c
 ring is inset 1.5px and begins one pixel below the edge).
 
 TAB_RING_DIST=<dir> serves another tree's UI bundle (the red run's before); TAB_RING_SHOTS=<prefix> writes
-<prefix>-strip-<theme>.png (the wrapped strip per theme); TAB_RING_DUMP=<path> writes the whole measurement. Skips
+<prefix>-<theme>.png (the wrapped strip per theme); TAB_RING_DUMP=<path> writes the whole measurement. Skips
 LOUDLY without the extension deps or a Playwright browser (CI sets ROMP_SERVED_TESTS_REQUIRE=1 and installs both, so a
 skip there is a failure). Synthetic throughout: placeholder sids, TESTHOST, invented text.
 """

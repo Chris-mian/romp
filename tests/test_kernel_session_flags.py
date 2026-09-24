@@ -1001,6 +1001,7 @@ class WsFlagsMustBeBooleans(unittest.TestCase):
             ("setFileEditing", "enabled", {}, km._file_editing_on, warn),
             ("setThinkingSummaries", "enabled", {}, km._thinking_summaries_on, warn),
             ("setWholeChatFrames", "enabled", {}, km._whole_chat_frames_on, warn),   # the Whole chat frames switch (2026-09-15)
+            ("setRouterModels", "enabled", {}, km._router_models_on, warn),   # the Extra models switch (2026-09-21): no frame on success, the models frame is the redraw
             ("setConserve", "enabled", {}, km._conserve_on, warn),
             ("setJudgeFast", "enabled", {}, lambda: km.jd._state_str("judge-fast", "off") == "on", warn),   # Fast mode, the triage tier's box
             ("setDistillFast", "enabled", {}, lambda: km.jd._state_str("distill-fast", "off") == "on", warn),   # T300: a box per tier

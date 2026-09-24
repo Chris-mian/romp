@@ -89,8 +89,8 @@ test("builtInOwner names the behaviour a chord already belongs to — the four A
     assert.equal(builtInOwner("Alt+" + k, false), "Move focus between panes", k);
     assert.equal(builtInOwner("Alt+" + k, true), "Move focus between panes", k + " on a Mac");
   }
-  assert.equal(builtInOwner("ArrowLeft", false), "Switch session (from the tab bar)");
-  assert.equal(builtInOwner("ArrowRight", true), "Switch session (from the tab bar)");
+  assert.equal(builtInOwner("ArrowLeft", false), "Go to the previous session, from the tab bar", "the pair's fixed keys are built in too (FIXED_KEYS)");
+  assert.equal(builtInOwner("ArrowRight", true), "Go to the next session, from the tab bar");
   assert.equal(builtInOwner("Shift+Enter", false), "New line in the composer");
   assert.equal(builtInOwner("Escape", false), "Leave the composer / close a panel");
   assert.equal(builtInOwner("Ctrl+C", true), "Interrupt the session (composer)", "literal Ctrl, on a Mac too");

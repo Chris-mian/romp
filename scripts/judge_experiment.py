@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -51,11 +52,30 @@ NON_ARM_JUDGES = ("grouper", "consolidator", "distiller", "gister")   # the resh
 #   carry judge None (a rate-limited row carries the TIER "triage", a store-quarantined or history-unreadable row carries
 #   "romp"), so an allowlist let those through. A row naming a non-arm judge above is the only kind excluded.
 FAILURE_KINDS = ("parse", "give-up", "pass-crash", "call", "auth", "rate-limited", "fast-refused", "scratch",
-                 "unregistered-caller", "history-unreadable", "store-quarantined")   # judge-errors rows that mean the ending was not judged:
+                 "unregistered-caller", "history-unreadable", "store-quarantined", "no-seed-cut")   # judge-errors rows that mean the ending was not judged:
 #   a rejected reply, a crashed or refused call, the two pause kinds (`auth`, `rate-limited`), the call-level stand-downs (`fast-refused`,
 #   `scratch`, `unregistered-caller`). A `timeout` files under `call`, so it is not named. The `*-unreadable` family and the store-fault pair
 #   (`history-unreadable` aside) cannot fire on the arm's road (it hands the judges a store it just wrote and read), and are named only so a
 #   future road that can reach them counts them.
+# A transient arm-judge model call (a 120s-alarm kill with empty stdout, an empty reply, an error envelope) leaves a `call`
+# failure row that marks the arm not comparable. The candidate arm's longer closer/planner menus hit that kill more often
+# than the baseline's by chance, not by verdict (the 2026-09-22 clean pilot: 2 timeouts baseline, 5 candidate), so the paid
+# arms came out not-comparable for a reason the measure does not care about. The harness re-samples a transiently-failed call
+# up to CALL_ATTEMPTS times (identically for every arm) and gives each attempt HARNESS_ALARM_S rather than the module's 120s,
+# so a slow-but-real closer menu finishes; a call that fails EVERY attempt still counts. See install_call_retry.
+CALL_ATTEMPTS = 3
+HARNESS_ALARM_S = 240
+REPORTED_JUDGES = ("planner", "placer", "closer", "unblocker")   # the arm judges the measures read; the per-judge call counts
+#   join the table for all four, so a reader sees exactly what ran.
+MEASURED_JUDGES = ("planner", "closer")                          # the subset whose ZERO-call count over the WHOLE arm marks it
+#   NOT comparable, however clean its failure count: the planner and the closer run for NEARLY every judged ending (the closer
+#   returns before any model call on an empty menu, and the harness calls it only when a turn closed), so over 60+ endings a
+#   ZERO aggregate is a silent judge, not "nothing to do" (the 2026-09-23 PLACEMENTS_V bump sealed every old-version seed and a
+#   re-pilot read comparable with the planner silent; the precondition rests on the aggregate and makes that impossible). The
+#   `placer` and `unblocker` are reported but EXCLUDED from the hard precondition because both are CONDITIONAL: place_llm is the
+#   card-first second call (a sub-step's parent inside an already-chosen card) and the unblocker runs only over goals a pass
+#   blocked, so a legitimate arm with no sub-step placement or no blocks makes zero of those; requiring them would false-refuse
+#   such a run. See seal_pre_cut_adopt.
 ID_EPOCH_RE = re.compile(r"^[0-9a-f-]{36}:(\d{9,11})(?::|$)")   # a turn id or segment id carries its epoch second after the fsid
 
 
@@ -637,7 +657,7 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
                 (dest / "state" / "romp" / "overrides" / (eid + ".jsonl")).write_text("".join(x + "\n" for x in kept))
             manifest["endings"].append({"id": eid, "session": hashlib.sha256(sid.encode()).hexdigest()[:12],
                                         "lane": hashlib.sha256(store_key.encode()).hexdigest()[:12], "turn": k,
-                                        "class": cls, "cutT": cut_t, "startT": start_t, "tierOneEligible": bool(eligible),
+                                        "class": cls, "cutT": cut_t, "startT": start_t, "seedStart": seed_start, "tierOneEligible": bool(eligible),
                                         # the store's own identity, fixed AT BUILD so a later move of the live session cannot change which
                                         # store the measures read (this cache is never the repo, a mail or a body); the guard keys on the
                                         # node's own unblocker verdict, so no cwd or transcript leaves are needed
@@ -646,6 +666,31 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
                                                              if nd.get("parentId") is None)})
     (dest / "manifest.json").write_text(json.dumps(manifest, indent=1))
     return manifest
+
+
+def annotate_seed_start(corpus):
+    """Fill `seedStart` on a manifest built BEFORE the field existed, by build_corpus's own rule: seedStart = the ending's
+    startT (a turn with an opener). An OPENER-LESS ending (startT None) is LEFT null, so the run refuses it loudly rather than
+    guessing a boundary from a manifest that no longer holds the previous turn's cut. For today's corpus every ending has
+    startT, so all are filled and seedStart equals startT. Only fills an ending that has no seedStart yet (a re-run is a
+    no-op). Returns the count filled with a non-null value."""
+    corpus = Path(corpus)
+    refuse_inside_repo(corpus)                       # a mistyped --corpus must never overwrite a manifest in the repo
+    mf = corpus / "manifest.json"
+    m = json.loads(mf.read_text())
+    filled = nonnull = 0
+    for e in m["endings"]:
+        if "seedStart" not in e:
+            filled += 1
+            e["seedStart"] = e.get("startT")
+            if e["seedStart"] is not None:
+                nonnull += 1
+    if filled == 0:
+        return 0                                     # nothing to fill: leave the manifest byte-for-byte (a re-run is a true no-op)
+    tmp = mf.with_name(mf.name + ".tmp")             # atomic: write a temp beside it, then os.replace, so a kill mid-write leaves the index intact
+    tmp.write_text(json.dumps(m, indent=1))          # keep build_corpus's indent so the format does not drift
+    os.replace(str(tmp), str(mf))
+    return nonnull
 
 
 # ── the arms ────────────────────────────────────────────────────────────────────────────────────
@@ -750,6 +795,8 @@ def count_failure_rows(errors_path):
                 r = json.loads(line)
             except ValueError:
                 continue
+            if r.get("retried"):
+                continue                                          # a re-sampled attempt a later one recovered: not a failure (install_call_retry)
             if r.get("err") in FAILURE_KINDS and r.get("judge") not in NON_ARM_JUDGES:
                 n += 1
     except OSError:
@@ -768,11 +815,177 @@ def count_non_arm_failure_rows(errors_path):
                 r = json.loads(line)
             except ValueError:
                 continue
+            if r.get("retried"):
+                continue                                          # a recovered re-sample is not a failure, arm or non-arm (install_call_retry)
             if r.get("err") in FAILURE_KINDS and r.get("judge") in NON_ARM_JUDGES:
                 n += 1
     except OSError:
         return 0
     return n
+
+
+def failure_rows_by_kind(errors_path):
+    """{err: count} for the ARM failure rows that mark an arm not comparable (err in FAILURE_KINDS, judge not a non-arm
+    judge, not a retried attempt). The breakdown behind count_failure_rows, so a reader sees which kind remained after the
+    retries: a `call` timeout that failed every attempt, a `parse` the retry does not touch (it re-samples the CALL, not a
+    reply that came back and failed to parse downstream)."""
+    from collections import Counter
+    c = Counter()
+    try:
+        for line in Path(errors_path).open(encoding="utf-8"):
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("retried"):
+                continue
+            if r.get("err") in FAILURE_KINDS and r.get("judge") not in NON_ARM_JUDGES:
+                c[r["err"]] += 1
+    except OSError:
+        pass
+    return dict(c)
+
+
+def install_call_retry(jd, errors_path, counters=None, attempts=CALL_ATTEMPTS):
+    """Wrap jd._judge_run_impl so a transiently-failed arm-judge call is re-sampled up to `attempts` times, symmetric across
+    arms (every arm-judge call routes through _judge_run_impl). A failed attempt's rows are KEPT but tagged "retried": true
+    (count_failure_rows and count_non_arm_failure_rows skip a tagged row), so the ledger still shows every first-attempt kill
+    while comparability counts only a call that failed EVERY attempt. `counters` (a dict) tallies, for the measured (arm)
+    judges only: firstAttemptKills (calls whose first attempt was a transient kill), retryAttempts (re-samples made),
+    recoveredCalls (calls that served after a kill). A served reply, or a pause/stand-down "" (jd._judge_ctx.paused: the rate
+    gate, a scratch or auth pause), returns at once and is never retried. Returns the saved original for the caller to
+    restore in its finally."""
+    saved = jd._judge_run_impl
+    ep = Path(errors_path)
+    ctr = counters if counters is not None else {}
+    for key in ("firstAttemptKills", "retryAttempts", "recoveredCalls"):
+        ctr.setdefault(key, 0)
+    def _lines():
+        try:
+            return ep.open(encoding="utf-8").read().splitlines(keepends=True) if ep.exists() else []
+        except OSError:
+            return []
+    def _tag(start, end):
+        lines = _lines()
+        for i in range(start, min(end, len(lines))):
+            try:
+                r = json.loads(lines[i]); r["retried"] = True
+                lines[i] = json.dumps(r) + "\n"
+            except ValueError:
+                pass
+        try:
+            with ep.open("w", encoding="utf-8") as f:
+                f.writelines(lines)
+        except OSError:
+            pass
+    # This wrapper tags rows by LINE RANGE and rewrites the shared errors ledger whole, and the counters are a plain dict, so
+    # it is correct ONLY when the arm reaches _judge_run_impl one call at a time. It does: run_arm_inprocess calls
+    # _plan_session / _close_turn / _unblock_session directly and in sequence (never the pooled run_plan / run_close /
+    # run_unblock orchestrators), and none of those three fans out to a ThreadPoolExecutor internally. The guard below turns
+    # that construction into an enforced invariant: a concurrent entry raises rather than silently racing the tag-and-count.
+    # If a future path pools these calls, mark rows at WRITE time (a per-call id via a wrapped _log_judge_error) instead.
+    _guard = threading.Lock()
+    def _retrying(*a, **k):
+        if not _guard.acquire(blocking=False):
+            raise RuntimeError("install_call_retry: _judge_run_impl reached concurrently; the by-line-range tag-and-count "
+                               "assumes the arm's single-threaded loop (run_arm_inprocess). Mark rows at write time instead.")
+        try:
+            judge = k.get("judge") if "judge" in k else (a[4] if len(a) > 4 else None)
+            arm = judge not in NON_ARM_JUDGES                            # count only the measured judges; still retry a non-arm call
+            ranges, out = [], None
+            for attempt in range(max(1, attempts)):                      # loop-ok: bounded re-sample of one failed call
+                if attempt > 0 and arm:
+                    ctr["retryAttempts"] += 1
+                before = len(_lines())
+                out = saved(*a, **k)
+                if out or jd._judge_ctx.paused or not jd._judge_ctx.last_call_fail:
+                    if ranges:                                           # a kill earlier, now served/skipped: recovered, tag its rows out
+                        if arm:
+                            ctr["recoveredCalls"] += 1
+                        for s, e in ranges:
+                            _tag(s, e)
+                    return out
+                if not ranges and arm:
+                    ctr["firstAttemptKills"] += 1
+                ranges.append((before, len(_lines())))
+            for s, e in ranges[:-1]:                                     # every attempt failed: the LAST rows are the one real failure, tag the earlier ones
+                _tag(s, e)
+            return out
+        finally:
+            _guard.release()
+    jd._judge_run_impl = _retrying
+    return saved
+
+
+def seal_pre_cut_adopt(jd, fsid, session, store, cut_t):
+    """Prepare a cut seed store so the arm plans exactly the ending's OWN turn, independent of the store's recorded
+    PLACEMENTS_V. A seed cut from a session at an OLDER placements-identity version is otherwise sealed WHOLE by
+    _plan_session's _migrate_placements (its dormant-session replay guard fires on ANY version mismatch), so no arm judge
+    plans anything: the 2026-09-23 PLACEMENTS_V 14->15 bump did exactly this, and a re-pilot read comparable with the planner
+    silent. Instead: SEAL every ready unit born BEFORE the cut (placements[key]=None), keyed on the unit's TIME (< cut_t),
+    which is derivation-independent and so survives the next version bump; then ADOPT the current version so _plan_session
+    skips its own seal. "History already planned, plan the turn once" is the fairest stand-in for a live session that kept up
+    (a full adoption would replay history and measure flaps we do not care about). Idempotent for an already-current seed: a
+    pre-cut unit that _placed_key already dedups is left, and the version stamp is a no-op. Returns the count sealed.
+    See plans/judge-prompt-experiments.md (the 2026-09-23 method change)."""
+    floor = jd.episode_floor(fsid)
+    live = set(seg["id"] for turn in (session.get("turns") or []) for seg in jd._segs(turn, store))
+    sealed = 0
+    for u in jd.plan_units(session, store, floor=floor, lazy_text=True):
+        if u[2] is not None and u[2] < cut_t:                     # a unit born before the ending's cut: pre-turn history, seal it
+            key = jd._unit_key(u[0], u[1])
+            if not jd._placed_key(store["placements"], key, live, floor=floor):
+                store["placements"][key] = None
+                sealed += 1
+    store["placementsV"] = jd.PLACEMENTS_V                        # adopt: _plan_session will not run its whole-store seal
+    return sealed
+
+
+def own_turn_plannable_count(jd, fsid, session, store):
+    """The PLANNER-served units of the ending's OWN final turn (the parse's last turn), before any seal. The ground for the
+    corpus-unplanned excuse (manager 2026-09-24): an ending unplanned in every arm is excused ONLY when this count is zero, so
+    the excuse rests on the ending's own content, not on cross-arm agreement (which cannot tell a nothing-to-plan turn from one
+    a harness fault silenced in every arm). Read from the parsed turn, NEVER the seed boundary, whose fault this catches: a seed
+    boundary at or past the cut seals the own turn's units, so a count taken AFTER the seal reads zero for a faulted ending,
+    while this count, over the last turn's own segments, still finds them. A `prompt` unit is the opener judge's (a workless
+    opening message, kernel/judge.py); it is not a planner unit, so an ending whose own turn yields only a prompt had nothing
+    for the planner and counts zero. A unit the seed store already places is not counted."""
+    turns = session.get("turns") or []
+    if not turns:
+        return 0
+    floor = jd.episode_floor(fsid)
+    placements = store.get("placements") or {}
+    last_ids = {seg["id"] for seg in jd._segs(turns[-1], store)}                      # the ending's own turn: the truncated transcript's last turn
+    live = {seg["id"] for turn in turns for seg in jd._segs(turn, store)}
+    n = 0
+    for u in jd.plan_units(session, store, floor=floor, lazy_text=True):
+        seg_id, phase = u[0], u[1]
+        if seg_id not in last_ids or phase == "prompt":                              # not the own turn, or an opener unit: not a planner unit
+            continue
+        if not jd._placed_key(placements, jd._unit_key(seg_id, phase), live, floor=floor):
+            n += 1
+    return n
+
+
+def calls_by_judge(usage_path):
+    """{judge: model-call count} from an arm's judge-usage ledger, so the report can show the per-judge counts and the
+    comparability precondition can refuse an arm in which a MEASURED_JUDGE was silent."""
+    from collections import Counter
+    c = Counter()
+    try:
+        for line in Path(usage_path).open(encoding="utf-8"):
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("err"):
+                continue                                          # a failed call (error envelope) is not the judge running: an all-failed judge stays silent
+            j = r.get("judge")
+            if j:
+                c[j] += 1
+    except OSError:
+        pass
+    return dict(c)
 
 
 def ledger_cost(usage_path):
@@ -808,6 +1021,7 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
     prompts = json.loads(Path(prompts_file).read_text()) if prompts_file else {}
     now = int(time.time()) if now is None else int(now)
     results = {"arm": arm, "prompts": sorted(prompts), "endings": {}, "stopped": None, "failures": 0, "closerNone": 0,
+               "endingsUnplanned": [], "endingsCrashed": [],   # endings that planned nothing / crashed a pass: either marks the arm not comparable, both named (2026-09-23)
                "buildsPerCard": builds}     # stamp the per-card build count so a reader knows a card's column is the majority of N (the 2026-09-22 PR 2022 review, MED 1)
     results["preflightProbe"] = preflight_auth(jd, jd.TRIAGE_MODEL)   # refuse before the first ending if the arm
     #                            cannot authenticate; the probe's own cost is noted here, outside the arm's judge ledger
@@ -821,6 +1035,10 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
     jd._consolidate_store = lambda *a, **k: 0
     usage = jd.USAGE
     errors_path = Path(jd.ERRORS)
+    retry_counters = {}
+    saved_run_impl = install_call_retry(jd, errors_path, retry_counters)   # re-sample a transiently-failed arm call; restored in the finally
+    saved_alarm = jd.CALL_ALARM_S
+    jd.CALL_ALARM_S = HARNESS_ALARM_S                      # a slow-but-real closer/planner menu finishes rather than a 120s kill
     def error_rows():
         return count_failure_rows(errors_path)
     def flush():
@@ -832,76 +1050,105 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
             path = next(iter((corpus / "claude" / "projects").glob("*/%s.jsonl" % eid)), None)
             if path is None:
                 continue
-            lo = e.get("startT")
+            lo = e.get("seedStart")                           # the seed's own cut: the ending's turn start, or the previous turn's end for an
+            if lo is None:                                     # OPENER-LESS continuation, as build_corpus recorded it. An older manifest carries
+                lo = e.get("startT")                           # no seedStart; run `annotate` to fill it, or its startT is the same value here. NO
+            #                                                   third derivation: the boundary is seedStart, else startT, else the loud refusal below
+            #                                                   (never cutT, which would seal the ending's own turn).
+            if lo is None:                                     # neither present (a degenerate opener-less ending): refuse LOUDLY, count against
+                jd._log_judge_error("planner", eid, "no-seed-cut", note="opener-less ending with no seedStart or startT; annotate the corpus")
+                results["failures"] += 1                       # comparability, and NAME it so it is never silently sealed on its own turn
+                results["endingsUnplanned"].append(eid)
+                results["endings"][eid] = {"class": e["class"], "builds": []}
+                flush()
+                continue
             seed_path = corpus / "state" / "romp" / "goals" / (eid + ".json")
             seed = seed_path.read_text() if seed_path.is_file() else None
             builds_out = []
+            plannable = None                                     # the ending's own-turn planner-unit count, recorded once so the report grounds the excuse without re-parsing (2026-09-24)
+            planner0 = calls_by_judge(usage).get("planner", 0)   # per-ending precondition: this ending must make at least one planner call
             try:
-                for _b in range(builds):
-                    errs0 = error_rows()
-                    target = state / "romp" / "goals" / (eid + ".json")             # the same store copy for every build
-                    if seed is None:
-                        target.unlink(missing_ok=True)
-                    else:
-                        target.write_text(seed)
-                    jd.parse_cache_clear()
-                    session = jd.parsed_session(eid, [str(path)], now)
-                    turns = session.get("turns") or []
-                    store = jd.load_goals(eid)
-                    closed = jd._session_settled(eid, str(path), session, store, now=now)   # the settled gate over the ending's own transcript
-                    jd.rollup_status(store, closed, now=now)                            # the flags from the seed's diary, before the first menu
-                    jd.save_goals(eid, store)
-                    jd._plan_session(eid, str(path), now)
-                    store = jd.load_goals(eid)
-                    closed_turns = [t for t in turns if not jd._turn_open(t, turns)]
-                    if closed_turns:
-                        seg_by_id = {seg["id"]: seg for turn in turns for seg in jd._segs(turn, store)}   # the goal-history map production sends
-                        rows_before = error_rows()
-                        if jd._close_turn(store, closed_turns[-1], seg_by_id=seg_by_id) is None:
-                            results["closerNone"] += 1
-                            if error_rows() == rows_before:
-                                results["failures"] += 1      # the closer gave nothing and filed no row (the cap road): counted once here
-                    jd.rollup_status(store, closed, now=now)
-                    jd.save_goals(eid, store)
-                    jd._unblock_session(eid, str(path), now)
-                    store = jd.load_goals(eid)
-                    tops = {}
-                    for nid, nd in (store.get("nodes") or {}).items():
-                        if nd.get("parentId") is not None:
-                            continue
-                        born = float(nd.get("t") or 0)
-                        # SCORED for this ending: born in the turn, OR the ARM filed a done/block on it this build. record_verdict
-                        # stamps a verdict's `at` with the pass's `now`, so a row the ARM wrote reads `at` == now while a seed row
-                        # kept its earlier `at`; that parts them. A lift RIDER's done keeps the lift's own ev_t (before the turn),
-                        # so an ev_t test missed its leak; the arm's filing catches it (the rider residual: a done the arm files
-                        # for an EARLIER turn's lift also reads scored, named here and left as the one over-count).
-                        arm_filed = any(ev.get("kind") in ("done", "block") and float(ev.get("at") or 0) >= now
-                                        for ev in (nd.get("log") or []))
-                        scored = bool((lo is not None and born >= lo) or arm_filed)
-                        tops[nid.split(":")[-1]] = {"column": column_of((store.get("status") or {}).get(nid)), "scored": scored}
-                    builds_out.append(tops)
-                    results["failures"] += error_rows() - errs0
-            except Exception as ex:                       # one ending's build must not abort the arm: file it, keep the rest
-                jd._log_judge_error("planner", eid, "pass-crash", note=repr(ex)[:200])
-                results["failures"] += 1
-                results["endings"][eid] = {"class": e["class"], "builds": builds_out, "crashed": repr(ex)[:200]}
+                try:
+                    for _b in range(builds):
+                        errs0 = error_rows()
+                        target = state / "romp" / "goals" / (eid + ".json")             # the same store copy for every build
+                        if seed is None:
+                            target.unlink(missing_ok=True)
+                        else:
+                            target.write_text(seed)
+                        jd.parse_cache_clear()
+                        session = jd.parsed_session(eid, [str(path)], now)
+                        turns = session.get("turns") or []
+                        store = jd.load_goals(eid)
+                        if plannable is None:                    # BEFORE the seal, from the ending's own final turn: the ground for the excuse
+                            plannable = own_turn_plannable_count(jd, eid, session, store)
+                        seal_pre_cut_adopt(jd, eid, session, store, lo)   # every ending (opener-less included): plan its own turn, independent of the seed's placementsV (2026-09-23)
+                        closed = jd._session_settled(eid, str(path), session, store, now=now)   # the settled gate over the ending's own transcript
+                        jd.rollup_status(store, closed, now=now)                            # the flags from the seed's diary, before the first menu
+                        jd.save_goals(eid, store)
+                        jd._plan_session(eid, str(path), now)
+                        store = jd.load_goals(eid)
+                        closed_turns = [t for t in turns if not jd._turn_open(t, turns)]
+                        if closed_turns:
+                            seg_by_id = {seg["id"]: seg for turn in turns for seg in jd._segs(turn, store)}   # the goal-history map production sends
+                            rows_before = error_rows()
+                            if jd._close_turn(store, closed_turns[-1], seg_by_id=seg_by_id) is None:
+                                results["closerNone"] += 1
+                                if error_rows() == rows_before:
+                                    results["failures"] += 1      # the closer gave nothing and filed no row (the cap road): counted once here
+                        jd.rollup_status(store, closed, now=now)
+                        jd.save_goals(eid, store)
+                        jd._unblock_session(eid, str(path), now)
+                        store = jd.load_goals(eid)
+                        tops = {}
+                        for nid, nd in (store.get("nodes") or {}).items():
+                            if nd.get("parentId") is not None:
+                                continue
+                            born = float(nd.get("t") or 0)
+                            # SCORED for this ending: born in the turn, OR the ARM filed a done/block on it this build. record_verdict
+                            # stamps a verdict's `at` with the pass's `now`, so a row the ARM wrote reads `at` == now while a seed row
+                            # kept its earlier `at`; that parts them. A lift RIDER's done keeps the lift's own ev_t (before the turn),
+                            # so an ev_t test missed its leak; the arm's filing catches it (the rider residual: a done the arm files
+                            # for an EARLIER turn's lift also reads scored, named here and left as the one over-count).
+                            arm_filed = any(ev.get("kind") in ("done", "block") and float(ev.get("at") or 0) >= now
+                                            for ev in (nd.get("log") or []))
+                            scored = bool((lo is not None and born >= lo) or arm_filed)
+                            tops[nid.split(":")[-1]] = {"column": column_of((store.get("status") or {}).get(nid)), "scored": scored}
+                        builds_out.append(tops)
+                        results["failures"] += error_rows() - errs0
+                except Exception as ex:                       # one ending's build must not abort the arm: file it, keep the rest
+                    jd._log_judge_error("planner", eid, "pass-crash", note=repr(ex)[:200])
+                    results["failures"] += 1
+                    results["endingsCrashed"].append(eid)     # NAME a crashed ending so it shows in the cell beside pass-crash (never dropped silently)
+                    results["endings"][eid] = {"class": e["class"], "builds": builds_out, "crashed": repr(ex)[:200],
+                                               "plannableUnits": plannable}
+                    flush()
+                    continue
+                if calls_by_judge(usage).get("planner", 0) == planner0:   # this ending planned nothing (a sealed-whole seed, a refusal): never silent
+                    results["endingsUnplanned"].append(eid)
+                results["endings"][eid] = {"class": e["class"], "builds": builds_out, "plannableUnits": plannable}
                 flush()
-                continue
-            results["endings"][eid] = {"class": e["class"], "builds": builds_out}
-            flush()
+            finally:
+                jd.em.evict_document(str(path))   # crash OR success: drop this ending from both event-model caches (low a, 2026-09-24)
             cost, n, _ = ledger_cost(usage)
             if budget_usd is not None and cost > budget_usd * BUDGET_OVERRUN:
                 results["stopped"] = {"after": eid, "cost": round(cost, 4), "budget": budget_usd}
                 break
+        results["finished"] = True   # the arm ran its whole ending loop (a budget stop counts, via results["stopped"]); the excuse needs every arm finished (2026-09-24)
     finally:
         restore_prompts(jd, saved)
         jd._group_store, jd._consolidate_store = saved_group, saved_consolidate   # restore the grouper/consolidator (in-process safety)
+        jd._judge_run_impl = saved_run_impl                                       # restore the un-retried call and the module alarm
+        jd.CALL_ALARM_S = saved_alarm
         try:
             cost, n, mean_ms = ledger_cost(usage)
             results["cost"] = round(cost, 4); results["calls"] = n; results["callMsMean"] = round(mean_ms)
         except Exception as e:
             results["costError"] = type(e).__name__    # a ledger read that raises is RECORDED, not swallowed: a reader tells a free arm from a broken tally
         results["nonArmFailures"] = count_non_arm_failure_rows(errors_path)   # excluded from comparability, surfaced beside it (review 2026-09-22 PR 2022)
+        results["retry"] = retry_counters                          # firstAttemptKills / retryAttempts / recoveredCalls, so the comparability claim is visible (manager 2026-09-23)
+        results["failuresByKind"] = failure_rows_by_kind(errors_path)   # the remaining (arm, un-retried) failures by kind: a lone `parse` stays named
+        results["callsByJudge"] = calls_by_judge(usage)                  # per-judge call counts: an arm with a silent MEASURED_JUDGE is not comparable (manager 2026-09-23)
         flush()                                      # results.json is written in the finally, whatever raised in the loop or after it
     return results
 
@@ -1079,7 +1326,7 @@ def placement_gestures(live_state, store_key, start_t, cut_t, faults=None):
     return out
 
 
-def measure(manifest, results, live_state, labels=None, labels_state="absent"):
+def measure(manifest, results, live_state, labels=None, labels_state="absent", excused=None):
     """Per arm, scored against the user's OWN later actions on the live cards (road (b): NOT the labeller's class, which the
     pilot showed is not a truth about an ending's shape). Leaks into Completed: the arm placed a top completed that the user
     then re-opened. False interrupts: the arm left a top needs_input that the user plainly crossed off, with no re-open and
@@ -1102,6 +1349,11 @@ def measure(manifest, results, live_state, labels=None, labels_state="absent"):
     attribution = []                                             # per-ending: id, arm, leak, false interrupt, both class keyings
     faults = []
     builds_n = results.get("buildsPerCard") or max((len(r.get("builds") or []) for r in results["endings"].values()), default=0)
+    excused = set(excused or ())                                  # endings unplanned in EVERY arm whose own turn had nothing to plan: they
+    #                                                              govern the comparability verdict ONLY, never the metrics. Every ending is
+    #                                                              scored (an excused ending is in every arm's results, so the arms already
+    #                                                              compare on one set; skipping it would drop the closer's and unblocker's
+    #                                                              verdicts the candidates exist to change, manager 2026-09-24 reversing the exclusion)
     for eid, r in results["endings"].items():
         e = by_id.get(eid, {})
         store_key = e.get("storeKey")
@@ -1117,7 +1369,7 @@ def measure(manifest, results, live_state, labels=None, labels_state="absent"):
         majority = {nid: mv for nid, mv in ((nid, _majority(vals)) for nid, vals in vals_of.items()) if mv is not _UNSCORED}
         flaps += sum(1 for vals in vals_of.values() if len(set(vals)) > 1)
         if store_key:
-            g = placement_gestures(live_state, store_key, e.get("startT"), float(e.get("cutT") or 0), faults=faults)
+            g = placement_gestures(live_state, store_key, e.get("seedStart", e.get("startT")), float(e.get("cutT") or 0), faults=faults)   # seedStart so an opener-less ending's window is [prev turn end, cut], not empty (2026-09-23)
             if g is None:
                 unresolved += 1                                 # the live store is gone or unreadable (a fault is recorded for the unreadable cases)
             elif not g:
@@ -1153,22 +1405,68 @@ def measure(manifest, results, live_state, labels=None, labels_state="absent"):
         else:
             unresolved += 1                                     # the manifest carries no live identity (an old or synthetic manifest): unresolvable
     failures = int(results.get("failures") or 0)
+    calls_by_j = results.get("callsByJudge")
+    no_record = calls_by_j is None                                          # an old/withdrawn results record: no per-judge record, cannot be read comparable
+    silent_judges = [j for j in MEASURED_JUDGES if not calls_by_j.get(j)] if not no_record else []   # a measured judge with ZERO calls: not comparable
+    unplanned = list(results.get("endingsUnplanned") or [])                 # endings this arm planned nothing on
+    crashed = list(results.get("endingsCrashed") or [])                     # endings that crashed a pass (already counted in failures): named, never dropped silently
+    unplanned_here = sorted(set(unplanned) - excused)                       # unplanned here and NOT excused: a strict-subset silence, or an ending unplanned in
+    #                                                                         every arm whose own turn HAD plannable units (a seal-boundary fault / silenced planner) -> not comparable
     return {"arm": results["arm"], "endings": len(results["endings"]), "leaks": leaks, "falseInterrupts": false_interrupts,
             "answeredThenCleared": answered_then_cleared, "flaps": flaps, "gesturedEndings": gestured,
             "untouchedEndings": untouched, "unplacedEndings": unplaced, "unresolvedEndings": unresolved,
             "costUsd": results.get("cost", 0.0), "calls": results.get("calls", 0), "callMsMean": results.get("callMsMean", 0),
             "stopped": results.get("stopped"), "failures": failures, "nonArmFailures": int(results.get("nonArmFailures") or 0),
-            "comparable": failures == 0, "buildsPerCard": builds_n,
+            "comparable": failures == 0 and not silent_judges and not no_record and not unplanned_here and not crashed, "buildsPerCard": builds_n,
+            "callsByJudge": calls_by_j or {}, "silentJudges": silent_judges, "noPerJudgeRecord": no_record,
+            "endingsUnplanned": unplanned, "unplannedNotExcused": unplanned_here,
+            "excusedEndings": sorted(excused),    # the metrics run over every ending; the excused set lifts only the comparability penalty (no separate denominator)
+            "endingsCrashed": crashed,
+            "retry": results.get("retry") or {}, "failuresByKind": results.get("failuresByKind") or {},
             "leaksByClass": leaks_by_class, "falseInterruptsByClass": fi_by_class,
             "leaksByLabellerClass": leaks_by_labeller, "falseInterruptsByLabellerClass": fi_by_labeller,
             "labellerKeying": labels_state, "attribution": attribution,   # the labeller-keying source: present / absent / unreadable (the 2026-09-22 PR 2035 review, MED)
             "liveReadErrors": [{"session": h, "error": ex} for h, ex in sorted(set(faults))]}
 
 
+def plannable_units_from_corpus(corpus, manifest, ending_ids, now=None):
+    """{ending id: own-turn planner-unit count} parsed from the READ-ONLY corpus, for the report-time fallback when an arm did
+    not record the count (the running arms on the launch head predate the field). A deterministic parse, no model call: the
+    corpus state is copied to a scratch root only so the judge module can load against it, and each document is evicted after
+    it is read. An id whose transcript cannot be found maps to None, which the caller keeps NOT excused (an unparseable ending
+    is never silently excused). See own_turn_plannable_count for the count itself (2026-09-24)."""
+    corpus = Path(corpus)
+    by_id = {e["id"]: e for e in manifest["endings"]}
+    now = int(time.time()) if now is None else int(now)
+    counts = {}
+    scratch = Path(tempfile.mkdtemp(prefix="je-report-parse-"))
+    try:
+        state = scratch / "state"
+        shutil.copytree(corpus / "state", state)
+        jd = load_judge(state, corpus / "claude", "/bin/true")   # a parse only: the bin is never invoked, so no paid call and no auth
+        for eid in ending_ids:
+            path = next(iter((corpus / "claude" / "projects").glob("*/%s.jsonl" % eid)), None)
+            if path is None or eid not in by_id:
+                counts[eid] = None
+                continue
+            try:
+                jd.parse_cache_clear()
+                session = jd.parsed_session(eid, [str(path)], now)
+                store = jd.load_goals(eid)
+                counts[eid] = own_turn_plannable_count(jd, eid, session, store)
+            finally:
+                jd.em.evict_document(str(path))
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    return counts
+
+
 def report(corpus, run_root, live_state, figure=None):
     """The table (markdown, written beside the arms) and the figure (the cleanplots skill; skipped with a note when the
-    library is absent). Counts and dollars only: nothing from the corpus. The measures read the live root (read only) for the
-    user's later gestures and the kernel's rulings per placed card; it exists only while the live root still lists the session."""
+    library is absent). The measures read the live root (read only) for the user's later gestures and the kernel's rulings per
+    placed card; it exists only while the live root still lists the session. To ground the corpus-unplanned excuse the report
+    may also parse the READ-ONLY corpus (a deterministic parse, no model call) for the arms that did not record the count; the
+    table itself carries counts and dollars, nothing from the corpus."""
     corpus, run_root = Path(corpus), Path(run_root)
     manifest = json.loads((corpus / "manifest.json").read_text())
     labels, labels_state = {}, "absent"                         # {ending id: labeller class} from labels.json + the keying source stamp (the 2026-09-22 PR 2035 review, MED)
@@ -1181,19 +1479,85 @@ def report(corpus, run_root, live_state, figure=None):
             labels, labels_state = {}, "unreadable"             # a torn OR wrong-shape labels.json (a top-level object, a list of
             #                                                     strings, a number) is RECORDED (labellerKeying), never a silent
             #                                                     empty pass that reads as zero leaks per stratum (the 2026-09-22 PR 2035 review)
-    rows = []
-    for d in sorted(p for p in run_root.iterdir() if (p / "results.json").is_file()):
-        rows.append(measure(manifest, json.loads((d / "results.json").read_text()), live_state, labels=labels, labels_state=labels_state))
-    lines = ["| arm | endings | gestured | untouched | unplaced | unresolved | leaks into Completed | false interrupts | answered then cleared | flaps | cost (USD) | calls | mean call ms | stopped | failures |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    arm_results = [json.loads((d / "results.json").read_text())
+                   for d in sorted(p for p in run_root.iterdir() if (p / "results.json").is_file())]
+    # An ending unplanned in EVERY arm MIGHT be a corpus property (its own turn had nothing to plan), which should lift the
+    # comparability penalty (manager 2026-09-24). Two gates, both required. (a) The run is COMPLETE: arms.json records the
+    # EXPECTED arm set (written once at launch), at least TWO arms, every one present and finished. An intersection over the
+    # arms PRESENT would excuse wrongly on a one-arm or partial run (a one-arm root's intersection is that arm's whole unplanned
+    # set; a mid-run report reads flushed results). (b) The excuse is GROUNDED in the ending's own content: for each candidate
+    # (unplanned in every arm), the own-turn planner-unit count (recorded per ending, else parsed from the read-only corpus) is
+    # zero. A candidate WITH plannable units was silenced by a seal-boundary fault or a dead planner, not a workless turn: it is
+    # NOT excused, so it stays in every arm's unplannedNotExcused and every arm reads not comparable. The excuse lifts the
+    # comparability penalty only; every ending is scored into the metrics (measure no longer skips).
+    arms_f = run_root / "arms.json"
+    expected = set(json.loads(arms_f.read_text()).get("arms") or []) if arms_f.is_file() else set()
+    present = {r.get("arm") for r in arm_results}
+    finished = {r.get("arm") for r in arm_results if r.get("finished")}
+    complete = len(expected) >= 2 and expected <= present and expected <= finished   # at least two expected arms, all present and finished, or no excuse
+    candidate = set.intersection(*[set(r.get("endingsUnplanned") or []) for r in arm_results]) if (complete and arm_results) else set()
+    recorded = {}                                               # {eid: own-turn planner-unit count} recorded by the arms (future runs); absent for the launch-head arms
+    for eid in candidate:
+        for r in arm_results:
+            v = (r.get("endings") or {}).get(eid, {}).get("plannableUnits")
+            if v is not None:
+                recorded[eid] = v; break
+    need_parse = [eid for eid in candidate if eid not in recorded]
+    parsed = plannable_units_from_corpus(corpus, manifest, need_parse) if need_parse else {}
+    plannable = {eid: (recorded[eid] if eid in recorded else parsed.get(eid)) for eid in candidate}
+    excused = {eid for eid in candidate if plannable.get(eid) == 0}   # own turn had no planner unit: nothing to plan, comparability penalty lifted
+    not_excused = sorted(candidate - excused)                    # unplanned in every arm but with plannable units (or unparseable): every arm not comparable
+    rows = [measure(manifest, r, live_state, labels=labels, labels_state=labels_state, excused=excused) for r in arm_results]
+    lines = ["| arm | endings | gestured | untouched | unplaced | unresolved | leaks into Completed | false interrupts | answered then cleared | flaps | cost (USD) | calls | mean call ms | measured calls (planner/placer/closer/unblocker) | stopped | first-attempt kills | re-samples | recovered | failures |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
-        cell = "0" if r["comparable"] else "%d, not comparable" % r["failures"]
+        fbk = r.get("failuresByKind") or {}
+        if r["comparable"]:
+            cell = "0"
+        else:
+            parts = []
+            if fbk:
+                parts.append(", ".join("%s %d" % (k, v) for k, v in sorted(fbk.items())))
+            if r.get("silentJudges"):
+                parts.append("; ".join("%s 0 calls" % j for j in r["silentJudges"]))   # a silent measured judge names the arm not comparable (manager 2026-09-23)
+            if r.get("noPerJudgeRecord"):
+                parts.append("no per-judge record")            # an old/withdrawn results record has no callsByJudge: cannot be read comparable
+            if r.get("unplannedNotExcused"):
+                parts.append("%d ending(s) unplanned and not excused" % len(r["unplannedNotExcused"]))   # a strict-subset silence, OR a corpus-wide-unplanned ending whose own turn had plannable units (see the corpus-unplanned line)
+            if r.get("endingsCrashed"):
+                parts.append("%d ending(s) crashed" % len(r["endingsCrashed"]))   # a crashed pass named beside pass-crash, never dropped silently
+            cell = "%s, not comparable" % ("; ".join(parts) or ("%d" % r["failures"]))
         if r.get("nonArmFailures"):
             cell += " (%d non-arm)" % r["nonArmFailures"]       # an excluded failure is surfaced, never invisible (review 2026-09-22 PR 2022)
-        lines.append("| %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %.2f | %d | %d | %s | %s |" % (
-            r["arm"], r["endings"], r["gesturedEndings"], r["untouchedEndings"], r["unplacedEndings"], r["unresolvedEndings"],
+        rt = r.get("retry") or {}
+        cbj = r.get("callsByJudge") or {}
+        mj = "/".join(str(cbj.get(j, 0)) for j in REPORTED_JUDGES)
+        lines.append("| %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %.2f | %d | %d | %s | %s | %d | %d | %d | %s |" % (
+            r["arm"], r["endings"],                            # every ending is scored; the excuse lifts the comparability penalty only, not a denominator (manager 2026-09-24)
+            r["gesturedEndings"], r["untouchedEndings"], r["unplacedEndings"], r["unresolvedEndings"],
             r["leaks"], r["falseInterrupts"], r["answeredThenCleared"], r["flaps"], r["costUsd"], r["calls"], r["callMsMean"],
-            "yes" if r["stopped"] else "no", cell))
+            mj, "yes" if r["stopped"] else "no",
+            rt.get("firstAttemptKills", 0), rt.get("retryAttempts", 0), rt.get("recoveredCalls", 0), cell))
+    if rows:
+        _tot = max(r["endings"] for r in rows)             # the corpus size: each arm's OWN ending count, the max (never rows[0], which a partial first arm undercounts) (low c, 2026-09-24)
+        lines.append("")
+        _fin = len(expected & finished)
+        if complete:
+            _status = "complete: all %d expected arms finished." % len(expected)
+        elif len(expected) >= 2:
+            _status = "partial: %d of %d arms finished (%s); nothing excused, so an ending unplanned in an arm counts against it." % (
+                _fin, len(expected), ", ".join(sorted(expected - finished)) + " not finished")
+        elif expected:
+            _status = "one arm expected (%s): no excuse (an excuse needs at least two arms); an ending unplanned in it counts against it." % ", ".join(sorted(expected))
+        else:
+            _status = "partial: no arms.json (the expected arm set is unknown); nothing excused."
+        lines.append("run status: %s" % _status)
+        lines.append("corpus-unplanned: %d ending(s) planned nothing in EVERY arm of %d; %d excused (own final turn had no planner "
+                     "unit, nothing to plan) and %d not excused (own turn had plannable units: a seal-boundary fault or a silenced "
+                     "planner, so every arm reads not comparable%s). Every ending is scored into the metrics; the excuse lifts the "
+                     "comparability penalty only, it never removes an ending from a count."
+                     % (len(candidate), _tot, len(excused), len(not_excused),
+                        (" (%s)" % ", ".join(not_excused)) if not_excused else ""))
     counts = sorted({r.get("buildsPerCard") or 0 for r in rows})
     scope = ("%d builds" % counts[0]) if (len(counts) == 1 and counts[0]) else \
             ("builds per arm (" + ", ".join("%s %d" % (r["arm"], r.get("buildsPerCard") or 0) for r in rows) + ")" if rows else "the builds")
@@ -1204,7 +1568,21 @@ def report(corpus, run_root, live_state, figure=None):
             "TWO keyings: leaksByClass / falseInterruptsByClass on the manifest's heuristic class, and leaksByLabellerClass / "
             "falseInterruptsByLabellerClass on the labeller's class (labellerKeying names the source; an unlabeled bucket "
             "carries the rest so both sum to the totals). Offer, question and undone are the loose-ended strata, finished the "
-            "tier-one stratum." % (scope, ", ".join(NON_ARM_JUDGES)))
+            "tier-one stratum. A transiently-failed arm-judge call (a 120s-alarm kill) is re-sampled up to %d times: "
+            "first-attempt kills counts the calls killed on their first attempt, re-samples the extra attempts made, "
+            "recovered the kills a later attempt then served; only a call that failed EVERY attempt is a failure, named by "
+            "kind in the failures cell (a `parse` the re-sample does not touch stays its own row). Each arm seeds every ending "
+            "at the current placements version, sealing the pre-cut history by time so the arm plans the ending's OWN turn "
+            "regardless of the seed's recorded version, opener-less continuations included (the 2026-09-23 method change: a "
+            "PLACEMENTS_V bump otherwise sealed every old-version seed whole, and the planner planned nothing). An arm is "
+            "comparable only when the failures cell is 0 AND every REQUIRED judge (%s, each run for nearly every judged ending) "
+            "made at least one call over the whole arm: a run in which a required judge was silent, or one with no per-judge "
+            "record at all, is named not comparable, so a silent planner can never read comparable again. The measured-calls "
+            "column reports all four (%s); the `placer` and `unblocker` are REPORTED but NOT required (both conditional: the "
+            "placer is a sub-step's second call, the unblocker runs only over a pass's blocks), so a 0 in either is a reading, "
+            "not a fault. The 2026-09-22 clean run's 44/45 flap figure is WITHDRAWN as a baseline: it planned only the ~30 seeds "
+            "then at the current version and replayed some history; these figures stand alone."
+            % (scope, ", ".join(NON_ARM_JUDGES), CALL_ATTEMPTS, "/".join(MEASURED_JUDGES), "/".join(REPORTED_JUDGES)))
     (run_root / "table.md").write_text("\n".join(lines) + "\n\n" + note + "\n")
     (run_root / "measures.json").write_text(json.dumps(rows, indent=1))
     if figure:
@@ -1386,7 +1764,7 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
         key = key_of.get(e.get("lane") or e["session"])   # the lane's own store; never the anchor's when a lane hash is present but unresolved
         row_faults = []
         if key:
-            t1 = tier_one_label(live_state, key, float(e["cutT"] or 0), e.get("startT"), faults=row_faults)
+            t1 = tier_one_label(live_state, key, float(e["cutT"] or 0), e.get("seedStart", e.get("startT")), faults=row_faults)   # seedStart so an opener-less ending's window is not empty (2026-09-23)
             # a tierOneError marks a GENUINE read fault, when tier one could not be read AT ALL (t1 is None); a torn journal
             # row that still yields a label leaves that label standing with NO error beside it, the fault recorded at the run
             # level (tierOneErrors in the summary), not on the labeled row (the 2026-09-22 PR 2022 review, low 7)
@@ -1412,6 +1790,8 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
                      "spanS": int(time.time() - float(e["cutT"] or 0)),
                      "tierOneError": row_err,   # a faulted read or an unresolved key, told apart from a genuine tierOne null
                      "askError": ask_err})      # the ending turn's ask could not be parsed; the labeller ran on the final text alone
+        if path:
+            _event_model().evict_document(str(path))   # keep the label loop's record+assembly caches flat over the corpus (2026-09-24)
     (run_root / "labels.json").write_text(json.dumps(rows, indent=1))
     stable = sum(1 for r in rows if r["label"])
     stable_pct = round(100.0 * stable / len(rows), 1) if rows else None
@@ -1446,12 +1826,25 @@ def main(argv=None):
     rp.add_argument("--live-state", required=True); rp.add_argument("--figure", default=None)
     lb = sub.add_parser("label"); lb.add_argument("--corpus", required=True); lb.add_argument("--run-root", required=True)
     lb.add_argument("--live-state", required=True); lb.add_argument("--claude-bin", required=True); lb.add_argument("--model", default="fable")
+    an = sub.add_parser("annotate"); an.add_argument("--corpus", required=True)   # fill seedStart on a manifest built before the field existed
     a = ap.parse_args(argv)
     if a.cmd == "build-corpus":
         m = build_corpus(a.state_root, a.claude_root, a.dest, per_class=a.per_class)
         counts = {c: sum(1 for e in m["endings"] if e["class"] == c) for c in CLASSES}
         print(json.dumps({"endings": len(m["endings"]), "byClass": counts}))
+    elif a.cmd == "annotate":
+        print(json.dumps({"seedStartFilled": annotate_seed_start(a.corpus)}))
     elif a.cmd == "run":
+        Path(a.run_root).mkdir(parents=True, exist_ok=True)
+        arm_names = [spec.partition("=")[0] for spec in a.arm]
+        arms_f = Path(a.run_root) / "arms.json"                 # the EXPECTED arm set, written ONCE per run root: the report grounds and excuses corpus-wide-unplanned
+        if arms_f.is_file():                                    # only over a run whose every expected arm is present and finished (2026-09-24)
+            prior = sorted((json.loads(arms_f.read_text()).get("arms") or []))
+            if prior != sorted(arm_names):                      # a later launch with a DIFFERENT arm set would silently change what "every arm" means: refuse
+                raise SystemExit("run root %s already records arms %s; refusing to overwrite with %s. Use a fresh run root for a "
+                                 "different arm set (the expected-arms record is written once)." % (a.run_root, prior, sorted(arm_names)))
+        else:
+            arms_f.write_text(json.dumps({"arms": arm_names}))
         for spec in a.arm:
             name, _, prompts = spec.partition("=")
             budget = None if a.budget_usd == float("inf") else a.budget_usd

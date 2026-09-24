@@ -7,7 +7,7 @@ Kernel half, pinned here:
   - the Agent tool event carries toolUseId + agentId, and — running or finished — agentSteps (every
     tool call so far in order, the newest SUBAGENT_STEPS_CAP) + stepsTotal, folded once per file
     change; a RUNNING background agent drops its launch-ack output and takes agentRunning + the
-    agentGist clock (calls, since, last — the preview derives its three rows from the steps); a landed
+    agentGist clock (calls, since — the preview derives its three rows from the steps); a landed
     <task-notification> puts its <result> in the event's output (the report fold) and the clock goes;
   - build_subagent renders the agent's own file through build_session's pipeline (sidechain mode), a
     capped tail with `truncated`, `running` from the parent's pairing + the live sets, and a LOUD
@@ -254,9 +254,27 @@ class RunningPreview(World):
         self.assertEqual(steps[3]["desc"], "/tmp/notes-api/api/notes.py", "else the file path")
         self.assertTrue(all(r.get("ts") for r in steps))
         self.assertEqual(ev["stepsTotal"], 4)
-        # the clock: count + first/last stamps; no `recent` — the steps carry the rows now (2026-09-05)
+        # the clock: the count and the first stamp; no `recent` — the steps carry the rows now (2026-09-05); no `last`,
+        # the newest record's stamp, which no page reads (2026-09-23, the next test)
         g = ev["agentGist"]
-        self.assertEqual(g, {"calls": 4, "since": iso(T0 + 5), "last": iso(T0 + 5 + 2 * 4 + 3)})
+        self.assertEqual(g, {"calls": 4, "since": iso(T0 + 5)})
+
+    def test_a_record_that_is_no_tool_call_leaves_the_running_card_as_it_was(self):
+        """The card changes only where the page shows a change (2026-09-23). The clock shipped `last`, the stamp of the
+        agent's newest record, which moved on every record the agent wrote (its text, a tool's result) and which no page
+        reads: the preview shows the count and the time since `since`. Each move made the card differ from the list the
+        clients held, and since a chat delta truncates after its anchor, it re-sent the card and every event after it: on
+        a live session idle while its agents worked, a third of the frames it took carried that stamp and nothing else."""
+        before = self._agent_events()[TU_BG]
+        self.assertTrue(before.get("agentRunning"))
+        append_jsonl(self.bg_file, [dict(arec(T0 + 40, "%s-t9" % AID_BG, [{"type": "text", "text": "One test still fails; reading it."}],
+                                              "%s-fin" % AID_BG), isSidechain=True, agentId=AID_BG),
+                                    dict(urec(T0 + 41, "%s-u9" % AID_BG, [tool_result("%s-tu3" % AID_BG, "…")], "%s-t9" % AID_BG),
+                                         isSidechain=True, agentId=AID_BG)])
+        km._parse_cache.clear(); km._chat_fold.clear()
+        after = self._agent_events()[TU_BG]
+        self.assertTrue(after.get("agentRunning"))
+        self.assertEqual(after, before, "no field the page reads moved, so the card is the same card")
 
     def test_the_steps_follow_the_agent_file_as_it_grows(self):
         self._agent_events()

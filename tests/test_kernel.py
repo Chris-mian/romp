@@ -2287,6 +2287,52 @@ class ViewBuilder(unittest.TestCase):
                          "without agents in flight the red badge + Retry still surface")
         self.assertFalse(c.get("awaiting"))
 
+    def _codex_cut_views(self, no_retry):
+        """The chat view and the feed card of a session whose Codex turn ends with the end the backend writes when
+        it can never finish: the restart-cut notice (no_retry) or a dead connection's (no mark). -> (view, card)."""
+        g1 = SID + ":g1"
+        base = [uline(T0, "run the synthetic build", "u1", ps="typed"),
+                aline(T0 + 20, "Starting the build.", "a1", "u1", tools=("Bash",), stop="tool_use")]
+        end = _codex_cut_records(no_retry, parent="a1", t=T0 + 20, tid=SID, opener=False)
+        self.tpath.write_text("\n".join(json.dumps(r) for r in base + end) + "\n")
+        km._api_err_cache.clear()
+        self._warm_tpath()
+        self._goal_store({g1: {"id": g1, "text": "Run the synthetic build", "parentId": None,
+                               "nodeComplete": False, "blocked": False, "cleared": False,
+                               "trail": [], "t": T0}}, {g1: "working"}, last=g1)
+        m = km.build_session(SID, NOW)
+        c = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[g1]
+        return m, c
+
+    def test_a_notice_nothing_retries_draws_no_countdown_and_files_its_card_under_needs_you(self):
+        # a Codex turn a kernel restart cut (2026-09-22) ends in the API-error record shape with the no-retry mark.
+        # Nothing picks the work back up but the person, so the chat card shows the words with no countdown (the
+        # failed compaction's dress, apiNoRetry) and the feed card files under Needs you, the refusal precedent: a
+        # Working card on a session nothing can move says romp is handling what it deliberately is not
+        build = self._codex_cut_views
+        m, c = build(no_retry=True)
+        self.assertEqual(m["status"]["state"], "blocked", "the session is stopped until the person acts")
+        self.assertIs(m["status"]["apiNoRetry"], True, "the card's words alone: no countdown the auto-retry would never keep")
+        self.assertEqual([e["text"] for e in m["events"] if e["kind"] == "apiError"], [CUT_NOTICE])
+        self.assertEqual([e for e in m["events"] if e["kind"] == "apiErrorNote"], [], "the words once, not twice")
+        self.assertEqual((c.get("blocked") or {}).get("state"), "apiError")
+        self.assertEqual(c["blocked"]["what"], CUT_NOTICE, "the card says what happened, not 'an API error'")
+        self.assertEqual(c["column"], "needs_input", "nothing will move it but the person")
+        # control: the same end unmarked (a dead connection's) keeps the transient treatment it always had
+        m, c = build(no_retry=False)
+        self.assertIs(m["status"]["apiNoRetry"], False)
+        self.assertEqual(c["blocked"]["what"], "this session stopped on an API error — Retry to resume")
+        self.assertEqual(c["column"], "working", "a transient error's card stays in Working while it auto-retries")
+
+    def test_the_feed_card_of_a_notice_nothing_retries_carries_noRetry(self):
+        # the review of this lane (2026-09-23): the blocked payload mirrored every on-you flag but this one, so no
+        # client could tell the restart-cut notice from a transient API error (the badge read 'API error', the bell
+        # filed an 'API error' line); the flag rides the payload as its siblings do
+        _, c = self._codex_cut_views(no_retry=True)
+        self.assertIs(c["blocked"].get("noRetry"), True)
+        _, c = self._codex_cut_views(no_retry=False)
+        self.assertIs(c["blocked"].get("noRetry"), False, "a dead connection's card carries the flag, unset")
+
     def test_awaiting_survives_an_interleaved_turn_via_live_subagent_count(self):
         # the supersede hole itself (the user 2026-07-05): the overlay's awaiting:true is treated as stale
         # once ANY later 'working' state row lands — but a mid-wait turn (the auto-nudge status check)
@@ -7129,6 +7175,244 @@ class TestApiError(unittest.TestCase):
         for t in ("API Error: 500 Internal server error.", "Request timed out",
                   "Usage limit reached — resets at 3pm.", "prompt is too long"):
             self.assertFalse(km._is_spend_limit(t), t)
+
+    def test_a_notice_nothing_retries_carries_noRetry(self):
+        # the Codex turn a kernel restart cut ends with a record its writer marks (codex_events abandoned, 2026-09-22):
+        # the kernel reads the mark off the record, so the writer's field and this reader's must agree
+        self._write(*_codex_cut_records(no_retry=True))
+        e = km._api_error(self.p)
+        self.assertIsNotNone(e, "still a blocking card: the session is stopped until the person acts")
+        self.assertIs(e["noRetry"], True)
+        self._write(*_codex_cut_records(no_retry=False))
+        self.assertIs(km._api_error(self.p)["noRetry"], False, "a dead connection's abandoned turn keeps its retry")
+
+
+# The Codex normalizer, the WRITER of the no-retry mark, and the backend whose load settles a cut turn (each loaded
+# under a name of this module's own)
+CX_EVENTS = load_source("romp_codex_events_for_kernel_tests",
+                        os.path.join(os.path.dirname(HERE), "kernel", "codex_events.py"))
+CX_BACKEND = load_source("romp_codex_backend_for_kernel_tests",
+                         os.path.join(os.path.dirname(HERE), "kernel", "codex_backend.py"))
+
+
+CUT_NOTICE = "romp restarted while Codex was working on this (a synthetic notice)"
+
+
+def _codex_turn_opener(norm, tid, t):
+    return norm.handle("item/completed", {"threadId": tid, "turnId": "t-1", "completedAtMs": t * 1000,
+                                          "item": {"type": "userMessage", "id": "cx-u1",
+                                                   "content": [{"type": "text", "text": "run the synthetic build"}]}})
+
+
+def _codex_cut_records(no_retry, parent=None, t=T0, tid="T-1", opener=True):
+    """A Codex turn's opening record and the end the backend writes when it can never finish, as the normalizer
+    writes them: the notice of a turn a kernel restart cut (no_retry, CodexBackend._settle_restart_turn) or a dead
+    connection's (no mark, the call every kernel has made). `opener=False` gives the end alone, chained on `parent`."""
+    norm = CX_EVENTS.ThreadNormalizer(tid, cwd="", version="", last_uuid=parent, clock=lambda: t + 30)
+    recs = _codex_turn_opener(norm, tid, t) if opener else []
+    end = norm.abandoned("t-1", CUT_NOTICE, no_retry=True) if no_retry else norm.abandoned("t-1", CUT_NOTICE)
+    return recs + end
+
+
+def _codex_cut_by_restart(root, sid):
+    """A Codex session whose turn a kernel restart cut, settled by the REAL load: the row as the dying kernel left it
+    (the accepted turn named; nothing ran it to its end) over a transcript holding the turn's prompt, and a fresh
+    backend over both. -> (backend, transcript path)."""
+    tid, cwd = "T-1", "/TESTDIR"
+    path = Path(root) / "codex" / "projects" / CX_BACKEND._enc_cwd(cwd) / (tid + ".jsonl")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    norm = CX_EVENTS.ThreadNormalizer(tid, cwd=cwd, version="codex", clock=lambda: T0)
+    path.write_text("".join(json.dumps(r) + "\n" for r in _codex_turn_opener(norm, tid, T0)))
+    row = {"tid": tid, "name": "api", "cwd": cwd, "model": "", "effort": "", "mode": "sandboxed", "dead": False,
+           "queue": [], "note": "", "color": "", "launchError": None, "compacting": False,
+           "turn": {"id": "t-1", "tid": tid, "at": T0, "after": None}}
+    (Path(root) / "codex" / "registry.json").write_text(json.dumps({sid: row}))
+
+    def no_client():
+        raise RuntimeError("synthetic: no app-server in this test")
+    return CX_BACKEND.CodexBackend(root, client_factory=no_client, log=lambda m: None), str(path)
+
+
+class RestartCutNoticeIsNeverAutoRetried(unittest.TestCase):
+    """The retry gate (2026-09-22, the review of the restart-cut fix): the notice rode the API-error record shape, so
+    the kernel's auto-retry tick sent a bare "retry" into the Codex thread about a second after boot, with nothing
+    to tell the model its turn, perhaps a command halfway through, had been cut. A noRetry record joins the on-you
+    classes the auto path skips; the manual Retry stays the person's. The cut is settled by the real backend load,
+    so the record under test is the one a restart writes."""
+
+    CXSID = "11111111-2222-3333-4444-00000000c0de"
+
+    class _Backend:
+        """What the retry is sent into: the send is recorded, never run."""
+        def __init__(self):
+            self.sent = []
+
+        def pending_queued(self, sid):
+            return []
+
+        def send(self, sid, text):
+            self.sent.append(text)
+            return True
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.p = os.path.join(self.td.name, "t.jsonl")
+        self.be = self._Backend()
+        for name, stub in {"_retry_paused_on": lambda: False,
+                           "_session_retry_suppressed": lambda sid: False,
+                           "_retry_suppress_unknown": lambda: False,
+                           "_path_of": lambda sid, now=None: self.p,
+                           "_alive_sessions": lambda now, live: [{"sid": self.CXSID, "path": self.p}]}.items():
+            p = mock.patch.object(km, name, stub)
+            p.start()
+            self.addCleanup(p.stop)
+        p = mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: self.be))
+        p.start()
+        self.addCleanup(p.stop)
+        km._api_err_cache.clear()
+        km._auto_retried.clear()
+        km._auto_retry_state.clear()
+
+    def tearDown(self):
+        km._api_err_cache.clear()
+        km._auto_retried.clear()
+        km._auto_retry_state.clear()
+        self.td.cleanup()
+
+    def _cut(self):
+        _, self.p = _codex_cut_by_restart(self.td.name, self.CXSID)
+        km._api_err_cache.clear()
+        self.assertIsNotNone(km._api_error(self.p), "the restart cut a turn and nothing ended it: no notice to judge")
+
+    def test_the_kernel_tick_and_a_client_ask_send_nothing(self):
+        self._cut()
+        km._auto_retry_tick(NOW, {self.CXSID: {"state": "waiting"}})
+        km._fire_api_retry(self.CXSID, self.be)             # a dashboard's countdown ask, the same decision
+        self.assertEqual(self.be.sent, [], "a blind retry went into the thread whose turn the restart cut")
+
+    def test_the_persons_retry_still_fires(self):
+        self._cut()
+        self.assertTrue(km._fire_api_retry(self.CXSID, self.be, manual=True))
+        self.assertEqual(self.be.sent, [km.RETRY_MSG], "an explicit Retry is the person's call")
+
+    def test_an_unmarked_abandoned_turn_keeps_its_auto_retry(self):
+        # the guard must not widen: a dead connection's turn is still retried as before
+        with open(self.p, "w") as f:
+            f.write("\n".join(json.dumps(r) for r in _codex_cut_records(no_retry=False)) + "\n")
+        km._api_err_cache.clear()
+        km._auto_retry_tick(NOW, {self.CXSID: {"state": "waiting"}})
+        self.assertEqual(self.be.sent, [km.RETRY_MSG])
+
+
+class CodexEndRecordAnchors(unittest.TestCase):
+    """A Codex turn's timeline bar lands on a row the chat renders, or on the prompt, or by time (2026-09-23, the
+    post-merge review of the restart-cut fix). A completion with nothing held ends on an EMPTY assistant record, and
+    the chat renders no row for it. _seg_anchors took a segment's first assistant atom as the bar's work anchor, so a
+    turn whose only assistant atom was that record (the prompt alone, or no item at all) handed the bar its uuid, and
+    the click said "couldn't locate". The view's click target is replyUuid || workId || promptId
+    (ui/romp-timeline-view.js workAnchorOf); with none of them the bar lands by time. The transcript is written by the
+    real normalizer. Red before the fix on "prompt only" and "no item at all": the work anchor was 't1-end'. The
+    command-last and tool-call-last shapes anchored on the call before and after; they pin that the skip is narrow."""
+
+    CXSID = "11111111-2222-3333-4444-00000000e0d0"
+    TID = "01911111-2222-7333-8444-00000000e0d0"
+
+    def _ev(self, kind, item, k):
+        at = "startedAtMs" if kind == "item/started" else "completedAtMs"
+        return (kind, {"threadId": self.TID, "turnId": "t1", at: T0 * 1000 + k * 1000, "item": item})
+
+    def _shapes(self):
+        cmd = {"type": "commandExecution", "id": "c1", "command": "make synthetic", "cwd": "/TESTDIR"}
+        mcp = {"type": "mcpToolCall", "id": "m1", "server": "notes", "tool": "lookup", "arguments": {"q": "retry"}}
+        prompt = [self._ev("item/completed", {"type": "userMessage", "id": "u1",
+                                              "content": [{"type": "text", "text": "run the synthetic build"}]}, 0)]
+        return {
+            "prompt only": (prompt, "u1"),
+            "no item at all": ([], None),
+            "command last": (prompt + [self._ev("item/started", dict(cmd, status="inProgress"), 1),
+                                       self._ev("item/completed", dict(cmd, status="completed", exitCode=0,
+                                                                       aggregatedOutput="ok"), 2)], "c1"),
+            "tool call last": (prompt + [self._ev("item/started", dict(mcp, status="inProgress"), 1),
+                                         self._ev("item/completed", dict(mcp, status="completed", result={
+                                             "content": [{"type": "text", "text": "3 tries"}]}), 2)], "m1"),
+            "empty final reply": (prompt + [self._ev("item/started", dict(cmd, status="inProgress"), 1),
+                                            self._ev("item/completed", dict(cmd, status="completed", exitCode=0,
+                                                                            aggregatedOutput="ok"), 2),
+                                            self._ev("item/completed", {"type": "agentMessage", "id": "a1",
+                                                                        "text": ""}, 3)], "c1"),
+        }
+
+    def _one_bar(self, td, items):
+        """Turn t1 as the real normalizer writes it (the items between its start and its completion, then the turn's
+        usage), parsed and segmented as the kernel reads it: (the transcript's path, the turn's one segment)."""
+        usage = ("thread/tokenUsage/updated",
+                 {"threadId": self.TID, "turnId": "t1",
+                  "tokenUsage": {"last": {"inputTokens": 100, "outputTokens": 10, "cachedInputTokens": 0,
+                                          "reasoningOutputTokens": 0, "totalTokens": 110},
+                                 "modelContextWindow": 272000}})
+        norm = CX_EVENTS.ThreadNormalizer(self.TID, cwd="/TESTDIR", version="codex", model="gpt-5-test",
+                                          clock=lambda: T0 + 30)
+        recs = []
+        for m, p in [("turn/started", {"threadId": self.TID, "turn": {"id": "t1", "items": []}})] + items + [
+                usage, ("turn/completed", {"threadId": self.TID,
+                                           "turn": {"id": "t1", "items": [], "status": "completed"}})]:
+            recs.extend(norm.handle(m, p))
+        self.assertEqual(recs[-1]["uuid"], "t1-end", "fixture: the turn ends on the empty end record")
+        path = Path(td) / (self.TID + ".jsonl")
+        path.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        parsed = em.parse_session(str(path), rompuuid=self.CXSID, candidate_files=[str(path)], now=NOW,
+                                  sdk_human=True)
+        segs = [seg for t in parsed["turns"] for seg in km._segs_seam(t, {})]
+        self.assertEqual(len(segs), 1, "one turn, one bar")
+        return path, segs[0]
+
+    def test_the_bar_click_names_a_row_the_chat_renders(self):
+        for label, (items, want) in self._shapes().items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as td:
+                path, seg = self._one_bar(td, items)
+                work, reply = km._seg_anchors(seg["atoms"])
+                self.assertNotEqual(work, "t1-end", "the empty end record is no work anchor")
+                click = reply or work or seg.get("trigger")
+                self.assertEqual(click, want, "the bar click's target")
+                m = km.build_session(self.CXSID, NOW, live_map={self.CXSID: {}}, path_override=str(path))
+                rows = {e.get("uuid") for e in (m or {}).get("events", [])}
+                self.assertNotIn("t1-end", rows, "fixture: the chat renders no row for the end record")
+                if click is not None:
+                    self.assertIn(click, rows, "the chat has a row to land on")
+
+    def test_a_reasoning_first_turn_keeps_its_work_anchor(self):
+        """The skip is for an atom whose stop ENDS the turn (2026-09-23, the fold's verify pass of this lane):
+        em.atom_is_bare_end asks for a stop in END_STOPS as well as no text and no tool use. A Codex reasoning item is
+        an assistant thinking atom with no stop, no text and no tool use, so without the stop clause it reads as a bare
+        end. The command-last and tool-call-last shapes above pin the tool clause only. Here the reasoning atom stays
+        the bar's work anchor, today's anchor: "reasoning then command" moves it to 'c1' when the stop clause is
+        dropped, and "reasoning only" loses it (None, so the click falls to the prompt). Whether the chat has a row
+        for bare thinking is _seg_jump's separate question, so this pins the anchor, not a landing."""
+        cmd = {"type": "commandExecution", "id": "c1", "command": "make synthetic", "cwd": "/TESTDIR"}
+        prompt = self._ev("item/completed", {"type": "userMessage", "id": "u1",
+                                             "content": [{"type": "text", "text": "run the synthetic build"}]}, 0)
+        reasoning = self._ev("item/completed", {"type": "reasoning", "id": "r1",
+                                                "content": ["The fixture is stale."], "summary": []}, 1)
+        shapes = {
+            "reasoning then command": ([prompt, reasoning,
+                                        self._ev("item/started", dict(cmd, status="inProgress"), 2),
+                                        self._ev("item/completed", dict(cmd, status="completed", exitCode=0,
+                                                                        aggregatedOutput="ok"), 3)],
+                                       ["u1", "r1", "c1", "c1-r", "t1-end"]),
+            "reasoning only": ([prompt, reasoning], ["u1", "r1", "t1-end"]),
+        }
+        for label, (items, atoms) in shapes.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as td:
+                _path, seg = self._one_bar(td, items)
+                self.assertEqual([a.get("uuid") for a in seg["atoms"]], atoms, "fixture: the turn's atoms")
+                r1 = next(a for a in seg["atoms"] if a.get("uuid") == "r1")
+                self.assertFalse(em.atom_has_text(r1) or em.atom_tool_uses(r1),
+                                 "fixture: the reasoning atom has no text and no tool use")
+                self.assertNotIn(em._stop_reason(r1), em.END_STOPS,
+                                 "fixture: the reasoning atom's stop does not end the turn")
+                self.assertFalse(em.atom_is_bare_end(r1), "a reasoning atom is no bare end")
+                self.assertEqual(km._seg_anchors(seg["atoms"]), ("r1", None),
+                                 "the reasoning atom is the bar's work anchor, and the turn has no reply")
 
 
 class ApiRetryAndTabOrderRoutes(unittest.TestCase):

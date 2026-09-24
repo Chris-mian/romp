@@ -11,7 +11,9 @@ TAB_WIDGETS_DIST=<dir> serves another tree's UI bundle (the red run's before); T
 <prefix>-strip-<theme>.png and <prefix>-settings-<theme>.png; TAB_WIDGETS_DUMP=<path> writes the whole measurement. Skips LOUDLY
 without the extension deps or a Playwright browser (CI sets ROMP_SERVED_TESTS_REQUIRE=1 and installs both, so a skip
 there is a failure). Synthetic throughout: placeholder sids, TESTHOST, invented text.
-"""
+
+
+After the 2026-09-23 default flip the badge is the default; this lab opts into RING mode (it seeds tabStateBadge:false) because its subject is the ring, and the dot's default is covered by the badge lab (test_tab_badge_browser) and the gear-preview test (test 5)."""
 import json
 import os
 import re
@@ -64,7 +66,7 @@ catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } });
 // the tab hot-key store shape (the hot key widget reads it): web is in the set, its chord Ctrl+Shift+1
 await ctx.addInitScript(([sid]) => {
-  try { localStorage.setItem("romp:tabkeys", JSON.stringify({ [sid]: "web" })); localStorage.setItem("romp:keys", JSON.stringify({ ["session.hotkey." + sid]: "Ctrl+Shift+1" })); } catch (e) {}
+  try { localStorage.setItem("romp:tabkeys", JSON.stringify({ [sid]: "web" })); localStorage.setItem("romp:keys", JSON.stringify({ ["session.hotkey." + sid]: "Ctrl+Shift+1" })); localStorage.setItem("romp:settings", JSON.stringify({ tabStateBadge: false })); } catch (e) {}   // RING mode: the ring rows are this lab's subject (the 2026-09-23 flip; the badge default is the badge lab's + test 5's)
 }, [cfg.sidWeb]);
 const page = await ctx.newPage();
 await page.goto(cfg.url);
@@ -94,7 +96,7 @@ const readStrip = () => chatF.evaluate(([sidWeb]) => {
 }, [cfg.sidWeb]);
 const out = {};
 out.strip0 = await readStrip();
-// the glyph opens the settings frame on the Chat tab, scrolled to its Tab widgets section, through the shell
+// the glyph opens the settings frame on the Chat tab, scrolled to its Tab strip section (T415; Tab widgets until then), through the shell
 const settingsOpen = () => page.evaluate(() => document.body.classList.contains("settings-open"));
 if (out.strip0.gear) {   // T415: one click on the gear opens the settings at the strip's own section; Tab widgets follows it in the card
   await chatF.click("#tabs .tab-strip-end .tab-widgets-gear");
@@ -129,7 +131,7 @@ const readPanel = () => setF.evaluate(() => {
              demo: demo ? Array.from(demo.children).map((c) => ({ cls: c.className, text: c.textContent, title: c.title || "" })) : null,
              opts: Array.from(r.querySelectorAll(".rs-widget-opt")).map((o) => ({ key: o.dataset.opt, label: o.title, current: (o.querySelector("button") || {}).textContent || "" })) };
   });
-  // the SECTION: the Tab widgets head against the card's box and scroll (the gear's ask scrolls the card so the head sits under the padding)
+  // the SECTION: the Tab strip head (data-section="tabstrip", T415; Tab widgets until then) against the card's box and scroll (the gear's ask scrolls the card so the head sits under the padding)
   const card = document.querySelector("#rsettings .rs-card"); const sec = document.querySelector('#rsettings .rs-sec[data-section="tabstrip"]');
   const cr = card.getBoundingClientRect(); const sr = sec ? sec.getBoundingClientRect() : null;
   const section = sec ? { top: sr.top, cardTop: cr.top, cardBottom: cr.bottom, pad: parseFloat(getComputedStyle(card).paddingTop), scrollTop: card.scrollTop, overflow: card.scrollHeight - card.clientHeight,
@@ -200,7 +202,7 @@ out.pillBack = await readPanel();
 // strip while the panel is open, so the glyph itself is not reachable by a pointer then): switches back to Chat and scrolls
 await page.evaluate(() => window.__rompOpenSettings("chat", "tabstrip")); out.landedReask = await landed(setF);
 out.reask = await readPanel();
-// the screenshots: the strip with the glyph and the Chat tab at its Tab widgets section, dark then light
+// the screenshots: the strip with the glyph and the Chat tab at its Tab strip section (T415; Tab widgets until then), dark then light
 const shot = async (theme) => {
   await page.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), theme);
   await chatF.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), theme);
@@ -208,7 +210,7 @@ const shot = async (theme) => {
   await page.waitForTimeout(200);
   out.ringsByTheme = out.ringsByTheme || {}; out.ringsByTheme[theme] = await readRings();   // the ring demos' colours per theme (2026-09-14)
   if (!cfg.shots) return;
-  const card = await setF.evaluate(() => { const b = document.querySelector("#rsettings .rs-card").getBoundingClientRect(); return { x: b.left, y: b.top, width: b.width, height: b.height }; });   // the whole card: the scrolled Tab widgets section sits in its lower part
+  const card = await setF.evaluate(() => { const b = document.querySelector("#rsettings .rs-card").getBoundingClientRect(); return { x: b.left, y: b.top, width: b.width, height: b.height }; });   // the whole card: the gear scrolls the Tab strip head to the card's top, Tab widgets beneath it (T415)
   const fr = await page.evaluate(() => { const f = document.getElementById("f-settings").getBoundingClientRect(); return { x: f.left, y: f.top }; });
   await page.screenshot({ path: cfg.shots + "-settings-" + theme + ".png", clip: { x: fr.x + card.x, y: fr.y + card.y, width: card.width, height: card.height } });
 };
@@ -240,7 +242,7 @@ await page.close(); await ctx.close();
 out.legacy = {};
 for (const mode of ["always", "never"]) {
   const c2 = await browser.newContext({ viewport: { width: 1200, height: 800 } });
-  await c2.addInitScript(([m]) => { try { localStorage.setItem("romp:settings", JSON.stringify({ compact: true, tabCtx: m })); } catch (e) {} }, [mode]);
+  await c2.addInitScript(([m]) => { try { localStorage.setItem("romp:settings", JSON.stringify({ compact: true, tabCtx: m, tabStateBadge: false })); } catch (e) {} }, [mode]);
   const p2 = await c2.newPage();
   await p2.goto(cfg.url);
   await p2.waitForSelector("#rail-gear", { timeout: 20000 });
@@ -273,6 +275,7 @@ for (const mode of ["always", "never"]) {
 // short (152px off at 1200px); the room is sized to the cap now. The glyph's open and a re-ask, measured at 1200 by 1200.
 {
   const c3 = await browser.newContext({ viewport: { width: 1200, height: 1200 } });
+  await c3.addInitScript(() => { try { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.tabStateBadge = false; localStorage.setItem("romp:settings", JSON.stringify(s)); } catch (e) {} });   // RING mode: this lab's subject is the ring, not the badge (the 2026-09-23 default flip; the dot is the badge lab's + test 5's)
   const p3 = await c3.newPage(); await p3.goto(cfg.url); await p3.waitForSelector("#rail-gear", { timeout: 20000 });
   let cf3 = p3.frames().find((f) => f.url().includes("/chat"));
   for (let i = 0; i < 100 && !cf3; i++) { await p3.waitForTimeout(100); cf3 = p3.frames().find((f) => f.url().includes("/chat")); }
@@ -554,7 +557,7 @@ class ServedTabWidgets(unittest.TestCase):
         # the section head sits inside the card's visible box, under its padding, unless the card ran out of scroll first
         sec = p["section"]
         table = "\n  section=" + json.dumps(sec) + table   # the numbers first: the panel's table is long and cut
-        self.assertIsNotNone(sec, "the Tab widgets head carries the section anchor" + table)
+        self.assertIsNotNone(sec, "the Tab strip head carries the section anchor" + table)
         self.assertTrue(sec["inChat"] and not sec["paneHidden"], "the section is in the Chat pane, which is shown" + table)
         self.assertGreaterEqual(sec["top"], sec["cardTop"] - 0.5, "the head is not above the card's box" + table)
         self.assertLess(sec["top"], sec["cardBottom"], "the head is inside the card's box" + table)
@@ -623,7 +626,7 @@ class ServedTabWidgets(unittest.TestCase):
             self.assertTrue(x["desc"], "a one-line description" + table)
             self.assertIn(x["id"], x["demo"]["cls"].split(), "the demo wears the ring's class" + table)
             self.assertEqual((x["demo"]["outlineStyle"], x["demo"]["outlineWidth"]), ("dashed", "2px"), x["id"] + "'s demo wears the dashed ring" + table)
-        self.assertEqual(g["hint"], "Rings around the tab. One at a time: the first that applies wins, in this order.", table)
+        self.assertEqual(g["hint"], "One cue at a time on the tab: the first state that applies wins, in this order.", table)
         self.assertTrue(g["previewBeforeRings"], "the title rows' preview sits above the rings' rows" + table)
         self.assertFalse(any(i.startswith("ring-") for i in g["titleIds"]), "the title rows and the divider list carry no ring" + table)
         # one grid per group, so the switches line up down each list (the two grids' auto columns differ: the title rows carry
@@ -700,7 +703,7 @@ class ServedTabWidgets(unittest.TestCase):
         shown = [x["pane"] for x in c["panes"] if x["display"] != "none"]
         self.assertEqual(shown, ["feed"], json.dumps(c["panes"]))
         self.assertEqual(c["remembered"], "feed")
-        self.assertTrue(c["section"]["paneHidden"], "the Tab widgets section is in the hidden Chat pane now")
+        self.assertTrue(c["section"]["paneHidden"], "the Tab strip section is in the hidden Chat pane now")
         # the follow-up's round one, LOW 1: a pill round trip (Feed, then Chat by its pill) leaves no section room on the Chat pane
         pb = r["pillBack"]
         self.assertEqual([x["pane"] for x in pb["panes"] if x["display"] != "none"], ["chat"], json.dumps(pb["panes"]))

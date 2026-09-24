@@ -194,6 +194,23 @@ def kernel_env(lab, claude, dist, port, token, **seams):
     return env
 
 
+# The Needs you box (#notices) is COLLAPSED to its header line by default and opens in steps (the user 2026-09-23): a served lab that
+# hovers, clicks or measures a row opens the box first through its fold control, or the row is display:none and its box is null (the
+# held-mail lab's Approve press died on that after the change). Prepended to a lab's driver; fail-soft (the waits caught), so a page
+# without the levels reads whatever it shows and the pins say what was there. Returns false when the box has no level classes.
+NEEDS_BOX_OPEN_JS = r"""
+const openNeedsBox = async (target, level) => {
+  const cur = await target.evaluate(() => { const b = document.getElementById("notices"); return b ? ["ntc-l0", "ntc-l1", "ntc-l2"].findIndex((c) => b.classList.contains(c)) : -1; });
+  if (cur < 0) return false;
+  for (let i = cur, n = 0; i !== level && n < 3; i = (i + 1) % 3, n++) {   // loop-ok: at most three clicks, each waited on the level class
+    await target.click("#notices .ntc-head");
+    await target.waitForFunction((l) => document.getElementById("notices").classList.contains("ntc-l" + l), (i + 1) % 3, { timeout: 5000 }).catch(() => {});
+  }
+  return true;
+};
+"""
+
+
 def relaunch_env(env):
     """The part of a lab kernel's environment `env` that a served lab writes to its cfg.json for the driver's
     relaunch of the kernel: the RELAUNCH_ENV_PREFIXES names and RELAUNCH_ENV_NAMES, less the ROMP_TESTS_* names

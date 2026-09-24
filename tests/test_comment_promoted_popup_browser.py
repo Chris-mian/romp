@@ -90,15 +90,41 @@ let browser;
 try { browser = await chromium.launch(); }
 catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const page = await browser.newPage({ viewport: { width: cfg.w, height: cfg.h } });
+// The comment highlights are a client-side join of the {type:session} chat frame (the anchor turns) and the
+// {type:comments} frame (the threads, from the store); the comments frame rides only the full pusher cycle and trails
+// the chat frame by tens of seconds under a CPU quota, so a blind wall-clock wait on the marks flakes. Both the socket's
+// frames and the shim's reposts reach the page as a window `message` event; capture the comments frame carrying this
+// session's seeded threads HERE, before navigation, and gate the load on that kernel event, not a wall clock.
+await page.addInitScript(({ sid, tids }) => {
+  window.__cmtFrames = 0; window.__frameTypes = [];
+  window.addEventListener("message", (e) => {
+    const m = e.data; if (!m || !m.type) return;
+    window.__frameTypes.push(m.type);
+    if (m.type === "comments" && m.id === sid && tids.every((t) => (m.threads || []).some((x) => x && x.tid === t))) window.__cmtFrames++;
+  }, true);
+}, { sid: cfg.sid, tids: [cfg.promoted, cfg.open] });
 await page.goto(cfg.chat);
 await page.waitForSelector("#tabs .tab[data-id]", { timeout: 20000 });
 await page.locator(`#tabs .tab[data-id="${cfg.sid}"]`).first().click();   // the PARENT's transcript, where the highlights live
-// the parent's transcript renders and the kernel's comments frame lands: the highlights wrap both passages
-// (attached, not visible — every session's view stays in the DOM, hidden when not active; the click below
-// auto-waits for the visible one)
-// 60 s: the highlights land after the kernel's comments frame, tens of seconds behind the chat frame on a loaded runner
-// (2026-09-11: red on CI at 30 s for a head that changed nothing on this road)
-for (const tid of [cfg.promoted, cfg.open]) await page.waitForSelector(`mark.cmt-hl[data-tid="${tid}"]`, { state: "attached", timeout: 60000 });
+// the parent's transcript renders and the kernel's comments frame lands: the highlights wrap both passages (attached,
+// not visible: every session's view stays in the DOM, hidden when not active; the click below auto-waits for the
+// visible one). The marks wrap only when a comments frame is processed WITH the anchor turn in the DOM; handle BOTH
+// orders (a comments frame that reached the page before its listeners registered and whose re-send the dedup then
+// suppressed, the measured mechanism, NOT a client re-apply gap since syncView re-applies on every render): after the turn, if the marks are not there, wait for the
+// NEXT comments frame past the turn (n0 read now), then the short mark ceiling. Ceilings are failure bounds; a miss names the order.
+await page.waitForSelector(`#content .turn[data-uuid="${cfg.anchor}"]`, { state: "attached", timeout: 60000 });
+const n0 = await page.evaluate(() => window.__cmtFrames);
+const marksHere = async () => (await page.$(`mark.cmt-hl[data-tid="${cfg.promoted}"]`)) && (await page.$(`mark.cmt-hl[data-tid="${cfg.open}"]`));
+if (!(await marksHere())) {
+  let missErr = "";
+  const got = await page.waitForFunction((n) => window.__cmtFrames > n, n0, { timeout: 30000 }).then(() => true).catch((e) => { if (!e || e.name !== "TimeoutError") throw e; missErr = e.name; return false; });
+  if (!got) {
+    const seen = await page.evaluate(() => ({ cmtFrames: window.__cmtFrames, types: window.__frameTypes }));
+    console.error("comments-frame-after-turn-miss (" + missErr + "): no comments frame carrying the seeded threads for " + cfg.sid + " ran with the turn present (n0=" + n0 + "): " + JSON.stringify(seen));
+    process.exit(4);
+  }
+}
+for (const tid of [cfg.promoted, cfg.open]) await page.waitForSelector(`mark.cmt-hl[data-tid="${tid}"]`, { state: "attached", timeout: 15000 });
 
 // the popup as painted — rects and computed styles, read-only
 const MEASURE = () => {
@@ -255,17 +281,39 @@ class ServedPromotedPopup(unittest.TestCase):
     def _drive(self):
         cfg = os.path.join(self.lab, "cfg.json")
         with open(cfg, "w") as f:
-            json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "sid": SID,
+            json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "sid": SID, "anchor": "a1",
                        "promoted": PROMOTED, "open": OPEN, "w": VIEW_W, "h": VIEW_H}, f)
         driver = os.path.join(self.lab, "driver.mjs")
         with open(driver, "w") as f:
             f.write(DRIVER)
-        p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=300,
-                           env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
+        t0 = time.time()
+        try:
+            p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=420,
+                               env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
+        except subprocess.TimeoutExpired as e:
+            # the 420 s cap (under CI's 600 s per-test timer) is a HANG net, not the wait: the per-load event ceilings
+            # finish a legit slow run under it. If it trips, build the SAME diagnostics the driver's own miss would
+            # (decoding the exception's bytes with a None guard), not an opaque TimeoutExpired.
+            def _dec(b):
+                return "" if b is None else (b.decode("utf-8", "replace") if isinstance(b, (bytes, bytearray)) else b)
+            try:
+                import urllib.request
+                _perf = urllib.request.urlopen("http://127.0.0.1:%d/perf?token=%s" % (self.port, self.token), timeout=3).read().decode("utf-8", "replace")[-1500:]
+            except Exception as _pe:
+                _perf = "(/perf unreadable: %r)" % _pe
+            self.fail("driver ran past its 420 s cap (%.0f s elapsed):\n%s%s\nkernel:\n%s\n/perf:\n%s"
+                      % (time.time() - t0, _dec(e.stdout)[-3000:], _dec(e.stderr)[-3000:], open(self.klog).read()[-2000:], _perf))
         if p.returncode == 3:
             raise unittest.SkipTest("no playwright browser on this box — the served popup needs one (CI installs none)")
+        perf = ""
+        if p.returncode != 0:   # a miss records the kernel's counters and tail so the red names the link (the comments frame)
+            try:
+                import urllib.request
+                perf = urllib.request.urlopen("http://127.0.0.1:%d/perf?token=%s" % (self.port, self.token), timeout=3).read().decode("utf-8", "replace")[-1500:]
+            except Exception as e:
+                perf = "(/perf unreadable: %r)" % e
         self.assertEqual(p.returncode, 0, "driver failed:\n" + p.stdout[-3000:] + p.stderr[-3000:]
-                         + "\nkernel:\n" + open(self.klog).read()[-2000:])
+                         + "\nkernel:\n" + open(self.klog).read()[-2000:] + (("\n/perf:\n" + perf) if perf else ""))
         line = next((ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")), None)
         self.assertIsNotNone(line, "driver printed no result:\n" + p.stdout[-3000:])
         return json.loads(line[len("RESULT:"):])

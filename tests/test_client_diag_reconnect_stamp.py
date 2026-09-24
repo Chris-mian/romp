@@ -169,7 +169,7 @@ class TheHandlerStampsTheCarryingSocket(_State):
         rows = self.rows()
         self.assertEqual(len(rows), 1)
         self.assertIs(rows[0]["reconnect"], True)
-        self.assertEqual(sorted(rows[0]), ["data", "reconnect", "surface", "t", "what", "wid"])
+        self.assertEqual(sorted(rows[0]), ["boot", "build", "data", "reconnect", "surface", "t", "what", "wid"])   # + the page's build and boot (2026-09-23, tests/test_client_diag_build_boot.py)
 
     def test_a_row_on_a_fresh_socket_is_stamped_false(self):
         self.post({"wid": WID})                             # a first socket, or a redial that carried no term

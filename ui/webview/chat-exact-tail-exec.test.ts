@@ -2,10 +2,13 @@
 // stubs and a minimal fake DOM, the way tab-strip-skip-exec.test.ts lifts renderTabs. chat-exact-tail.test.ts
 // pins the SHAPE of what no harness lifts (syncViewInner, reconcileRewind, the frame paths); this file drives
 // the BEHAVIOUR of the two functions it can: the kernel's `from` is where the tail re-renders from, a shrunken
-// tail or a change inside a window the reader scrolled away from still rebuilds the window, chatTail hands its
+// tail or a change inside a window the reader scrolled away from lowers `rendered` and never marks the window
+// stale (the keyed paint compares the window's units, 2026-09-23), the passes' swaps lower it too, chatTail hands its
 // `from` to the rewind pass as the bound, a gap asks for the full session; and the footer patch adds, removes
 // and re-homes the fork spot by unit, skips a day divider sharing its turn's unit number, maps compact-mode
-// units, and marks the view stale for a reply folded into a run. Synthetic events; epochs are seconds.
+// units, and never marks the view stale for a reply with no row of its own: a collapsed run's member is left alone, an
+// expanded run's member row is patched in place like any other node, and only a run outside the painted window is marked
+// for repaint (2026-09-23). Synthetic events; epochs are seconds.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -13,6 +16,8 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { workedFooterPlan } from "./worked-footer";
 import { indexOfUuid, keyOf } from "./chat-window";   // the uuid-anchored arm's real helpers (a proto-2 delta names its anchor by key)
+import { frameOlder, droppedLandedHuman, dropsLandedRow } from "./frame-guard";   // the frame watermark guard (2026-09-22): chatTail reads it
+import { firstReplaced } from "./unit-diff";   // repaintFromChange's rule (2026-09-23): chatTail names the first event the frame or the passes swapped
 
 const requireCjs = createRequire(__filename);
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
@@ -29,11 +34,14 @@ function liftBetween(startAnchor: string, endAnchor: string): string {
 
 type TailHooks = { fulls: string[]; strips: number; rewinds: [string, number | undefined][]; optRecs: number;
                    tabRenders: number; appends: number; bgRenders: number; prebuilds: number;
-                   indexOfUuid?: typeof indexOfUuid; keyOf?: typeof keyOf };
+                   indexOfUuid?: typeof indexOfUuid; keyOf?: typeof keyOf; skeleton?: string[]; rows?: { what: string; data: unknown }[];
+                   frameOlder?: typeof frameOlder; droppedLandedHuman?: typeof droppedLandedHuman; dropsLandedRow?: typeof dropsLandedRow;
+                   firstReplaced?: typeof firstReplaced };
 type TailApi = { chatTail: (msg: any) => void; set: (p: { sessions?: Map<string, any>; views?: Map<string, any>; activeId?: string | null }) => void };
 
 function liftChatTail(): (hooks: TailHooks) => TailApi {
-  const js = liftBetween("function chatTail(msg: any) {", "// Older history streaming in from a loadOlder request");
+  const js = liftBetween("function repaintFromChange(", "function reconcileOptimisticInner(")
+           + liftBetween("function chatTail(msg: any) {", "// Older history streaming in from a loadOlder request");
   const prelude = `
     let sessions = new Map(), views = new Map(), activeId = null;
     const ledgers = new Map();
@@ -56,6 +64,10 @@ function liftChatTail(): (hooks: TailHooks) => TailApi {
     const regionsAbsorbTail = () => true;                // the tail run's regions follow the events (T386 stage 2); returns whether it could (a short store refuses); this slice holds no regions, so always true
     const clearRefusedLatch = () => {};                  // a delta applied clears the full-frame refusal latch (round two); no latch in this slice
     const indexOfUuid = HOOKS.indexOfUuid, keyOf = HOOKS.keyOf;   // the proto-2 arm (afterUuid): chat-window's real helpers, handed in by the world
+    const frameOlder = HOOKS.frameOlder, droppedLandedHuman = HOOKS.droppedLandedHuman, dropsLandedRow = HOOKS.dropsLandedRow;   // the watermark guard's real rules (frame-guard.ts)
+    const firstReplaced = HOOKS.firstReplaced;           // the lifted repaintFromChange's real rule (unit-diff.ts)
+    const pendingRewind = new Map();
+    const chatDiagRow = (what, data) => { (H.rows || (H.rows = [])).push({ what, data }); };   // the guard's rows, recorded
   `;
   const epilogue = `
     return { chatTail, set: (p) => { if (p.sessions) sessions = p.sessions; if (p.views) views = p.views; if ("activeId" in p) activeId = p.activeId; } };
@@ -65,7 +77,7 @@ function liftChatTail(): (hooks: TailHooks) => TailApi {
 
 const kernelEvents = (n: number) => Array.from({ length: n }, (_, i) => ({ kind: i % 2 ? "assistant" : "user", uuid: "e" + i }));
 function tailWorld(opts: { rendered: number; winEnd: number; unitTotal: number; active: boolean; headFrom?: number; opt?: boolean }) {
-  const H: TailHooks = { fulls: [], strips: 0, rewinds: [], optRecs: 0, tabRenders: 0, appends: 0, bgRenders: 0, prebuilds: 0, indexOfUuid, keyOf };
+  const H: TailHooks = { fulls: [], strips: 0, rewinds: [], optRecs: 0, tabRenders: 0, appends: 0, bgRenders: 0, prebuilds: 0, indexOfUuid, keyOf, frameOlder, droppedLandedHuman, dropsLandedRow, firstReplaced };
   const api = liftChatTail()(H);
   const events: any[] = kernelEvents(10);
   if (opts.opt) events.splice(6, 0, { kind: "user", uuid: "opt-1", opt: true });   // a bubble at its send slot, mid-array
@@ -99,25 +111,26 @@ test("the active view re-renders from the kernel's exact first changed event; th
   assert.equal(v.rendered, 7, "an earlier re-render start stands: min(rendered, from)");
 });
 
-test("a tail that shrinks the transcript rebuilds the window: rendered would equal the length and the fast path would skip the repaint", () => {
+test("a tail that shrinks the transcript lowers rendered to the new length and never marks the window stale: the keyed paint removes the retired units", () => {
   const { api, s, v } = tailWorld({ rendered: 10, winEnd: 10, unitTotal: 10, active: true });
   api.chatTail({ id: "A", from: 9, events: [] });   // the last queued message retired with nothing in its place
   assert.equal(s.events.length, 9);
   assert.equal(v.rendered, 9);
-  assert.equal(v.stale, true, "a pure truncation marks the view stale");
+  assert.equal(v.stale, false, "no window rebuild: syncViewInner's fast path reads the painted unit count, so the shrink still repaints (2026-09-23)");
 });
 
 /** A suffix replacing events [from, 10) one for one: the transcript keeps its length, so the shrink rule (its own
  *  test above) stays out of these cases and what they show is the window rule alone. */
 const sameLengthFrom = (from: number) => Array.from({ length: 10 - from }, (_, i) => ({ kind: (from + i) % 2 ? "assistant" : "user", uuid: "r" + (from + i) }));
 
-test("a background view: a change inside a window the reader scrolled away from rebuilds it; one below the window, or at the tail, repaints from `from`", () => {
+test("a background view: a change inside a window the reader scrolled away from, one below it, or one at the tail, all repaint from `from` without a rebuild", () => {
   const away = tailWorld({ rendered: 10, winEnd: 6, unitTotal: 10, active: false });   // window [0,6) of 10 units: not at the tail
   away.api.chatTail({ id: "A", from: 8, events: sameLengthFrom(8) });
-  assert.equal(away.v.stale, false, "the change lies below the window: the incremental path's assumption holds");
+  assert.equal(away.v.stale, false, "the change lies below the window");
   assert.equal(away.v.rendered, 8);
   away.api.chatTail({ id: "A", from: 4, events: sameLengthFrom(4) });
-  assert.equal(away.v.stale, true, "the change landed inside the scrolled-away window (nothing shrank): rebuild");
+  assert.equal(away.v.stale, false, "the change landed inside the scrolled-away window: the keyed paint compares that window's units (2026-09-23)");
+  assert.equal(away.v.rendered, 4);
   assert.equal(away.H.prebuilds, 2, "the off-screen view is rebuilt in idle either way");
   assert.equal(away.H.appends, 0, "no active paint for a background tab");
   const atTail = tailWorld({ rendered: 10, winEnd: 10, unitTotal: 10, active: false });
@@ -148,7 +161,7 @@ test("an optimistic bubble is not in the kernel's coordinate space: the gap chec
   assert.equal(H.strips, 1);
   assert.deepEqual(s.events.map((e: any) => e.uuid).slice(9), ["e9", "e10"], "the bubble is gone and the delta appended in kernel coordinates");
   assert.equal(H.optRecs, 1, "…and the in-flight send is re-asserted or retired after");
-  assert.equal(v.rendered, 10);
+  assert.equal(v.rendered, 6, "the view compares from the bubble's old slot: every event after it moved up one (repaintFromChange)");
 });
 
 test("a status-only tail (empty suffix) replaces the status and re-renders the awaiting box only when the awaited fields changed", () => {
@@ -180,7 +193,7 @@ test("a landing that replaces the sender's hidden kernel echo arrives as a delta
 
 // ── patchWorkedFooters ────────────────────────────────────────────────────────────────────────────
 
-/** Enough of Element for the footer patch: children, a class list, data-unit, and the two selector shapes it uses. */
+/** Enough of Element for the footer patch: children, a class list, data-unit, and the three selector shapes it uses. */
 class FakeEl {
   children: FakeEl[] = []; parent: FakeEl | null = null; dataset: Record<string, string> = {}; textContent = ""; title = "";
   constructor(public tag: string, public className = "") {}
@@ -195,8 +208,15 @@ class FakeEl {
     const attr = /\[data-unit="([^"]*)"\]/.exec(m[1]), cls = /^\.([\w-]+)/.exec(m[1]), not = /:not\(\.([\w-]+)\)/.exec(m[1]);
     return this.children.find((c) => (!attr || c.dataset.unit === attr[1]) && (!cls || c.has(cls[1])) && (!not || !c.has(not[1]))) ?? null;
   }
+  querySelectorAll(sel: string): FakeEl[] {
+    // ':scope > [data-unit="N"].tg-child', the patch's third shape: an expanded run's rows, in document order
+    const m = /^:scope > (.+)$/.exec(sel);
+    if (!m) throw new Error("unsupported selector " + sel);
+    const attr = /\[data-unit="([^"]*)"\]/.exec(m[1]), cls = /\.([\w-]+)$/.exec(m[1]);
+    return this.children.filter((c) => (!attr || c.dataset.unit === attr[1]) && (!cls || c.has(cls[1])));
+  }
 }
-type FootHooks = { FakeEl: typeof FakeEl; workedFooterPlan: typeof workedFooterPlan };
+type FootHooks = { FakeEl: typeof FakeEl; workedFooterPlan: typeof workedFooterPlan; open?: Set<string> };
 type Patch = (v: any, s: any, from: number, working: boolean, items?: any[] | null) => void;
 
 function liftPatch(): (hooks: FootHooks) => Patch {
@@ -207,6 +227,9 @@ function liftPatch(): (hooks: FootHooks) => Patch {
     const eventEpoch = (ev) => (ev.t == null ? null : ev.t);
     const itemFirstEvent = (it) => (it.kind === "toolgroup" || it.kind === "retrygroup" ? it.indices[0] : it.index);
     const elapsedFooter = (secs) => { const f = new H.FakeEl("div", "turn-elapsed"); f.textContent = String(secs); return f; };
+    const openFolds = H.open || new Set();                 // the expanded runs, by key
+    const toolGroupKey = (first) => "tg:" + first.t;
+    const noticeGroupKey = (first) => "ng:" + first.t;
   `;
   return new Function("HOOKS", prelude + js + "\nreturn patchWorkedFooters;") as (hooks: FootHooks) => Patch;
 }
@@ -215,14 +238,22 @@ const user = (t: number) => ({ kind: "user", human: true, t });
 const reply = (t: number) => ({ kind: "assistant", t });
 const tool = (t: number) => ({ kind: "tool", t });
 /** A rendered window: one node per unit tagged data-unit, unit `spotOn` carrying a fork spot. */
-function footWorld(events: any[], units: number, spotOn: number) {
-  const patch = liftPatch()({ FakeEl, workedFooterPlan });
+function footWorld(events: any[], units: number, spotOn: number, open?: Set<string>) {
+  const patch = liftPatch()({ FakeEl, workedFooterPlan, open });
   const el = new FakeEl("div");
   const nodes: FakeEl[] = [];
   for (let u = 0; u < units; u++) { const n = new FakeEl("div", "turn"); n.dataset.unit = String(u); el.appendChild(n); nodes.push(n); }
   const spot = new FakeEl("span", "fork-spot"); nodes[spotOn].appendChild(spot);
   const v: any = { el, winStart: 0, stale: false };
   return { patch, v, s: { events }, nodes, spot };
+}
+/** An expanded run's rows as appendItem paints them: right after the run's head, one per member in it.indices order, each
+ *  tagged with the run's unit and tg-child, the last tg-last. */
+function runRows(el: FakeEl, head: FakeEl, unit: number, n: number): FakeEl[] {
+  const rows: FakeEl[] = [];
+  for (let j = 0; j < n; j++) { const r = new FakeEl("div", "turn tg-child" + (j === n - 1 ? " tg-last" : "")); r.dataset.unit = String(unit); r.parent = el; rows.push(r); }
+  el.children.splice(el.children.indexOf(head) + 1, 0, ...rows);
+  return rows;
 }
 
 test("the footer patch adds the elapsed row to the turn's last reply once its turn completes, moving the fork spot into it; a repeat adds nothing", () => {
@@ -267,7 +298,7 @@ test("a day divider shares its turn's unit number and is never the footer's home
   assert.ok(nodes[2].querySelector(":scope > .turn-elapsed"), "the turn did");
 });
 
-test("compact mode: the window start is a unit and the plan wants an event index; the reply's event maps back to its unit; a reply folded into a run marks the view stale", () => {
+test("compact mode: the window start is a unit and the plan wants an event index; the reply's event maps back to its unit; a reply folded into a run never marks the view stale", () => {
   const events = [user(100), tool(110), tool(120), reply(160), user(200)];
   // units: the prompt, one folded tool run, the reply, the prompt
   const items = [{ kind: "event", index: 0 }, { kind: "toolgroup", indices: [1, 2] }, { kind: "event", index: 3 }, { kind: "event", index: 4 }];
@@ -275,14 +306,57 @@ test("compact mode: the window start is a unit and the plan wants an event index
   patch(v, s, 4, true, items);
   assert.ok(nodes[2].querySelector(":scope > .turn-elapsed"), "event 3 is unit 2: the footer lands on the reply's unit");
   assert.equal(v.stale, false);
-  // the reply itself folded into a retry run: no unit is addressable → the window path re-renders
-  const folded = [{ kind: "event", index: 0 }, { kind: "retrygroup", indices: [1, 2, 3] }, { kind: "event", index: 4 }];
+  // the reply itself folded into a COLLAPSED run: its head carries no footer, so there is nothing to patch and nothing to rebuild
+  // (a stale mark here rebuilt the whole window for a footer no rebuild could show, until 2026-09-23)
+  const folded = [{ kind: "event", index: 0 }, { kind: "toolgroup", indices: [1, 2, 3] }, { kind: "event", index: 4 }];
   const w2 = footWorld(events, 3, 1);
+  w2.v.painted = { sig: ["s0", "s1", "s2"] };
   w2.patch(w2.v, w2.s, 4, true, folded);
-  assert.equal(w2.v.stale, true, "unit < 0: stale, so the window path draws the footer");
+  assert.equal(w2.v.stale, false, "unit < 0 in a collapsed run: no window rebuild");
+  assert.equal(w2.v.rediff, undefined, "…and no repaint: nothing it would draw differs");
   assert.ok(w2.nodes.every((n) => !n.querySelector(":scope > .turn-elapsed")), "…and nothing was patched by hand");
+  // an EXPANDED run draws its rows after its head, the reply's among them: that row is patched in this call like any other
+  // node, and nothing is marked for a later paint (both callers return on the state they read before the patch, and an idle
+  // session gets no later frame; review find, 2026-09-23)
+  const w4 = footWorld(events, 3, 1, new Set(["tg:110"]));
+  const rows = runRows(w4.v.el, w4.nodes[1], 1, 3);
+  w4.v.painted = { sig: ["s0", "s1", "s2"] };
+  w4.patch(w4.v, w4.s, 4, true, folded);
+  assert.equal(w4.v.stale, false, "no window rebuild");
+  assert.equal(rows[2].querySelector(":scope > .turn-elapsed")?.textContent, "60", "the footer lands on the reply's own row, the run's third");
+  assert.ok([...w4.nodes, rows[0], rows[1]].every((n) => !n.querySelector(":scope > .turn-elapsed")), "no other node gained one: not the head, not the other rows");
+  assert.deepEqual(w4.v.painted.sig, ["s0", "s1", "s2"], "no unit is marked for repaint");
+  assert.equal(w4.v.rediff, undefined, "…and no rediff is asked for: the footer is already there");
+  // the same run with none of its rows painted (it sits outside the window): the mark, for the paint that brings it in
+  const w6 = footWorld(events, 1, 0, new Set(["tg:110"]));
+  w6.v.painted = { sig: ["s0"] };
+  w6.patch(w6.v, w6.s, 4, true, folded);
+  assert.deepEqual(w6.v.painted.sig, ["s0", undefined], "the run's unit alone is marked for repaint");
+  assert.equal(w6.v.rediff, true, "…and the next paint compares the window, so it is not skipped");
+  assert.ok(w6.nodes.every((n) => !n.querySelector(":scope > .turn-elapsed")), "…and nothing was patched by hand");
+  // a hidden thinking row (compact mode shows none) belongs to no unit at all: nothing to patch
+  const w5 = footWorld([user(100), tool(110), { kind: "thinking", t: 150 }, user(200)], 3, 1);
+  w5.patch(w5.v, w5.s, 3, true, [{ kind: "event", index: 0 }, { kind: "event", index: 1 }, { kind: "event", index: 3 }]);
+  assert.equal(w5.v.stale, false); assert.equal(w5.v.rediff, undefined);
   // a window whose start unit is past the items: winEv falls to the event count, so the plan sees no reply before it
   const w3 = footWorld(events, 4, 2); w3.v.winStart = 9;
   w3.patch(w3.v, w3.s, 4, true, items);
   assert.ok(w3.nodes.every((n) => !n.querySelector(":scope > .turn-elapsed")));
+});
+
+test("a reply inside an expanded run: the session going idle puts the footer on the run's row, going back to work takes it off, the fork spot moving with it", () => {
+  const events = [user(100), tool(110), tool(120), reply(160)];   // the final turn ends inside the run
+  const items = [{ kind: "event", index: 0 }, { kind: "toolgroup", indices: [1, 2, 3] }];
+  const { patch, v, s, nodes, spot } = footWorld(events, 2, 1, new Set(["tg:110"]));
+  const rows = runRows(v.el, nodes[1], 1, 3);
+  rows[2].appendChild(spot);   // the reply's row carries the turn's fork spot
+  v.painted = { sig: ["s0", "s1"] };
+  patch(v, s, 4, false, items);
+  const f = rows[2].querySelector(":scope > .turn-elapsed");
+  assert.ok(f, "idle: the footer, on the reply's row"); assert.equal(f!.textContent, "60");
+  assert.equal(spot.parent, f, "the fork spot moved into the elapsed row");
+  patch(v, s, 4, true, items);
+  assert.equal(rows[2].querySelector(":scope > .turn-elapsed"), null, "back to work on the same turn: the footer comes off the row");
+  assert.equal(spot.parent, rows[2], "the fork spot is back on the row itself");
+  assert.deepEqual(v.painted.sig, ["s0", "s1"], "no repaint mark either way"); assert.equal(v.rediff, undefined); assert.equal(v.stale, false);
 });

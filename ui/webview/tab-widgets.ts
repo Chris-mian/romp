@@ -168,8 +168,8 @@ export function needsYouPhrase(count: number): string {
 /** Badge mode (the tabStateBadge setting, plans/tab-state-badge.md): adjust a tab already composed for ring mode. The
  *  magenta (Needs you) and amber (retrying) rings give way, the Needs-you state becomes a top-right magenta dot and the
  *  retrying state moves to the left status dot in amber; the red ring (Blocked) stays, since Blocked outranks the run
- *  states. Called once per tab per paint from render.ts ONLY when the setting is on, so ring mode never touches this and
- *  stays byte-identical to today. Idempotent: clears any prior badge dot first (a reused tab). The Needs-you dot carries
+ *  states. Called when the setting is on from render.ts (once per tab per paint) AND from the gear's ring-section demo
+ *  (gear.js), so ring mode never touches this and stays byte-identical to today. Idempotent: clears any prior badge dot first (a reused tab). The Needs-you dot carries
  *  status.needsYouCount as a number (the numbered style, plans/tab-state-badge.md): black on the dark magenta, the state's
  *  --st-needs-fg token (white) on the lighter light-theme magenta, "99+" past 99, a bare dot when
  *  the count is absent (an older kernel). Returns the Needs-you dot when one is drawn, else null. */
@@ -191,8 +191,9 @@ export function applyTabBadgeMode(tab: HTMLElement, sid: string, status: WidgetS
       slot.title = "retrying an API error on its own";
     }
     // else: the Status dot widget is switched OFF, so there is no slot to carry the amber. This runs after BOTH the
-    // before- and after-side widgets compose (render.ts calls it from appendTabAfterWidgets), so a dot dragged past the
-    // name is found either way and the widget-off case is the only no-slot one; keep the retrying ring rather than drop it for nothing.
+    // before- and after-side widgets compose (render.ts calls it from appendTabAfterWidgets; the gear demo composes both
+    // sides before its call too), so a dot dragged past the name is found either way and the widget-off case is the only
+    // no-slot one; keep the retrying ring rather than drop it for nothing.
   }
   const nu = tabWidget("ring-waiting-on-you");
   if (nu && ringOn(nu, sid, status, prefs)) {
@@ -322,11 +323,11 @@ registerTabWidget({
 // The names (plans/needs-you.md, the user 2026-09-20): Blocked is the hard stop, Needs you the category; the ids stay (they key the stored switches).
 const RING_ROWS: Record<RingId, { label: string; description: string; demo: WidgetStatus }> = {
   "ring-needs-you": { label: "Blocked", demo: { state: "awaiting" },
-                      description: "a dashed red ring while the session is stopped: on a prompt, or on an API error only you can clear" },
-  "ring-waiting-on-you": { label: "Needs you", demo: { state: "working", needsYou: true },
-                           description: "a dashed magenta ring while a card of the session's needs you, even as it goes on working; a red ring outranks it" },
+                      description: "while the session is stopped: on a prompt, or on an API error only you can clear" },
+  "ring-waiting-on-you": { label: "Needs you", demo: { state: "working", needsYou: true, needsYouCount: 2 },
+                           description: "while a card of the session's needs you, even as it goes on working; Blocked outranks it" },
   "ring-retrying": { label: "Retrying", demo: { state: "retrying" },
-                     description: "a dashed amber ring while the session retries an API error on its own; a red or magenta ring outranks it" },
+                     description: "while the session retries an API error on its own; Blocked or Needs you outranks it" },
 };
 for (const id of RING_ORDER) {
   registerTabWidget({ id, label: RING_ROWS[id].label, description: RING_ROWS[id].description, defaultOn: true, slot: "ring", ring: id,

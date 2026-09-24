@@ -414,7 +414,7 @@ class DiskMemo(unittest.TestCase):
         orig = jd._disk_seed
         calls = []
 
-        def spy(path, tmp, canon_hash):
+        def spy(path, tmp, canon_hash, st=None):     # `st`: the save's own stat of the temp, handed through since PR 2064 (one stat per publish)
             calls.append(str(tmp))
             self.assertEqual(str(path), str(dest))
             self.assertNotEqual(str(tmp), str(dest), "seeded from the temp, not the destination")
@@ -611,6 +611,9 @@ class DiskMemo(unittest.TestCase):
         os.link(dest, keep)
         jd.record_verdict(b, b["nodes"][gid], "planner", "note", T0 + 50, why="b's note")
         jd.record_verdict(c, c["nodes"][gid], "nudge", "block", T0 + 60, why="c's block")
+        c["nodes"][gid]["text"] = "A goal, restated briefly"   # C restates the text too: both writers moved it, so the incoming writer's (C's) wins at the rebase
+        #                                                        and C's store stays within K's size; since the field carry of 2026-09-23, K's long text would
+        #                                                        otherwise ride into C's rebased store and outgrow the padding this fixture needs
         orig = jd._publish_tmp
         fired = []
 

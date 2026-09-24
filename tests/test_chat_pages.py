@@ -832,8 +832,13 @@ class Proto2Wire(Harness):
         m1 = dict(m); m1["events"] = list(m["events"]) + [{"kind": "apiError", "uuid": "apiError", "text": "x", "status": 500}]
         km._send_chat_locked(c, m1, None, 0, False)
         self.assertEqual(c["echat"][SID]["last"], m["events"][-1]["uuid"], "the base ends on the last transcript event, not the notice")
-        km._send_chat_locked(c, m1, None, len(m1["events"]), False)                  # nothing changed: an empty suffix
-        self.assertEqual((sent[-1]["type"], sent[-1]["events"]), ("chatTail", []))
+        n = len(sent)
+        km._send_chat_locked(c, m1, None, len(m1["events"]), False)                  # nothing changed: the page holds it all
+        self.assertEqual(len(sent), n, "no frame: the empty suffix would leave the page as it is (2026-09-23, test_chat_noop_tail.py)")
+        m1s = dict(m1, status={"state": "working", "sinceEpoch": 1790000000000})   # a status flip alone: an empty suffix
+        km._send_chat_locked(c, m1s, None, len(m1s["events"]), False)
+        self.assertEqual((sent[-1]["type"], sent[-1]["afterUuid"], sent[-1]["events"]), ("chatTail", "apiError", []),
+                         "anchored at the card the client holds, which the base itself never ends on")
         m2 = dict(m); m2["events"] = list(m["events"]) + [{"kind": "user", "md": "next", "uuid": "u_next"}]   # the notice gone, a record appended
         km._send_chat_locked(c, m2, None, len(m["events"]), False)
         d = sent[-1]
@@ -894,7 +899,8 @@ class Proto2Wire(Harness):
         m1 = self._with(m, [echo])
         km._send_chat_locked(c2, m, None, 0, False)
         km._send_chat_locked(c2, m1, None, len(m["events"]), False)
-        km._send_chat_locked(c2, m1, None, len(m1["events"]), False)
+        m1s = dict(m1, status={"state": "working", "sinceEpoch": 1790000000000})     # the status flips (an unchanged one is no frame at all: test_chat_noop_tail.py)
+        km._send_chat_locked(c2, m1s, None, len(m1s["events"]), False)
         self.assertEqual(self._frame(sent2[-1]), ("chatTail", echo["uuid"], []))
         self.assertEqual(c2["echat"][SID]["last"], last_rec)
 
@@ -939,8 +945,8 @@ class Proto2Wire(Harness):
 
     def test_two_echoes_then_a_queued_overlay_keep_the_base_on_the_record(self):
         # two pending sends and then a queued card after them: the base stays on the record before the first echo, and the
-        # card's arrival re-sends the echoes on the suffix (the client truncates after the record and re-applies them; its
-        # pending reconcile re-hides the sender's own), the way an overlay card rides every later delta
+        # card's arrival is a delta carrying the card alone, anchored at the second echo, which the client holds unchanged
+        # past its base (2026-09-23, test_chat_noop_tail.py StreamedRunIsSentOnce; it re-sent both echoes before)
         whole, m = self._restored_tail()
         c, sent = _client()
         km._send_chat_locked(c, m, None, 0, False)
@@ -953,7 +959,7 @@ class Proto2Wire(Harness):
         self.assertEqual(c["echat"][SID]["last"], last_rec)
         m6 = self._with(m, [e1, e2, q])
         km._send_chat_locked(c, m6, None, km._chat_diff(m5["events"], m6["events"]), False)
-        self.assertEqual(self._frame(sent[-1]), ("chatTail", last_rec, [e1["uuid"], e2["uuid"], "queued"]))
+        self.assertEqual(self._frame(sent[-1]), ("chatTail", e2["uuid"], ["queued"]))
         self.assertEqual(c["echat"][SID]["last"], last_rec)
         # a list of nothing else falls back to its last event (a transcript-less session's first echo): the known residue,
         # one full at that first landing, once per session creation

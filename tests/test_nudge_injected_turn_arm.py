@@ -234,5 +234,89 @@ class InjectedTurnDeadlockEndToEnd(unittest.TestCase):
         self.assertEqual(self.sent, [])
 
 
+CX = load_source("romp_codex_events_injarm", os.path.join(os.path.dirname(HERE), "kernel", "codex_events.py"))
+
+
+class EndOnlyTurnArmsNothing(unittest.TestCase):
+    """A turn that is nothing but a Codex end record never re-arms a nudge (2026-09-23, the post-merge review of the
+    restart-cut fix). A Codex turn whose app-server output had no item at all, not even the prompt, ends on an empty
+    end record, and at a thread's start that record is the whole turn: no trigger, so _turn_romp_injected's first-atom
+    fallback read the end record as the opener, found no romp author on it and called the turn genuine. It became the
+    arm, so a nudge already sent on the genuine turn before it fired AGAIN, the runaway the arm exists to prevent had
+    the nudge's own turn come back that way. Before the end record such a turn wrote nothing and moved no arm. The turn
+    is the real normalizer's record through the real parse; the harness is InjectedTurnDeadlockEndToEnd's, with
+    _turn_romp_injected real. Red before the fix: the second tick sent a second nudge."""
+
+    setUp = InjectedTurnDeadlockEndToEnd.setUp
+    tearDown = InjectedTurnDeadlockEndToEnd.tearDown
+    _tick = InjectedTurnDeadlockEndToEnd._tick
+    _turn = staticmethod(InjectedTurnDeadlockEndToEnd._turn)
+
+    TID = "01911111-2222-7333-8444-00000000a0a0"
+
+    def _codex_turns(self, items):
+        """Turn t9 as the real normalizer writes it (the items between its start and its completion), parsed as the
+        kernel reads it."""
+        norm = CX.ThreadNormalizer(self.TID, cwd="/TESTDIR", version="codex", clock=lambda: NOW - 300)
+        recs = []
+        for m, p in ([("turn/started", {"threadId": self.TID, "turn": {"id": "t9", "items": []}})] + items +
+                     [("turn/completed", {"threadId": self.TID,
+                                          "turn": {"id": "t9", "items": [], "status": "completed"}})]):
+            recs.extend(norm.handle(m, p))
+        path = Path(self.td.name) / (self.TID + ".jsonl")
+        path.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        return km.em.parse_session(str(path), rompuuid=SID, candidate_files=[str(path)], now=NOW,
+                                   sdk_human=True)["turns"]
+
+    def _end_only_turn(self):
+        turns = self._codex_turns([])
+        self.assertEqual([((t["trigger"] or {}).get("uuid"), [a.get("uuid") for a in t["atoms"]], t["ended"])
+                          for t in turns], [(None, ["t9-end"], True)], "fixture: the end record is the whole turn")
+        return turns[0]
+
+    def test_a_second_tick_after_an_end_only_turn_sends_no_second_nudge(self):
+        self.store = _store({G1: _node(G1, "Ship the reconnect banner")})
+        self.turns = [self._turn("t1", ARM_T, "human", ended=True)]
+        self.assertTrue(self._tick(), "fixture: the genuine stall is nudged once")
+        self.assertEqual(len(self.sent), 1)
+        end_only = self._end_only_turn()
+        self.assertFalse(km._turn_romp_injected(end_only), "fixture: the first-atom fallback calls it genuine")
+        self.assertTrue(km._turn_only_ends(end_only))
+        self.turns.append(end_only)
+        self._tick(now=NOW + 120)
+        self.assertEqual(len(self.sent), 1, "an end-only turn re-armed the nudge")
+        self.assertEqual(km._auto_nudge_data()["nudged"][G1]["lastTurnId"], "t1", "the arm stays the genuine turn")
+
+    def test_a_genuine_turn_ending_on_its_end_record_still_arms(self):
+        """The skip is for a turn that is NOTHING but end records (2026-09-23, the fold's verify pass of this lane): a
+        genuine Codex turn whose last item is a command also ends on the empty end record, and it is still the arm. A
+        prompt, a command and the end record, written by the real normalizer: _turn_only_ends is False, one tick
+        sends one nudge, and the nudge record pins that turn. Red when _turn_only_ends asks any() where it asks all():
+        every Codex turn that completes with nothing held then has no arm, and its stalled work is never nudged."""
+        ms = (NOW - 300) * 1000
+        cmd = {"type": "commandExecution", "id": "c9", "command": "make synthetic", "cwd": "/TESTDIR"}
+        turns = self._codex_turns([
+            ("item/completed", {"threadId": self.TID, "turnId": "t9", "completedAtMs": ms,
+                                "item": {"type": "userMessage", "id": "u9",
+                                         "content": [{"type": "text", "text": "run the synthetic build"}]}}),
+            ("item/started", {"threadId": self.TID, "turnId": "t9", "startedAtMs": ms + 1000,
+                              "item": dict(cmd, status="inProgress")}),
+            ("item/completed", {"threadId": self.TID, "turnId": "t9", "completedAtMs": ms + 5000,
+                                "item": dict(cmd, status="completed", exitCode=0, aggregatedOutput="ok")})])
+        self.assertEqual([((t["trigger"] or {}).get("uuid"), [a.get("uuid") for a in t["atoms"]], t["ended"])
+                          for t in turns], [("u9", ["u9", "c9", "c9-r", "t9-end"], True)],
+                         "fixture: a genuine turn, command last, ending on the end record")
+        genuine = turns[0]
+        self.assertFalse(km._turn_romp_injected(genuine), "fixture: a genuine prompt opens it")
+        self.assertFalse(km._turn_only_ends(genuine), "a turn with a prompt and a command is more than its end")
+        self.store = _store({G1: _node(G1, "Ship the reconnect banner")})
+        self.turns = [genuine]
+        self.assertTrue(self._tick(), "the genuine Codex turn is the arm, so its stall is nudged")
+        self.assertEqual(len(self.sent), 1)
+        self.assertTrue(genuine["id"], "fixture: the parsed turn has an id")
+        self.assertEqual(km._auto_nudge_data()["nudged"][G1]["lastTurnId"], genuine["id"],
+                         "the nudge record pins the genuine Codex turn as its arm")
+
+
 if __name__ == "__main__":
     unittest.main()

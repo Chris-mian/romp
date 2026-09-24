@@ -10,6 +10,7 @@ that IS the checkpoint. Hermetic state; synthetic sids only."""
 import os
 import tempfile
 import time
+import types
 import unittest
 from romp_load import load_source
 
@@ -22,6 +23,15 @@ sb = load_source("romp_sdk_backend_drainhold", os.path.join(BIN, "romp_sdk_backe
 
 def _backend(d=None):
     return sb.SdkBackend(d or tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+
+
+def _hosts_off_root():
+    """A temp state root with per-session hosts pinned off (the repo's 2026-09-11 test rule; 2026-09-23, the review
+    of this lane): the test using it never connects a session, and the pin keeps a host from starting if one ever does."""
+    d = tempfile.mkdtemp()
+    with open(os.path.join(d, "session-hosts"), "w") as f:
+        f.write("off\n")
+    return d
 
 
 class DrainLease(unittest.TestCase):
@@ -120,6 +130,44 @@ class DrainLease(unittest.TestCase):
         self.assertTrue(any("still parked" in str(l) for l in logs),
                         "a hold outliving the loud bound escalates rather than reading as idle sessions")
 
+    def test_the_lines_report_the_counts_the_route_passes(self):
+        # 2026-09-23, the review of this lane: recounting this backend's own sessions, the lines of a park held by a
+        # Codex turn alone (the kernel's /busy counts it; this backend cannot see it) would read "0 in-flight turn(s),
+        # 0 session(s)" and ring those zeros as a problem. The route passes (in flight, background, Codex) in; the
+        # legacy no-park path (an older manager) gets them too. Without counts the line is this backend's own.
+        logs = []
+        be = sb.SdkBackend(_hosts_off_root(), "/bin/true", lambda *a, **k: None, log=logs.append)
+        try:
+            be.refresh_drain_hold(counts=(0, 0, 1))
+            parked = [str(l) for l in logs if "deploy restart parked" in str(l)]
+            self.assertEqual(len(parked), 1, logs)
+            self.assertIn("1 in-flight turn(s) (0 Claude, 1 Codex), 0 session(s) with background work", parked[0])
+            # the hold pauses Claude sessions only, so the line says whose starts it holds (2026-09-23)
+            self.assertIn("new Claude turn starts held until this box quiets", parked[0])
+            be._drain_hold_since = time.time() - be.DRAIN_LOUD_S - 1
+            be.refresh_drain_hold(counts=(2, 1, 1))
+            rung = [p["text"] for p in be.problems() if "still parked" in p["text"]]
+            self.assertEqual(len(rung), 1, be.problems())
+            self.assertIn("3 in-flight turn(s) (2 Claude, 1 Codex), 1 session(s) with background work", rung[0])
+            self.assertIn("new Claude turn starts remain held", rung[0])
+            # the park path reads the counts it is handed too (2026-09-23, the review of this lane): a direct call
+            # starts the episode here, and through the route the 5-minute ring can land on this call
+            be.refresh_drain_hold(park="1700000000", counts=(0, 0, 1))
+            parked = [str(l) for l in logs if "deploy restart parked" in str(l)]
+            self.assertEqual(len(parked), 2, logs)
+            self.assertIn("1 in-flight turn(s) (0 Claude, 1 Codex), 0 session(s) with background work", parked[-1])
+            # no counts: this backend's own, worded as before, and counted from its sessions, never zeros
+            be.sessions = {"11111111-2222-3333-4444-555555555555":
+                           types.SimpleNamespace(inflight=1, ended=False, _bg_tasks={}, _subagents={})}
+            be.note_parked_poll("1700000900")
+            parked = [str(l) for l in logs if "deploy restart parked" in str(l)]
+            self.assertEqual(len(parked), 3, logs)
+            self.assertIn("1 in-flight turn(s), 0 session(s) with background work;", parked[-1])
+            self.assertNotIn("Codex", parked[-1])
+        finally:
+            if be._drain_wake_timer is not None:
+                be._drain_wake_timer.cancel()
+
     def test_the_turn_start_gate_holds_fresh_starts_only(self):
         src = open(os.path.join(os.path.dirname(HERE), "kernel", "sdk_backend.py")).read()
         self.assertIn("blocked = blocked or (self.inflight == 0 and self.backend.drain_holding())", src,
@@ -136,11 +184,11 @@ class DrainLease(unittest.TestCase):
                       "but the arm is a WRITE, gated on an explicit token (the behavioral pins live "
                       "in tests/test_kernel_auth_hardening.py::BusyDrainWriteGate); the READ stays exempt")
         armed = ksrc[ksrc.index(gate):].split("_note_drain_armed()", 1)[0]
-        self.assertIn("be.refresh_drain_hold(park=park)", armed,
-                      "the arm carries the manager's park identity when the poll brought one (T240c)")
-        self.assertIn("be.refresh_drain_hold()", armed,
-                      "and keeps the old spelling for a poll without one: a backend that never learned "
-                      "the keyword still arms")
+        self.assertIn("be.refresh_drain_hold(park=park, counts=counts)", armed,
+                      "the arm carries the manager's park identity when the poll brought one (T240c), and "
+                      "the counts this answer carries for its lines (2026-09-23, the review of this lane)")
+        self.assertIn("be.refresh_drain_hold(counts=counts)", armed,
+                      "and no park for a poll without one: an older manager keeps the time-window episode")
         self.assertNotIn("_note_drain_refused()", armed, "both arms sit under the token check")
         self.assertIn('json.dumps({"busy": n, "inflight": inflight, "background": background,', ksrc,
                       "the payload says when the box is draining — glanceable, never mysterious")

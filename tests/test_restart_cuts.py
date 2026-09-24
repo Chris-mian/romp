@@ -31,6 +31,7 @@ os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)
 km = load_source("romp_kernel_cuts", os.path.join(BIN, "romp-kernel"))
 jd = km.jd
+cxb = load_source("romp_codex_backend_cuts", os.path.join(os.path.dirname(HERE), "kernel", "codex_backend.py"))
 
 SID = "11111111-2222-3333-4444-00000000c001"
 
@@ -1303,6 +1304,81 @@ class ParentGone(unittest.TestCase):
             km._parent_watch()
         ex.assert_not_called()
         self.assertFalse(self.AUDIT.exists(), "no second row: the handler writes the one that counts")
+
+
+class CodexCutTurns(unittest.TestCase):
+    """The exit drained the SDK backend alone, so a Codex turn open at a restart (its app-server is the kernel's
+    child and ends with it) was cut under an empty cutTurns row: a clean restart to every reader of the ledger
+    (2026-09-22). The row names it beside the SDK drain's cuts; the Codex backend is read, never built."""
+
+    CX_SID = "11111111-2222-3333-4444-00000000c0de"
+
+    def setUp(self):
+        self.AUDIT = _own_state_root(self)
+        for f in (self.AUDIT, km.RESTART_CUTS_FILE):
+            if f.exists():
+                f.unlink()
+        km._EXIT_ONCE = threading.Lock()
+        self._env = mock.patch.dict(os.environ, {k: v for k, v in os.environ.items()
+                                                 if k != "ROMP_MANAGER_PID"}, clear=True)
+        self._env.start()
+
+    def tearDown(self):
+        self._env.stop()
+        for f in (self.AUDIT, km.RESTART_CUTS_FILE):
+            if f.exists():
+                f.unlink()
+
+    def _exit(self, sdk=None, codex=None):
+        with mock.patch.object(km, "_broadcast_restarting", lambda *a, **k: None), \
+             mock.patch.object(km, "_sdk_backend", sdk), \
+             mock.patch.object(km, "_codex_backend", codex), \
+             mock.patch.object(km.os, "_exit", side_effect=SystemExit):
+            with self.assertRaises(SystemExit):
+                km._drain_and_exit("kernel-asks-manager-restart-all: refresh", what="SIGTERM")
+        return [json.loads(l) for l in km.RESTART_CUTS_FILE.read_text().splitlines()]
+
+    def test_an_open_codex_turn_is_named_in_the_cut_row(self):
+        cx = mock.Mock(spec=["inflight_turns"])
+        cx.inflight_turns.return_value = [{"sid": self.CX_SID, "name": "api", "backend": "codex"}]
+        rows = self._exit(sdk=LiveDrain(), codex=cx)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["cutTurns"], [{"sid": SID, "name": "web"},
+                                               {"sid": self.CX_SID, "name": "api", "backend": "codex"}])
+
+    def test_a_running_compaction_is_named_in_the_cut_row(self):
+        # 2026-09-23, the promise in #2055's body: the row and the restart gates read one predicate. The row read open
+        # turns alone, so a restart over a compaction running as its own turn wrote an empty row, a clean restart to
+        # every ledger reader, while /busy had held the quiet window for that compaction and the next load ended it
+        # with its restart notice. A real CodexBackend (no app-server, no worker); synthetic sids
+        cx = cxb.CodexBackend(tempfile.mkdtemp(), client_factory=lambda: None, log=lambda m: None)
+        running = cxb._Session(self.CX_SID, "T-1", "api", "/TESTDIR")
+        running.compacting, running.compact_active_seen, running.state = True, True, "compacting"   # seen active
+        latched = cxb._Session("11111111-2222-3333-4444-00000000c0df", "T-2", "tests", "/TESTDIR")
+        latched.compacting, latched.state = True, "compacting"   # latched at the ACK, never seen running: no cut
+        for s in (running, latched):
+            cx._put_session(s)
+        rows = self._exit(sdk=LiveDrain(), codex=cx)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["cutTurns"], [{"sid": SID, "name": "web"},
+                                               {"sid": self.CX_SID, "name": "api", "backend": "codex"}],
+                         "the running compaction is cut with the app-server, beside the SDK drain's cuts")
+        self.assertEqual(cx.would_cut(), [{"sid": self.CX_SID, "name": "api"}], "the compaction the gates waited on")
+
+    def test_no_codex_backend_built_is_no_codex_cut(self):
+        for unbuilt in (None, False):          # never built / module unavailable
+            with self.subTest(unbuilt=unbuilt):
+                if km.RESTART_CUTS_FILE.exists():
+                    km.RESTART_CUTS_FILE.unlink()
+                km._EXIT_ONCE = threading.Lock()
+                self.assertEqual(self._exit(codex=unbuilt)[0]["cutTurns"], [])
+
+    def test_a_codex_read_that_raises_still_leaves_the_row(self):
+        cx = mock.Mock(spec=["inflight_turns"])
+        cx.inflight_turns.side_effect = RuntimeError("synthetic read fault")
+        rows = self._exit(sdk=LiveDrain(), codex=cx)
+        self.assertEqual(len(rows), 1, "the exit still writes its one row")
+        self.assertEqual(rows[0]["cutTurns"], [{"sid": SID, "name": "web"}], "with the SDK drain's cuts in it")
 
 
 if __name__ == "__main__":
