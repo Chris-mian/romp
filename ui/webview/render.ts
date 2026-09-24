@@ -9942,7 +9942,7 @@ function updateCommentRail(): void {
     tick.dataset.tid = t.th.tid;
     tick.dataset.uuid = t.th.anchorUuid;
     tick.style.top = t.y + "px";
-    tick.title = (t.th.name || "comment") + ": click to jump to it";
+    tick.title = (t.th.name || "comment") + (t.th.src ? " on " + t.th.src + ": click to open it" : ": click to jump to it");
     return tick;
   }));
 }
@@ -17015,7 +17015,7 @@ function notifyComposerPending(sid: string | null): void {
 function stageViewerNote(sid: string, text: string, exact: string, src?: string): void {
   const cite = mkQuoteCitation(exact, null, src);
   stagedMsgs.push(sid, { text, cites: [cite] });
-  dropSeededQuote(sid, cite.quote);
+  if (cite.quote) dropSeededQuote(sid, cite.quote);
   persistDrafts();
   if (sid === activeId) renderStagedStrip(sid);
   notifyComposerPending(sid);   // renderStagedStrip announces too, but only on the pane that HAS a strip

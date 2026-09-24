@@ -1397,12 +1397,21 @@ class CommentOps(CommentBase):
         acked = []
         self.be.calls.clear()
         err, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why?",
-                                      on_row=lambda t: acked.append((t, [c[0] for c in self.be.calls])))
+                                      on_row=lambda t: acked.append((t, [c[0] for c in self.be.calls],
+                                                                     km._comment_thread(PARENT, t))))
         self.assertIsNone(err)
-        self.assertEqual([t for t, _ in acked], [tid], "acked once, with the tid the caller adopts")
+        self.assertEqual([t for t, _, _ in acked], [tid], "acked once, with the tid the caller adopts")
         self.assertEqual(acked[0][1], [], "no backend call had run when the ack went out")
+        self.assertEqual((acked[0][2] or {}).get("status"), "open", "the row was on disk when the ack fired")
         self.assertEqual([c[0] for c in self.be.calls], ["fork", "connect", "send"], "the spawn still happens")
         self.assertEqual(km._comment_thread(PARENT, tid)["status"], "open", "the row the ack promised is on disk")
+
+    def test_a_file_threads_path_reaches_the_frame_and_the_timeline_square(self):
+        err, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why?", src="docs/retry.md:12")
+        self.assertIsNone(err)
+        row = next(t for t in km._comments_frame(PARENT)["threads"] if t["tid"] == tid)
+        self.assertEqual(row["src"], "docs/retry.md:12")
+        self.assertEqual(next(m for m in km._comment_markers(PARENT) if m["tid"] == tid)["src"], "docs/retry.md:12")
 
     def test_a_refused_create_acks_nothing(self):
         """Every refusal a user can provoke sits ABOVE the row write, so on_row stays unfired."""

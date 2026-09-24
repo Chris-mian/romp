@@ -18051,6 +18051,7 @@ def _comments_frame(sid, live_map=None):
                         "relayedT": th.get("relayedT") or 0,   # the persistent sent-back indicator's stamp (T145)
                         "name": th.get("name") or "", "color": th.get("color") or "",
                         "exact": str(th.get("exact") or "")[:500], "status": status,
+                        "src": str(th.get("src") or ""),   # a file passage's path; empty for a chat comment
                         "createdT": th.get("createdT") or 0, "state": state, "error": err,
                         "unread": unread, "replyOwed": reply_owed,   # yellow / green — see the docstring (T237)
                         "queued": queued,                              # sends the backend holds or has fed, not yet in the transcript
@@ -18099,7 +18100,7 @@ def _comment_markers(sid):
             continue
         out.append({"t": th.get("anchorT") or th.get("createdT") or 0,
                     "uuid": th.get("anchorUuid") or "", "tid": th.get("tid"),
-                    "status": th.get("status") or "open"})
+                    "status": th.get("status") or "open", "src": str(th.get("src") or "")})
     return out
 
 
@@ -18286,7 +18287,8 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", eff
 
     `on_row(tid)` fires the moment the thread row is DURABLE, before the fork. Forking mints a session
     — process spawn, connect, opening send — which is seconds the caller would otherwise spend holding
-    a dialog open over a comment that is already saved. Every refusal a user can provoke (no SDK
+    a dialog open over a passage whose row is already saved (the words stay in memory until the opening
+    send queues them). Every refusal a user can provoke (no SDK
     backend, no transcript, anchor lag, a bad name) happens above this point, so an ack here is honest;
     a fork that then dies rolls the row back and reports itself the same way it always did.
 
@@ -20408,7 +20410,7 @@ def _drive(msg, client):
         # guess) and the fresh {type:"comments"} frame rides straight back, ahead of the pusher cycle.
         # A FILE passage is acked on the DURABLE row, ahead of the fork (the on_row callback): the viewer
         # has no draft to restore, and minting the session is seconds it would spend holding a dialog
-        # over a saved comment. A chat comment is acked after the fork, so a failure keeps its draft open.
+        # over a saved row (its words stay in memory until the opening send queues them). A chat comment is acked after the fork, so a failure keeps its draft open.
         cmt_uuid = str(msg.get("uuid") or "")     # a FILE passage has no anchor record, only a src label
         cmt_src = str(msg.get("src") or "")
         cmt_cid = str(msg.get("createId") or "")  # echoed on every reply, so the viewer settles the right box
