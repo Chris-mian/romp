@@ -74762,6 +74762,11 @@ class Handler(BaseHTTPRequestHandler):
         for hn in ("Upgrade", "Connection", "Sec-WebSocket-Key", "Sec-WebSocket-Version",
                    "Sec-WebSocket-Protocol", "Sec-WebSocket-Extensions"):
             v = self.headers.get(hn)
+            if hn == "Sec-WebSocket-Extensions" and hasattr(self.headers, "get_all"):
+                # the list may come as several lines (RFC 6455 §11.3.2), which the direct handshake reads together: the
+                # remote must see them all, or an offer past the first line upgrades plain through the hub where it
+                # negotiated direct (review of #2106, 2026-09-23). Key and Version may not repeat, so they stay one read
+                v = ", ".join(self.headers.get_all(hn) or []) or v
             if v:
                 lines.append("%s: %s" % (hn, v))
         try:
