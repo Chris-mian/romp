@@ -5382,8 +5382,12 @@ gone on both ends.
 
     The kernel now protects itself: it pings every pane on each heartbeat and
     drops one whose ping goes unanswered, a reconnecting pane retires its own
-    previous socket at once, and the timeline and feed cross the wire as
-    deltas instead of whole payloads. That keeps a forwarded dashboard usable,
+    previous socket at once, the timeline and feed cross the wire as
+    deltas instead of whole payloads, and every frame over a kilobyte that
+    compression makes smaller is compressed for a client that offers WebSocket
+    compression (`permessage-deflate`, which every browser and Node's `ws` do;
+    a whole feed frame that measured 2.5 MB plain crosses as about 0.4 MB).
+    That keeps a forwarded dashboard usable,
     but the forwarder still carries every byte over a channel it shares with
     your editor, so prefer a path that gives each pane its own socket: plain ssh
     port forwarding, which the guide sets up under
