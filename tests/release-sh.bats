@@ -531,3 +531,124 @@ RSTUB
     [ "$status" -eq 0 ]
     grep -q "myrunner tests/ -q" "$TEST_DIR/my.log"
 }
+
+# ── the suites' order and environment (2026-09-24) ─────────────────────────────────────────
+# The script orders the suites as CI's extension job does (the webview typecheck, suite and build,
+# then the Python suite against that build: the labs that serve the checkout's dist as it stands
+# get the tip's bundle, and a broken build stops the release before the suite instead of inside a
+# lab an hour in), scrubs the live kernel's exports a romp session's shell carries for the Python
+# run, and requires the served labs where playwright's chromium is installed, declaring the
+# engines CI declares. Parity with CI: at the v0.17.0 cut two federation labs were red in the
+# local run on a box running a live romp and green in CI on the same tip, and they stay red
+# there under this order and scrub; on such a box the gate is CI green on the tip through
+# --skip-tests. Every call below lands in one sequence log, so the ORDER is what these pin.
+
+_stub_npm() {                           # $1 = "ok" | "build-fails"
+    cat > "$TEST_DIR/npm" <<NPMSTUB
+#!/bin/sh
+echo "npm \$*" >> "$TEST_DIR/seq.log"
+if [ "\$1 \$2" = "run build" ] && [ "$1" = "build-fails" ]; then exit 1; fi
+exit 0
+NPMSTUB
+    chmod +x "$TEST_DIR/npm"
+}
+
+_stub_python3_recording() {            # a present pytest whose suite run records its argv, its environment's NAMES, and the served knobs' values
+    cat > "$TEST_DIR/python3" <<PYSTUB
+#!/bin/sh
+echo "python3 \$*" >> "$TEST_DIR/seq.log"
+if [ "\$1" = "-m" ] && [ "\$2" = "pytest" ] && [ "\$3" = "tests/" ]; then
+    env | cut -d= -f1 | sort > "$TEST_DIR/suite-env.txt"
+    env | grep '^ROMP_SERVED_TESTS_' | sort > "$TEST_DIR/suite-served.txt" || true
+fi
+exit 0
+PYSTUB
+    chmod +x "$TEST_DIR/python3"
+}
+
+_stub_node() {                          # $1 = "browser" | "no-browser": playwright's executablePath answer, a file that exists or one that does not
+    if [ "$1" = "browser" ]; then printf '#!/bin/sh\nexit 0\n' > "$TEST_DIR/chromium"; chmod +x "$TEST_DIR/chromium"; fi
+    cat > "$TEST_DIR/node" <<NODESTUB
+#!/bin/sh
+echo "node \$*" >> "$TEST_DIR/seq.log"
+printf '%s' "$TEST_DIR/chromium"
+NODESTUB
+    chmod +x "$TEST_DIR/node"
+}
+
+_with_extension_deps() { mkdir -p "$REPO/vscode-extension/node_modules"; }
+
+@test "release: with the extension deps present, the webview typecheck, suite and BUILD run before the Python suite, in that order" {
+    _stub_gh; _stub_npm ok; _stub_node browser; _stub_python3_recording; _with_extension_deps
+    run env PATH="$(_env_path)" "$REPO/scripts/release.sh"
+    [ "$status" -eq 0 ]
+    [ "$(grep -c '^npm run build$' "$TEST_DIR/seq.log")" -eq 1 ]
+    c="$(grep -n '^npm run typecheck$' "$TEST_DIR/seq.log" | cut -d: -f1)"
+    t="$(grep -n '^npm test$' "$TEST_DIR/seq.log" | cut -d: -f1)"
+    b="$(grep -n '^npm run build$' "$TEST_DIR/seq.log" | cut -d: -f1)"
+    p="$(grep -n '^python3 -m pytest tests/ -q$' "$TEST_DIR/seq.log" | cut -d: -f1)"
+    [ -n "$c" ]; [ -n "$t" ]; [ -n "$b" ]; [ -n "$p" ]
+    [ "$c" -lt "$t" ]
+    [ "$t" -lt "$b" ]
+    [ "$b" -lt "$p" ]
+}
+
+@test "release: a failing webview build stops the release BEFORE the Python suite, and nothing is tagged" {
+    _stub_gh; _stub_npm build-fails; _stub_node browser; _stub_python3_recording; _with_extension_deps
+    run env PATH="$(_env_path)" "$REPO/scripts/release.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"webview build failed"* ]]
+    [ "$(grep -c '^python3 -m pytest tests/' "$TEST_DIR/seq.log")" -eq 0 ]
+    run git -C "$REPO" tag -l
+    [ -z "$output" ]
+}
+
+@test "release: the Python suite runs without the live kernel's exports, and with the served labs required and chromium declared when playwright's chromium is installed" {
+    _stub_gh; _stub_npm ok; _stub_node browser; _stub_python3_recording; _with_extension_deps
+    run env PATH="$(_env_path)" ROMP_MANAGER_PID=4242 ROMP_SERVE_HOST=0.0.0.0 \
+        ROMP_SID=cccccccc-1111-2222-3333-444444444444 ROMP_SESSION_NAME=web ROMP_KERNEL_PORT=7433 ROMP_POSTAL_PORT=25302 \
+        "$REPO/scripts/release.sh"
+    [ "$status" -eq 0 ]
+    [ -s "$TEST_DIR/suite-env.txt" ]
+    [ "$(grep -c -E '^(ROMP_MANAGER_PID|ROMP_SERVE_HOST|ROMP_SID|ROMP_SESSION_NAME|ROMP_KERNEL_PORT|ROMP_POSTAL_PORT)$' "$TEST_DIR/suite-env.txt")" -eq 0 ]
+    [ "$(grep -c '^ROMP_SERVED_TESTS_REQUIRE=1$' "$TEST_DIR/suite-served.txt")" -eq 1 ]
+    [ "$(grep -c '^ROMP_SERVED_TESTS_ENGINES=chromium$' "$TEST_DIR/suite-served.txt")" -eq 1 ]
+    grep -q '^python3 -m pytest tests/ -q$' "$TEST_DIR/seq.log"
+}
+
+@test "release: an engines list the shell declares reaches the served labs as it stands, beside the require flag" {
+    _stub_gh; _stub_npm ok; _stub_node browser; _stub_python3_recording; _with_extension_deps
+    run env PATH="$(_env_path)" ROMP_SERVED_TESTS_ENGINES=chromium,firefox "$REPO/scripts/release.sh"
+    [ "$status" -eq 0 ]
+    [ "$(grep -c '^ROMP_SERVED_TESTS_REQUIRE=1$' "$TEST_DIR/suite-served.txt")" -eq 1 ]
+    [ "$(grep -c '^ROMP_SERVED_TESTS_ENGINES=chromium,firefox$' "$TEST_DIR/suite-served.txt")" -eq 1 ]
+}
+
+@test "release: node deps present but no browser: the served labs are not required, and the line says their gate is CI" {
+    _stub_gh; _stub_npm ok; _stub_node no-browser; _stub_python3_recording; _with_extension_deps
+    run env PATH="$(_env_path)" "$REPO/scripts/release.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"node deps present, no browser"* ]]
+    [[ "$output" == *"their gate is CI's extension job on the tip"* ]]
+    [ -s "$TEST_DIR/suite-env.txt" ]
+    [ "$(grep -c '^ROMP_SERVED_TESTS_REQUIRE$' "$TEST_DIR/suite-env.txt")" -eq 0 ]
+    [ "$(grep -c '^python3 -m pytest tests/ -q$' "$TEST_DIR/seq.log")" -eq 1 ]
+}
+
+@test "release: without the extension deps the script says the served labs are not proven here, and does not require them" {
+    _stub_gh; _stub_python3_recording
+    run env PATH="$(_env_path)" "$REPO/scripts/release.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"served labs skip here"* ]]
+    [[ "$output" == *"CI's extension job on the tip"* ]]
+    [ -s "$TEST_DIR/suite-env.txt" ]
+    [ "$(grep -c '^ROMP_SERVED_TESTS_REQUIRE$' "$TEST_DIR/suite-env.txt")" -eq 0 ]
+}
+
+@test "release: --skip-tests names CI green on the tip as the gate, with the tip's sha" {
+    _stub_gh
+    run "$REPO/scripts/release.sh" --skip-tests
+    [ "$status" -eq 0 ]
+    tip="$(git -C "$REPO" rev-parse --short HEAD)"
+    [[ "$output" == *"CI green on the tip being tagged ($tip)"* ]]
+}
