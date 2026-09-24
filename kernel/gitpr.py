@@ -48,27 +48,80 @@ _SEPARATORS = frozenset((";", "&", "&&", "|", "||", "(", ")", "\n"))
 _WRAPPERS = frozenset(("env", "time", "command", "sudo", "nohup", "exec"))
 _GIT_VALUE_OPTS = frozenset(("-C", "-c", "--git-dir", "--work-tree", "--namespace"))
 GH_REPO_OPTS = frozenset(("-R", "--repo"))
+GH_REPO_ENV = "GH_REPO"                                   # gh's own repo override, as a command prefix
+_TIMEOUT_VALUE_OPTS = frozenset(("-s", "--signal", "-k", "--kill-after"))
 _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _REDIRECT_RE = re.compile(r"(?<!\S)\d*[<>]{1,2}&?\d*(?!\S)")   # 2>&1, >, >> — never a command word
+_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")   # the delimiter that ends its body
 
 
 class GitPrError(Exception):
     """A gh call that could not answer, carrying the reason verbatim so a caller can render it."""
 
 
-def simple_commands(cmd):
-    """The shell line `cmd` as a list of token lists, one per simple command; [] when it will not
-    tokenize (an unbalanced quote), so a caller infers nothing rather than something wrong."""
-    lexer = shlex.shlex(_REDIRECT_RE.sub(" ", (cmd or "").replace("\n", " ; ")), posix=True,
-                        punctuation_chars=";&|()")
+def _strip_comment(line, quote):
+    """(`line` without its unquoted `#` comment, the quote still open at its end). `quote` is the one open
+    from earlier lines, so a `#` inside a multi-line string is kept."""
+    out, i = [], 0
+    while i < len(line):
+        c = line[i]
+        if quote:
+            if c == quote:
+                quote = ""
+            elif c == "\\" and quote == '"':
+                out.append(c); i += 1
+                c = line[i] if i < len(line) else ""
+        elif c in "'\"":
+            quote = c
+        elif c == "\\":
+            out.append(c); i += 1
+            c = line[i] if i < len(line) else ""
+        elif c == "#" and (i == 0 or line[i - 1] in " \t;&|()"):
+            break
+        out.append(c)
+        i += 1
+    return "".join(out), quote
+
+
+def _command_text(cmd):
+    """`cmd` with continuations joined, heredoc bodies dropped and unquoted comments stripped."""
+    lines, end, quote = [], None, ""
+    for line in (cmd or "").replace("\\\n", " ").split("\n"):
+        if end is not None:
+            end = None if line.strip() == end else end
+            continue
+        kept, quote = _strip_comment(line, quote)
+        lines.append(kept)
+        m = None if quote else _HEREDOC_RE.search(kept)
+        if m:
+            end = m.group(2)
+    return "\n".join(lines)
+
+
+def _tokens(text):
+    """shlex tokens of `text`, newlines kept as separators; None when a quote is unbalanced."""
+    lexer = shlex.shlex(_REDIRECT_RE.sub(" ", text), posix=True, punctuation_chars=";&|()\n")
+    lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
+    lexer.commenters = ""
     try:
-        tokens = list(lexer)
+        return list(lexer)
     except ValueError:
-        return []
+        return None
+
+
+def simple_commands(cmd):
+    """The shell text `cmd` as a list of token lists, one per simple command. A command whose quotes do
+    not balance is read line by line, and a line that still will not tokenize adds nothing."""
+    text = _command_text(cmd)
+    tokens = _tokens(text)
+    if tokens is None:
+        tokens = []
+        for line in text.split("\n"):
+            tokens += (_tokens(line) or []) + ["\n"]
     out, cur = [], []
     for tok in tokens:
-        if tok in _SEPARATORS or set(tok) <= set(";&|()"):
+        if tok in _SEPARATORS or set(tok) <= set(";&|()\n"):
             if cur:
                 out.append(cur)
             cur = []
@@ -80,10 +133,18 @@ def simple_commands(cmd):
 
 
 def _command_words(tokens):
-    """`tokens` past VAR=value prefixes and wrapper commands (`env FOO=1`, `time`, `command`)."""
+    """`tokens` past VAR=value prefixes and wrapper commands (`env FOO=1`, `time`, `timeout 60`)."""
     i = 0
-    while i < len(tokens) and (_ASSIGN_RE.match(tokens[i]) or tokens[i] in _WRAPPERS):
-        i += 1
+    while i < len(tokens):
+        if _ASSIGN_RE.match(tokens[i]) or tokens[i] in _WRAPPERS:
+            i += 1
+        elif tokens[i] == "timeout":
+            i += 1
+            while i < len(tokens) and tokens[i].startswith("-"):
+                i += 2 if tokens[i] in _TIMEOUT_VALUE_OPTS else 1
+            i += 1                                 # the duration
+        else:
+            break
     return tokens[i:]
 
 
@@ -100,7 +161,8 @@ def gh_pr_action(tokens):
     words = _command_words(tokens)
     if not words or words[0] != "gh":
         return None
-    other_repo = any(w in GH_REPO_OPTS or w.startswith("--repo=") for w in words)
+    other_repo = (any(w in GH_REPO_OPTS or w.startswith("--repo=") for w in words)
+                  or any(t.startswith(GH_REPO_ENV + "=") for t in tokens[:len(tokens) - len(words)]))
     rest = _past_options(words[1:], GH_REPO_OPTS)
     if len(rest) < 2 or rest[0] != "pr" or rest[1] not in PR_ACT_VERBS:
         return None
@@ -195,7 +257,10 @@ _REPO_OF = {}     # commondir → ('owner/repo' or '', config mtime)
 def repo_of(cwd):
     """'owner/repo' of the canonical GitHub repo for this checkout, else '': `upstream` when the clone
     has one (the fork layout, where `origin` is the fork), else `origin`. Memoized on the config file's
-    mtime, the file `git remote add` / `set-url` rewrites, so a remote added later is seen."""
+    mtime, the file `git remote add` / `set-url` rewrites, so a remote added later is seen. '' with PR
+    status off, so no remote is read and no row carries a PR number."""
+    if PR_STATUS_OFF:
+        return ""
     dirs = git_dirs(cwd)
     if not dirs:
         return ""
@@ -449,13 +514,17 @@ _GEN = {}          # repo → invalidation count
 _WANTED = {}       # repo → every PR number a session has cited (cumulative, so none is later evicted)
 _BRANCHES = {}     # repo → {branch: time.monotonic() a session last asked from it}; current ones come first
 _TRIED = {}        # repo → cited numbers gh could not return, so they are not re-kicked forever
+_FULL = set()      # repos whose next refresh re-reads the list; a poll alone re-reads only unsettled checks
 _INFLIGHT = set()  # repos with a refresh running
 _LOCK = threading.Lock()
 
 
-def invalidate(repo):
-    """Mark a repo's PR set stale, including one being refreshed right now."""
+def invalidate(repo, full=True):
+    """Mark a repo's PR set stale, including one being refreshed right now. `full` False (the poll) asks
+    only for the checks still running or unread."""
     with _LOCK:
+        if full:
+            _FULL.add(repo)
         _GEN[repo] = _GEN.get(repo, 0) + 1
         ent = _CACHE.get(repo)
         if ent and ent.get("fresh"):
@@ -466,6 +535,7 @@ def retry(repo):
     """A user asked for a re-read: forget which cited numbers gh could not return, then invalidate."""
     with _LOCK:
         _TRIED.pop(repo, None)
+        _POLL_BACKOFF.pop(repo, None)
     invalidate(repo)
 
 
@@ -533,19 +603,46 @@ def _assemble(repo, prs):
     return prs, missing_err or checks_err
 
 
+def _unsettled(prs):
+    """Numbers of open PRs whose checks are still running or could not be read."""
+    return [n for n, pr in prs.items() if pr.get("state") == "open" and pr.get("checksState") in ("running", "unknown")]
+
+
+def _recheck(repo, cached):
+    """A poll's refresh: the cached set, with only its unsettled checks re-read."""
+    prs = dict(cached)
+    return prs, _fill_checks(repo, prs, sorted(_unsettled(prs), reverse=True))
+
+
+def _full_read(repo, cached):
+    """An event's refresh: the list, with merged PRs from the last read kept rather than re-fetched."""
+    prs = hydrate(repo)
+    for n, pr in cached.items():
+        if n not in prs and pr.get("state") == "merged":
+            prs[n] = pr
+    return _assemble(repo, prs)
+
+
 def _refresh(repo):
-    """The background body: one list read, completed privately, published once."""
+    """The background body: one read, completed privately, published once."""
     with _LOCK:
         gen = _GEN.get(repo, 0)
+        ent = _CACHE.get(repo)
+        full = repo in _FULL or ent is None or bool(ent.get("listErr"))
+        _FULL.discard(repo)
+        cached = (ent or {}).get("prs") or {}
+    list_err = False
     try:
-        prs, err = _assemble(repo, hydrate(repo))
+        prs, err = _full_read(repo, cached) if full else _recheck(repo, cached)
     except GitPrError as e:
-        prs, err = None, str(e)
+        prs, err, list_err = None, str(e), True
     with _LOCK:
         if prs is None:
             # Keep the last good snapshot beside the reason: the pane shows both, and the poll retries.
-            prs = (_CACHE.get(repo) or {}).get("prs") or {}
-        _CACHE[repo] = {"prs": prs, "err": err, "fresh": _GEN.get(repo, 0) == gen}
+            prs = cached
+        _CACHE[repo] = {"prs": prs, "err": err, "listErr": list_err, "fresh": _GEN.get(repo, 0) == gen}
+        if not err:
+            _POLL_BACKOFF.pop(repo, None)
 
 
 def repo_prs(repo, nums=(), branch=""):
@@ -584,12 +681,15 @@ def needs_poll(repo):
     ent = _CACHE.get(repo) or {}
     if ent.get("err"):
         return True
-    return any(pr.get("checksState") == "running" for pr in list((ent.get("prs") or {}).values()))
+    return any(pr.get("checksState") == "running" and pr.get("state") == "open"
+               for pr in list((ent.get("prs") or {}).values()))
 
 
 # ── the refresh events ───────────────────────────────────────────────────────────────────────────────
 _POLLED = {}      # repo → time.monotonic() of the last poll-driven refresh
 _POLL_SECS = 30   # the one interval in this module; see needs_poll
+_POLL_MAX_SECS = 900        # the ceiling a failing repo's poll backs off to
+_POLL_BACKOFF = {}          # repo → the current interval while its reads fail; cleared by a clean read or a retry
 
 
 def note_local_state(cwd, repo):
@@ -610,9 +710,14 @@ def poll_due(repo, now):
     time.monotonic(), passed in so a test can drive it."""
     if not needs_poll(repo):
         return False
+    failing = bool((_CACHE.get(repo) or {}).get("err"))
+    interval = _POLL_BACKOFF.get(repo, _POLL_SECS) if failing else _POLL_SECS
     last = _POLLED.get(repo)
-    if last is not None and (now - last) < _POLL_SECS:
+    if last is not None and (now - last) < interval:
         return False
     _POLLED[repo] = now
-    invalidate(repo)
+    if failing:
+        with _LOCK:
+            _POLL_BACKOFF[repo] = min(interval * 2, _POLL_MAX_SECS)
+    invalidate(repo, full=False)
     return True

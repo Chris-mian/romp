@@ -43,6 +43,13 @@ def test_repo_of_an_https_remote(tmp_path):
     assert gp.repo_of(str(_repo(tmp_path))) == "notes-api-org/notes-api"
 
 
+def test_repo_of_with_pr_status_off_reads_no_remote(tmp_path, monkeypatch):
+    d = str(_repo(tmp_path))
+    monkeypatch.setattr(gp, "PR_STATUS_OFF", True)
+    monkeypatch.setattr(gp, "_git", lambda *a, **k: (_ for _ in ()).throw(AssertionError("a git read ran")))
+    assert gp.repo_of(d) == ""
+
+
 def test_repo_of_an_ssh_remote(tmp_path):
     d = _repo(tmp_path, remote="git@github.com:notes-api-org/notes-api.git")
     assert gp.repo_of(str(d)) == "notes-api-org/notes-api"

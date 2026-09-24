@@ -176,7 +176,7 @@ def _drain():
 
 
 def _reset():
-    for memo in (gp._CACHE, gp._GEN, gp._WANTED, gp._BRANCHES, gp._TRIED, gp._POLLED):
+    for memo in (gp._CACHE, gp._GEN, gp._WANTED, gp._BRANCHES, gp._TRIED, gp._POLLED, gp._FULL, gp._POLL_BACKOFF):
         memo.clear()
 
 
@@ -411,6 +411,66 @@ def test_needs_poll_only_while_a_check_runs(monkeypatch):
     gp.invalidate(REPO)
     gp.repo_prs(REPO); _drain()
     assert gp.needs_poll(REPO) is False, "a terminal check must end the poll"
+
+
+RUNNING = [{"name": "pytest", "conclusion": None, "status": "IN_PROGRESS"}]
+HOUR, STEP = 3600, 30
+
+
+def _gh_counter(monkeypatch, fail=False):
+    """Stub gh: the list holds PR 12 (checks running) and merged PR 9; every call is counted by verb."""
+    calls = {"list": 0, "view": 0}
+
+    def fake(args, what):
+        calls[args[1]] += 1
+        if fail:
+            raise gp.GitPrError("API rate limit exceeded")
+        if args[1] == "list":
+            return [{k: v for k, v in raw.items() if k != "statusCheckRollup"} for raw in (OPEN_PASSING, MERGED)]
+        return {"number": int(args[2]), "statusCheckRollup": RUNNING}
+
+    monkeypatch.setattr(gp, "_gh_json", fake)
+    return calls
+
+
+def _an_hour_of_polls():
+    """Drive the poll for an hour in 30 s steps, refreshing in the foreground; returns the refresh count."""
+    now, n = 0.0, 0
+    for _ in range(HOUR // STEP):
+        now += STEP
+        if gp.poll_due(REPO, now):
+            gp._refresh(REPO)
+            n += 1
+    return n
+
+
+def test_a_running_check_polls_only_its_own_checks(monkeypatch):
+    _reset()
+    calls = _gh_counter(monkeypatch)
+    gp.repo_prs(REPO, nums=[12, 9]); _drain()
+    listed = calls["list"]
+    polls = _an_hour_of_polls()
+    assert polls == HOUR // STEP
+    assert calls["list"] == listed, "a poll never re-reads the list"
+    assert calls["view"] <= 2 + polls, "one checks read per poll, for the one running PR"
+
+
+def test_a_failing_read_backs_off_and_a_retry_resets_it(monkeypatch):
+    _reset()
+    _gh_counter(monkeypatch, fail=True)
+    gp.repo_prs(REPO); _drain()
+    assert gp.needs_poll(REPO)
+    assert _an_hour_of_polls() <= 10, "doubling from 30 s to the 900 s ceiling"
+    gp.retry(REPO)
+    assert REPO not in gp._POLL_BACKOFF
+
+
+def test_a_merged_pr_with_a_pending_status_does_not_keep_the_poll(monkeypatch):
+    _reset()
+    monkeypatch.setattr(gp, "hydrate", lambda repo: {9: gp.normalize(dict(MERGED, statusCheckRollup=RUNNING))})
+    monkeypatch.setattr(gp, "_gh_json", lambda args, what: {"number": 9, "statusCheckRollup": RUNNING})
+    gp.repo_prs(REPO, nums=[9]); _drain()
+    assert gp.needs_poll(REPO) is False
 
 
 def test_the_push_matcher_reads_command_position():

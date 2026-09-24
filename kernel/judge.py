@@ -7363,12 +7363,21 @@ PR_URL_RE = re.compile(r"https://github\.com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/p
 # `&& sleep 30` is another command), past flags and the values of flags that take one (`--title "Fix 3
 # bugs"`). Recorded with an EMPTY owner (the command targets the session's own checkout); skipped when the
 # command carries -R / --repo, which points somewhere else entirely.
-_GH_VALUE_FLAGS = frozenset(("-t", "--title", "-b", "--body", "-F", "--body-file", "-B", "--base", "-H", "--head",
-                             "-l", "--label", "--add-label", "--remove-label", "-a", "--assignee",
-                             "--add-assignee", "--remove-assignee", "-r", "--reviewer", "--add-reviewer",
-                             "--remove-reviewer", "-m", "--milestone", "-p", "--project", "--add-project",
-                             "--remove-project", "--subject", "--match-head-commit", "--author-email", "-c",
-                             "--comment", "-e", "--editor")) | gp.GH_REPO_OPTS
+_GH_BODY_FLAGS = ("-b", "--body", "-F", "--body-file")
+_GH_VALUE_FLAGS = {                                       # the flags each PR-acting gh verb reads a value after
+    "create": frozenset(_GH_BODY_FLAGS + ("-t", "--title", "-B", "--base", "-H", "--head", "-l", "--label", "-a",
+                                          "--assignee", "-r", "--reviewer", "-m", "--milestone", "-p", "--project",
+                                          "-T", "--template")),
+    "edit": frozenset(_GH_BODY_FLAGS + ("-t", "--title", "-B", "--base", "--add-label", "--remove-label",
+                                        "--add-assignee", "--remove-assignee", "--add-reviewer", "--remove-reviewer",
+                                        "-m", "--milestone", "--add-project", "--remove-project")),
+    "merge": frozenset(_GH_BODY_FLAGS + ("-t", "--subject", "--match-head-commit", "-A", "--author-email")),
+    "review": frozenset(_GH_BODY_FLAGS),
+    "comment": frozenset(_GH_BODY_FLAGS),
+    "close": frozenset(("-c", "--comment")),
+    "reopen": frozenset(("-c", "--comment")),
+    "ready": frozenset(),
+}
 _PR_NUM_WORD_RE = re.compile(r"^#?(\d{1,7})$")
 
 
@@ -7377,11 +7386,11 @@ def _bare_pr_num(tokens):
     act = gp.gh_pr_action(tokens)
     if act is None or act[2]:
         return None
-    words, i = act[1], 0
+    words, i, value_flags = act[1], 0, _GH_VALUE_FLAGS.get(act[0], frozenset()) | gp.GH_REPO_OPTS
     while i < len(words):
         w = words[i]
         if w.startswith("-"):
-            i += 2 if w in _GH_VALUE_FLAGS else 1
+            i += 2 if w in value_flags else 1
             continue
         m = _PR_NUM_WORD_RE.match(w)
         return int(m.group(1)) if m else None
@@ -7419,7 +7428,7 @@ _SEG_PR_CACHE = {}   # (segment id, atom count) → tuple of (owner/repo, number
 
 
 def _seg_pr_refs(seg):
-    """The PR refs ONE segment can claim, scanned once per (id, size).
+    """The PR refs ONE segment can claim, scanned once per (id, size); None for a segment holding lazy atoms.
 
     Gated on the receipt described above: a segment with no PR-acting command contributes NOTHING, however
     many numbers its prose names. Given a receipt, every PR the segment names counts — the url in the
@@ -7433,7 +7442,8 @@ def _seg_pr_refs(seg):
     hit = _SEG_PR_CACHE.get(ckey)
     if hit is not None:
         return hit
-    em.hydrate(seg.get("atoms") or [])   # bodies before the assembly cut: read on demand (T323 stage 4a), once per memo miss
+    if any(em.is_lazy(a) for a in (seg.get("atoms") or [])):
+        return None                      # bodies before the assembly cut are not loaded for this: the stored refs stand
     texts, cmds = [], []
     for a in (seg.get("atoms") or []):
         t, c = _atom_parts(a)
@@ -7476,13 +7486,22 @@ def goal_pr_refs(store, seg_by_id, nid, idx=None):
 
 def _refs_of(segs):
     """The deduped PR refs of these segments, in order, as JSON-ready lists."""
-    out, got = [], set()
+    return _gather_refs(segs)[0]
+
+
+def _gather_refs(segs):
+    """(the deduped refs of these segments in order, True when some segment's refs were not read)."""
+    out, got, unread = [], set(), False
     for sg in segs:
-        for key in _seg_pr_refs(sg):
+        refs = _seg_pr_refs(sg)
+        if refs is None:
+            unread = True
+            continue
+        for key in refs:
             if key not in got:
                 got.add(key)
                 out.append([key[0], key[1]])
-    return out
+    return out, unread
 
 
 def _merged_refs(kept, mined):
@@ -15452,8 +15471,9 @@ def _record_pr_refs(store, seg_by_id):
     on a pass that judges a turn, so a PR opened mid-turn is stamped once a turn ends; None means no turn
     was judged. After a /clear the parse stops at the new transcript's root, and "not in this parse" is
     not "has no PR": a goal none of whose segments resolve is left as it was, and one only partly
-    resolved keeps its stored refs beside the ones it mined."""
-    if seg_by_id is None:
+    resolved keeps its stored refs beside the ones it mined. A segment still lazy from the checkpoint
+    is not loaded to be mined: it counts as outside the parse. Nothing is stamped with PR status off."""
+    if seg_by_id is None or gp.PR_STATUS_OFF:
         return False
     idx = seg_index(seg_by_id)
     changed = False
@@ -15462,8 +15482,8 @@ def _record_pr_refs(store, seg_by_id):
         segs = _segs_for(seg_by_id, ids, idx)
         if not segs:
             continue
-        refs = _refs_of(sorted(segs, key=lambda sg: sg.get("t", 0)))
-        if len(segs) < len(ids):              # some of its recorded work is outside this parse
+        refs, unread = _gather_refs(sorted(segs, key=lambda sg: sg.get("t", 0)))
+        if unread or len(segs) < len(ids):    # some of its recorded work is outside this parse, or before the cut
             refs = _merged_refs(nd.get("prRefs") or [], refs)
         if refs != (nd.get("prRefs") or []):
             nd["prRefs"] = refs or None

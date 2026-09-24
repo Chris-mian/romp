@@ -5240,6 +5240,16 @@ The settings open from the gear at the bottom right, or the palette's **Open
 settings**, in seven tabs: General, Chat, Feed, Sessions, Automation, Task
 tracking and Debug. The tab you used last is remembered in this browser.
 
+## PR chips in the Outline
+
+A session in a GitHub checkout shows its branch's PR on its row, and each goal
+the PRs it acted on (a `gh pr` command or a push in the same step), with their
+check state. A failed `gh` read keeps the last chips and adds a `⚠ PR status`
+chip naming the error; clicking it re-reads. `ROMP_PR_STATUS=off` in the
+kernel's environment turns off every git and `gh` read for the chips;
+`ROMP_GH_BIN` and `ROMP_GIT_BIN` name the binaries. The design is in
+[read-side.md](read-side.md).
+
 ## Renaming and ending a session from the Outline
 
 Right-click a session's name in the Outline pane, or press the Menu key (or

@@ -186,6 +186,38 @@ def test_the_memo_is_keyed_by_segment_not_by_its_refs():
                for k in jd._SEG_PR_CACHE), sorted(jd._SEG_PR_CACHE)
 
 
+# ── the command reader ───────────────────────────────────────────────────────────────────────────────
+
+PUSHES = [
+    "# first a note\ngit push",
+    "git status  # check first\ngit push",
+    "cat > /tmp/body <<'EOF'\nit's the body\nEOF\n" + CREATE,
+    "echo 'unbalanced\ngit push",
+    "timeout 60 git push",
+    "timeout -s KILL 60 git push origin dev/fix",
+]
+NOT_PUSHES = ["grep -rn 'git push' docs/", "echo a#b git push", "cat <<EOF\ngit push\nEOF"]
+
+
+def test_comments_heredocs_and_wrappers_do_not_hide_a_push():
+    for cmd in PUSHES:
+        assert jd.gp.is_push_command(cmd), cmd
+    for cmd in NOT_PUSHES:
+        assert not jd.gp.is_push_command(cmd), cmd
+
+
+def test_a_bare_number_is_read_past_each_verbs_own_flags():
+    for cmd, num in (("gh pr merge -m 503", 503), ("gh pr merge -r 503", 503), ("gh pr review -c 44", 44),
+                     ("gh pr close -c 'done here' 7", 7), ("gh pr merge \\\n  503", 503)):
+        store, segs = _node([_bash(cmd)])
+        assert jd.goal_pr_refs(store, segs, "g1") == [["", num]], cmd
+
+
+def test_gh_repo_in_the_environment_names_another_repo():
+    store, segs = _node([_bash("GH_REPO=other-org/other gh pr merge 503")])
+    assert jd.goal_pr_refs(store, segs, "g1") == []
+
+
 # ── the store stamp ──────────────────────────────────────────────────────────────────────────────────
 
 def test_record_pr_refs_stamps_the_store_and_only_on_change():
@@ -216,6 +248,33 @@ def test_record_pr_refs_keeps_refs_when_only_part_of_the_goal_resolves():
     assert store["nodes"]["g1"]["prRefs"] == [[REPO, 8], [REPO, 9]]
     jd._record_pr_refs(store, {later: segs[later]})
     assert store["nodes"]["g1"]["prRefs"] == [[REPO, 8], [REPO, 9]]
+
+
+class _LazyBody(dict):
+    source_path = "/nonexistent/pre-cut.jsonl"   # the slot em.is_lazy reads: a body still on disk
+
+
+def test_a_segment_still_lazy_from_the_checkpoint_is_not_loaded_and_keeps_its_refs():
+    store, segs = _node([{"message": _LazyBody()}])
+    store["nodes"]["g1"]["prRefs"] = [[REPO, 8]]
+    saved = jd.em.hydrate
+    jd.em.hydrate = lambda *a, **k: (_ for _ in ()).throw(AssertionError("the stamp loaded a lazy body"))
+    try:
+        assert jd._record_pr_refs(store, segs) is False
+    finally:
+        jd.em.hydrate = saved
+    assert store["nodes"]["g1"]["prRefs"] == [[REPO, 8]], "the refs stamped before the restart stand"
+
+
+def test_record_pr_refs_stamps_nothing_with_pr_status_off():
+    store, segs = _node([_bash(CREATE), _out(URL % 8)])
+    saved = jd.gp.PR_STATUS_OFF
+    jd.gp.PR_STATUS_OFF = True
+    try:
+        assert jd._record_pr_refs(store, segs) is False
+    finally:
+        jd.gp.PR_STATUS_OFF = saved
+    assert "prRefs" not in store["nodes"]["g1"]
 
 
 def test_record_pr_refs_clears_refs_whose_segments_resolve_without_them():

@@ -418,9 +418,11 @@ How the two sides split the work, and why:
   refs only when it also holds the receipt: `gh pr create` / `edit` / `merge` / `ready` /
   `close` / `reopen` / `comment` / `review`, or a `git push`. Read-only subcommands
   (`view`, `list`, `checks`) are deliberately absent — looking at a PR is not acting on
-  it — and the pattern is anchored to command position so `grep -rn 'git push' docs/`
-  does not read as a push, while `cd x && git push` does. One matcher
-  (`gitpr.PR_ACT_CMD_RE`) serves this gate and the kernel's push counter. Without this gate, live sessions attributed a stranger's PR
+  it — and the command is tokenized into simple commands so `grep -rn 'git push' docs/`
+  does not read as a push, while `cd x && git push` does. One reader
+  (`gitpr.simple_commands`, with `is_push_command` and `gh_pr_action`) serves this gate
+  and the kernel's push counter. A segment still lazy from the assembly checkpoint is
+  not loaded to be mined: its goal keeps the refs stamped before the restart. Without this gate, live sessions attributed a stranger's PR
   to a goal that had merely re-authenticated a cloud CLI, and two PRs to one that had
   only read a design note.
 - **That trade is deliberate, and the header chip is its counterweight** (the user
@@ -446,15 +448,19 @@ How the two sides split the work, and why:
   session cites for the first time, or the error chip's click. A refresh assembles its
   result privately and publishes it whole; an invalidation that lands while it runs
   leaves the result stale, so it is re-read rather than lost. The branch's own PR gets
-  its checks fetched first, ahead of the cited ones. The single interval in the module
-  is a 30s poll that runs **only** while some check is non-terminal or the last read
-  failed; CI completing and the network recovering are external and have no local event.
+  its checks fetched first, ahead of the cited ones, and merged PRs from the last read are
+  kept rather than re-fetched. The single interval in the module is a 30s poll that runs
+  **only** while an open PR's check is non-terminal or the last read failed; CI completing
+  and the network recovering are external and have no local event. A poll re-reads only
+  the open PRs' unsettled checks, never the list, and a failing read backs off from 30s
+  to 15 minutes until a clean read or the error chip's click.
 - **A failed `gh` read keeps the last snapshot and shows the reason beside it.** The
   pane draws the known chips plus a `⚠ PR status` chip whose title names the error;
   clicking it posts `prRetry`, which re-reads that session's repo now. A first read that
   fails has no snapshot, so only the reason shows.
 - **`ROMP_PR_STATUS=off`** in the kernel's environment skips every git and `gh` read
-  for this surface.
+  for this surface, and the judge's PR stamp. `ROMP_GH_BIN` and `ROMP_GIT_BIN` name
+  the binaries it runs.
 
 ### Timeline = segments as bars, with connectors and overlays
 

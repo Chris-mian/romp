@@ -168,6 +168,13 @@ table (`raw.githubusercontent.com/.../model_prices_and_context_window.json`)
 every few hours to label context/cost. The response is parsed strictly as
 numeric pricing. No telemetry or session data is sent anywhere.
 
+For a session in a GitHub checkout, the Outline's PR chip runs `gh pr list`,
+`gh pr view` and `gh pr checks` under your local `gh` credential. They send the
+repo slug (private repos included), the branch name and PR numbers the session
+cited, on a session's first build, after a push or a `gh pr` command, and on a
+30 s poll while a check runs or the last read failed. `ROMP_PR_STATUS=off` turns
+them off.
+
 ## Reporting a vulnerability
 
 Please report security issues privately via GitHub Security Advisories on the
