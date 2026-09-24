@@ -2751,11 +2751,15 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `http.<METHOD>.<route>` mark.
 - `goals`: `loads`, `saves`, `writes` on the goal stores through the writer's
   loader (`load_goals`) and `save_goals`, and `carryBase` and `carryNoBase`, a
-  save's rebase that found the holder's base bytes for its field carry or found
-  them rolled out of the raw-parse memo's history (carrying no plain field
-  then); the pusher's read-only loads go
-  through the shared store cache and show under `memos.shared`, not here. A
-  save that would rewrite identical bytes is a save without a write.
+  save's rebase that had a field base for its carry (the bytes the holder read
+  or wrote, which a loaded store keeps its own reference to) or had none and
+  carried no plain field: a fresh store's rebase, with no parseable file at the
+  load and another writer's publish before the save, or a holder's without its
+  reference (a store rebuilt from JSON, a copy of the shared read-only view)
+  whose version left the raw-parse memo and its histories; the pusher's
+  read-only loads go through the shared store cache and show under
+  `memos.shared`, not here. A save that would rewrite identical bytes is a save
+  without a write.
 - `memos`: the identity memos on the goal-store path. `pass` is the
   judge pass's stat-keyed store memo (`hit`, `miss`, `compare_miss` for a
   store whose bytes moved under an unchanged stat, `fail`, `evict`, `punch`,
