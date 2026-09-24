@@ -85,7 +85,7 @@ export interface SectionEnv {
   clockHM(t: number): string;
   landing(it: SectionItem, target: { anchorUuid: string; quote?: string; anchor: "work" }): void;
   noAnchor(it: SectionItem): void;
-  openWarns(it: BadgeItem & SectionItem, title: string): void;
+  openWarns?(it: BadgeItem & SectionItem, title: string): void;   // the warning chip's destination; a page without one gets a chip that promises no click (a span, no click sentence)
   workDot?(peer: HTMLElement, name: string): void;   // the feed's live working/awaiting dot before a tracked recipient's name; a page without one leaves the name bare
   afterApply?(a: HTMLElement): void;   // called LAST after a host is re-applied from a pick or the channel (round three of the box content PR): the chat page runs
   //                                       its items-level face and its More pass there, which the apply alone left stale
@@ -124,7 +124,14 @@ export function sectionHosts(itemId: string): HTMLElement[] {
 // it has for the item with the item and environment each host remembered. The channel is the WINDOW's: Node has a BroadcastChannel of its
 // own, and one that has posted keeps the process alive, so the node test run hung on the first module importing this (2026-09-24, twice);
 // a page without a window, or a test's stand-in window, gets no channel and keeps its own choice.
-type SectionSyncMsg = { kind: "hello" } | { kind: "set"; id: string; choice: SecChoice | null } | { kind: "map"; entries: [string, SecChoice][] };
+// THE ACKNOWLEDGEMENT (a contributor's second note on PR 2124, the 0.17.1 fix): a follower's set is applied by the owner and answered with an
+// ack naming the choice applied; the follower drops its own pick only when the acknowledged choice still equals it (a stale ack spares a
+// newer pick). Without it a row pick outlived every feed map that lacked it (the Collapsed clear, the prune once the item left the live set):
+// the chat page re-imposed and re-posted, the feed persisted again, per payload, until a reload. A set carries the sender's role, so an owner
+// acks a follower's set alone; an ack is the owner's word and every owner ignores it (a shell feed pane and a standalone feed tab are two
+// owning documents of one origin: a plain set would bounce between them forever).
+type SectionSyncMsg = { kind: "hello" } | { kind: "set"; id: string; choice: SecChoice | null; from?: "owner" | "follower" }
+                    | { kind: "ack"; id: string; choice: SecChoice | null } | { kind: "map"; entries: [string, SecChoice][] };
 const sectionChannel: BroadcastChannel | null = typeof window !== "undefined" && typeof (window as { BroadcastChannel?: unknown }).BroadcastChannel === "function" ? new window.BroadcastChannel("romp-card-sections") : null;
 let syncRole: "owner" | "follower" = "follower";
 let onChoiceChange: (() => void) | null = null;
@@ -155,7 +162,7 @@ export function sectionActs(env: SectionEnv, hostOf: (el: HTMLElement) => HTMLEl
   const item = (el: HTMLElement) => { const h = hostOf(el) as any; return h && h._it ? { host: h as HTMLElement, it: h._it as SectionItem & BadgeItem } : null; };
   return {
     "sec-open-session": (el, ev) => { ev.stopImmediatePropagation(); if (el.dataset.sid) env.openSession(el.dataset.sid); },
-    "sec-open-warns": (el, ev) => { ev.stopImmediatePropagation(); const p = item(el); if (p) env.openWarns(p.it, p.it.text || ""); },
+    "sec-open-warns": (el, ev) => { ev.stopImmediatePropagation(); const p = item(el); if (p) env.openWarns?.(p.it, p.it.text || ""); },
     "sec-landing": (el, ev) => { ev.stopImmediatePropagation(); const p = item(el); if (p && el.dataset.uuid) env.landing(p.it, { anchorUuid: el.dataset.uuid, quote: el.dataset.quote, anchor: "work" }); },
     "sec-no-anchor": (el, ev) => { ev.stopImmediatePropagation(); const p = item(el); if (p) env.noAnchor(p.it); },
     "sec-tree": (el, ev) => { ev.stopImmediatePropagation(); const p = item(el); if (p && el.dataset.key) toggleTreeBranch(el.dataset.key, p.it.itemId); },
@@ -172,23 +179,26 @@ export function configureSectionSync(opts: { role: "owner" | "follower"; onChang
 /** ONE item's choice (null forgets it): posted to the other document, re-applied to this document's hosts, the change callback run. */
 export function setSectionChoice(id: string, choice: SecChoice | null, opts: { fromPeer?: boolean } = {}): void {
   if (choice === null) secChoice.delete(id); else secChoice.set(id, choice);
-  if (!opts.fromPeer) { postSync({ kind: "set", id, choice }); if (syncRole === "follower") ownPicks.set(id, choice); }
+  if (!opts.fromPeer) { postSync({ kind: "set", id, choice, from: syncRole }); if (syncRole === "follower") ownPicks.set(id, choice); }
   else ownPicks.delete(id);   // the owner spoke for this item
   reapplyHosts(id);
   onChoiceChange?.();
 }
-/** The whole map at once (the feed's hydration, its prune to the live set, its clear on a Collapsed flip): posted as a map. Nothing
- *  happens when the map is already what is asked for (the prune runs on every feed render, and a map that did not move is no change, no
- *  post and no re-apply). `quiet` skips the re-apply of this document's hosts, for a caller whose own render applies every host next. */
+/** The whole map at once (the feed's hydration, its prune to the live set, its clear on a Collapsed flip): posted as a map. A map that is
+ *  already what is asked for is no change: no post, no persist (the prune runs on every feed render). `quiet` skips the re-apply of this
+ *  document's hosts, for a caller whose own render applies every host next; a caller that is NOT quiet gets the re-apply even when the map
+ *  did not move, since what changed may be the DEFAULT the hosts resolve against (the manager's read of the 0.17.1 fix: a Collapsed flip
+ *  with no pick held found the map unchanged and returned, so a card whose payload stood alone kept the old default until its next repaint;
+ *  the chat page's rows follow from the page's own settings listener either way). */
 export function replaceSectionChoices(entries: Iterable<[string, SecChoice]>, opts: { fromPeer?: boolean; quiet?: boolean } = {}): void {
   const next = new Map<string, SecChoice>();
   for (const [k, v] of entries) if (SEC_CHOICES.includes(v)) next.set(k, v);
   let same = next.size === secChoice.size;
   if (same) for (const [k, v] of next) if (secChoice.get(k) !== v) { same = false; break; }
-  if (same) return;
+  if (same) { if (!opts.quiet) reapplyAllHosts(); return; }
   secChoice.clear();
   for (const [k, v] of next) secChoice.set(k, v);
-  if (!opts.fromPeer) postSync({ kind: "map", entries: Array.from(secChoice.entries()) });
+  if (!opts.fromPeer && syncRole === "owner") postSync({ kind: "map", entries: Array.from(secChoice.entries()) });   // the map is the owner's word alone: the feed's hydration runs before it is configured as the owner, and configureSectionSync posts the map then
   if (!opts.quiet) reapplyAllHosts();
   onChoiceChange?.();
 }
@@ -196,7 +206,17 @@ export function replaceSectionChoices(entries: Iterable<[string, SecChoice]>, op
 export function receiveSectionSync(d: SectionSyncMsg | null): void {
   if (!d || typeof d !== "object") return;
   if (d.kind === "hello") { if (syncRole === "owner") postSync({ kind: "map", entries: Array.from(secChoice.entries()) }); return; }
-  if (d.kind === "set") { if (typeof d.id !== "string" || (d.choice !== null && !SEC_CHOICES.includes(d.choice as string))) return; setSectionChoice(d.id, d.choice, { fromPeer: true }); return; }
+  if (d.kind === "set") {
+    if (typeof d.id !== "string" || (d.choice !== null && !SEC_CHOICES.includes(d.choice as string))) return;
+    setSectionChoice(d.id, d.choice, { fromPeer: true });
+    if (syncRole === "owner" && d.from === "follower") postSync({ kind: "ack", id: d.id, choice: d.choice });   // the owner's word back to the follower, and to no other owner
+    return;
+  }
+  if (d.kind === "ack") {
+    if (syncRole === "owner" || typeof d.id !== "string" || (d.choice !== null && !SEC_CHOICES.includes(d.choice as string))) return;
+    if (ownPicks.has(d.id) && ownPicks.get(d.id) === d.choice) ownPicks.delete(d.id);   // acknowledged as it stands; a stale ack for an older pick spares the newer one
+    return;
+  }
   if (d.kind === "map") {
     if (syncRole === "owner" || !Array.isArray(d.entries)) return;
     const entries = d.entries.filter((e) => Array.isArray(e) && typeof e[0] === "string");
@@ -204,10 +224,12 @@ export function receiveSectionSync(d: SectionSyncMsg | null): void {
     const merged = new Map<string, SecChoice>(entries);
     for (const [id, choice] of ownPicks) { if (choice === null) merged.delete(id); else merged.set(id, choice); }   // this document's own picks stand over the map
     replaceSectionChoices(Array.from(merged.entries()), { fromPeer: true });
-    for (const [id, choice] of ownPicks) postSync({ kind: "set", id, choice });   // and reach the owner, which persists them
+    for (const [id, choice] of ownPicks) postSync({ kind: "set", id, choice, from: syncRole });   // and reach the owner, which persists and acknowledges them
   }
 }
 sectionChannel?.addEventListener("message", (ev: MessageEvent) => receiveSectionSync(ev.data as SectionSyncMsg | null));
+/** For the pins that join two bundles of this module over a real channel: close it, so their process can exit (Node's channel holds the loop). */
+export function closeSectionSync(): void { try { sectionChannel?.close(); } catch { /* closed already */ } }
 export const secChoice = new Map<string, SecChoice>();   // READ here; every write goes through setSectionChoice / replaceSectionChoices above
 export function resolveSec(id: string, hasAwaitTasks = false, collapsed = false): "bg" | "summary" | "subgoals" | "tasks" | "stall" | "none" {
   // an awaiting-on-tasks card OPENS its task list by default (the user 2026-08-23: the wait is the
@@ -747,7 +769,7 @@ export interface BadgeItem {
  *  "warning" chip (or "distill failed" when every warn is the distiller's), its hover the attempt history or the last message, its click
  *  the page's detail; "Awaiting <peer>" (or "Handed off to", or "Deadlock") with the wait's live duration; and "↪ delegated to". The
  *  caller hands the spin caption it drew for the item (cardSpin), so both pages apply the one rule. */
-export function stateBadges(it: BadgeItem, env: Pick<SectionEnv, "durNodes" | "openSession" | "clockHM" | "openWarns" | "workDot">, spinCaption: string | null = null): HTMLElement[] {
+export function stateBadges(it: BadgeItem, env: Pick<SectionEnv, "durNodes" | "openSession" | "clockHM" | "openWarns" | "workDot">, spinCaption: string | null = null): HTMLElement[] {   // openWarns optional: see SectionEnv
   const out: HTMLElement[] = [];
   const badge = (cls: string, text: string, title: string) => { const b = el("span", cls); b.textContent = text; b.title = title; return b; };
   // ↪ PROVENANCE, one anchor as the card always drew it: "↪ from <sender>" for a courier handoff (planted by a peer's message; click opens
@@ -814,10 +836,11 @@ export function stateBadges(it: BadgeItem, env: Pick<SectionEnv, "durNodes" | "o
     // "warning" chip: a judge stamped an anomaly on this goal — the latest msg on hover, detail on click. A BUTTON so it is focusable.
     const allDistill = it.warns.every((w) => DISTILL_FAIL_RE.test(w.kind));
     const lbl = allDistill ? "distill failed" : "warning";
-    const chip = el("button", "fask-warnchip"); chip.textContent = it.warns.length > 1 ? `${lbl} ×${it.warns.length}` : lbl;
+    const chip = el(env.openWarns ? "button" : "span", "fask-warnchip"); chip.textContent = it.warns.length > 1 ? `${lbl} ×${it.warns.length}` : lbl;
     // hover = the attempt history when one exists (the user 2026-08-18, who wanted a model's repeated failure visible at a glance, since switching it is then the obvious fix)
-    chip.title = (it.failLog && it.failLog.length ? it.failLog.map((f) => `${env.clockHM(f.t)} tried ${f.model} — ${f.note}`).join("\n") : it.warns[it.warns.length - 1].msg) + "\n— click for what happened and why";
-    chip.dataset.act = "sec-open-warns";   // delegated (sectionActs → env.openWarns with the host's freshest item)
+    chip.title = (it.failLog && it.failLog.length ? it.failLog.map((f) => `${env.clockHM(f.t)} tried ${f.model} — ${f.note}`).join("\n") : it.warns[it.warns.length - 1].msg)
+      + (env.openWarns ? "\n— click for what happened and why" : "");   // a page with no destination promises no click (the chat page: the hover is the whole evidence)
+    if (env.openWarns) chip.dataset.act = "sec-open-warns";   // delegated (sectionActs → env.openWarns with the host's freshest item)
     out.push(chip);
   }
   const wo = it.waitingOn;

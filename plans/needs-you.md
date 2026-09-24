@@ -230,7 +230,18 @@ the item, so which section is open is one state and never a second copy. The ses
 session's own page. The kernel's row carries every field the card's sections read, from the same feed item. The one open section is one state across the shell's two documents: every write to the choice goes through the shared module's setter, which carries it over a channel from the feed page (the owner, which persists it) to the chat page (a follower, which asks for the map when it loads), so after a reload the row opens what the card opens. In VS Code the chat and feed webviews are separate origins and the channel crosses nothing: each page keeps its own choice there, and a fallback through the extension host is deferred to after the release (the freeze of 2026-09-23). Two changes to the card itself rode the shared builder (the reviews of
 2026-09-24): the card's badges, its distill line and paragraphs, its awaited peers and its sub-goal triangles route their clicks through one
 binding on the card (actions.ts delegate), so they wear the repository's short press pulse like every delegated control; and the provenance
-anchor paints a separator between each of its facts, "from a · delegated to b · delegated to c", the handoff and a tracked delegation included.
+anchor paints a separator between each of its facts, "from a · delegated to b · delegated to c", the handoff and a tracked delegation included. The feed
+answers a row's pick with an acknowledgement, and the chat page holds its own pick only until that word arrives (a stale acknowledgement
+spares a newer pick), so the maps that lack the pick afterwards, the Collapsed clear and the prune once the item leaves, govern both
+documents (the 0.17.1 fix). A flip with no pick held leaves the map unchanged, so no map crosses: the feed's setter re-applies its
+cards anyway (a caller that is not quiet gets the re-apply, since the default the cards resolve against moved), and the chat page
+re-renders the box from its own listener on the settings key, so the default follows at once in both documents with no payload
+between. The row's default section follows the feed's Collapsed flag everywhere, through the settings fan-out: the browser shell and
+a standalone chat tab read the origin's shared storage, and a VS Code chat webview gets the gear's whole settings object relayed by the
+extension host and writes its own copy, so its rows follow the flag as its cards do; only the picks stay per page in VS Code, since the
+section channel does not cross its webviews. On the feed, a
+sub-goal row's text and mark keep the modal's own click zones (wireNodeZones) rather than the delegated acts; on the chat page every
+rebuilt click is delegated.
 
 Every clear or undo account the kernel sends carries its Undo stack (`batches`: the ids an earlier undo left owed first, then the
 clears log's batches by stamp, newest first; `owedBatch`: the owed ids alone; `batchesTotal`: the count of log batches before the

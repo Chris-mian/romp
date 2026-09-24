@@ -157,6 +157,10 @@ test("the feed card and the Needs you row build the toggles, draw the swirl, the
   assert.match(RENDER, /badgesEl\.replaceChildren\(\.\.\.stateBadges\(it, noticeSectionEnv, spin\.caption\)\);/, "the row's badges, with the caption");
   assert.match(FEED, /applyDistillLanding\(a, it, distillShown, dCompleted, dBlocked, sectionEnv\);/, "the card's line");
   assert.match(RENDER, /applyDistillLanding\(rowAny, it, shown, dCompleted, dBlocked, noticeSectionEnv\);/, "the row's line");
+  // the Collapsed flag flipped with NO pick held: the feed's clear finds its map unchanged and posts no map, so the row's default follows from
+  // the chat page's own listener on the settings key, which re-renders the box, and the row's update re-applies the sections on every render
+  assert.match(RENDER, /onExternalSettingsChange\(\(\) => renderNotices\(\)\);/, "the box re-renders on the settings key's storage event");
+  assert.match(RENDER, /applySections\(rowAny, it, !!shown, noticeSectionEnv\);/, "and every render re-applies the row's sections against the flag");
   for (const gone of [/fupBadge/, /nfBadge/, /intingBadge/, /warnChip/, /waitOnBadge/, /dcBadge/, /a\._followedup/, /a\._warnChip/, /a\._waitOn/, /a\._origin\b/, /spinFor\(/, /function relAge\(/])
     assert.doesNotMatch(FEED, gone, "no second copy in the feed: " + gone.source);
   assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, badges\);/, "the name row's one badge slot");
@@ -167,7 +171,7 @@ test("every write to the section choice goes through the module's setters, which
   assert.doesNotMatch(FEED, /secChoice\.(set|clear|delete)\(/, "the feed's three writers (hydrate, prune, the Collapsed clear) go through replaceSectionChoices (the medium of round two: they never crossed the channel)");
   assert.match(FEED, /replaceSectionChoices\(Object\.entries\(st\.sec\) as \[string, SecChoice\]\[\], \{ quiet: true \}\);/, "hydration");
   assert.match(FEED, /replaceSectionChoices\(Object\.entries\(kept\.sec\) as \[string, SecChoice\]\[\], \{ quiet: true \}\);/, "the prune to the live set (quiet: the render applies every card next; a map that did not move is no change at all)");
-  assert.match(MOD, /let same = next\.size === secChoice\.size;\s*\n\s*if \(same\) for \(const \[k, v\] of next\) if \(secChoice\.get\(k\) !== v\) \{ same = false; break; \}\s*\n\s*if \(same\) return;/, "the whole-map setter is a no-op when nothing moved: the prune runs on every render");
+  assert.match(MOD, /let same = next\.size === secChoice\.size;\s*\n\s*if \(same\) for \(const \[k, v\] of next\) if \(secChoice\.get\(k\) !== v\) \{ same = false; break; \}\s*\n\s*if \(same\) \{ if \(!opts\.quiet\) reapplyAllHosts\(\); return; \}/, "the whole-map setter posts and persists nothing when nothing moved (the prune runs on every render), and re-applies the hosts unless quiet, the default having moved");
   assert.match(FEED, /lastCollapsedPref = p\.collapsed; replaceSectionChoices\(\[\]\); \}/, "the Collapsed flip re-applies every card (the render gate would not) and posts the map");
   assert.match(FEED, /configureSectionSync\(\{ role: "owner", onChange: \(\) => persistViewState\(\) \}\);/, "the owner persists every change, a follower's pick included");
   assert.match(RENDER, /configureSectionSync\(\{ role: "follower" \}\);/, "the chat page says hello and takes the map");
@@ -185,6 +189,13 @@ test("the row's landings are the chat page's own: the line and a paragraph scrol
   assert.match(RENDER, /afterApply: \(a\) => \{ noticeRowLevelFace\(a\); noticeMoreButton\(a, noticeLineOf\(a\)\); \},/, "the chat page's after-apply: the items-level face and the More pass");
   assert.match(MOD, /\(h\._sectionEnv as SectionEnv\)\.afterApply\?\.\(c\);   \/\/ last/, "called last in every re-apply");
   assert.match(RENDER, /landToast\("couldn't locate this in the transcript — no anchor was recorded for this card"\);/);
+  assert.match(RENDER, /if \(!body \|\| body\.style\.display === "none" \|\| \(!overflows && !open\)\) \{ if \(b\) b\.remove\(\); return; \}/, "no button over a hidden line, whatever the open state (the 0.17.1 fix: Less stood over the line a pick hid)");
+  assert.match(RENDER, /collapsed: \(\) => noticeCollapsedPref\(\),/, "the row's default follows the feed's Collapsed flag in the browser");
+  assert.match(RENDER, /function noticeCollapsedPref\(\): boolean \{ try \{ return JSON\.parse\(localStorage\.getItem\("romp:settings"\) \|\| "\{\}"\)\.collapsed === true; \} catch \{ return false; \} \}/);
+  assert.doesNotMatch(RENDER, /openWarns: \(\) => \{/, "the chat page names no warn destination: the shared builder gives its chip no button role and no click sentence");
+  assert.match(MOD, /if \(syncRole === "owner" && d\.from === "follower"\) postSync\(\{ kind: "ack", id: d\.id, choice: d\.choice \}\);/, "the owner acknowledges a follower's set alone");
+  assert.match(MOD, /if \(!opts\.fromPeer && syncRole === "owner"\) postSync\(\{ kind: "map", entries: Array\.from\(secChoice\.entries\(\)\) \}\);/, "the map is the owner's word alone (the feed hydrates before it is configured as the owner)");
+  assert.match(MOD, /if \(ownPicks\.has\(d\.id\) && ownPicks\.get\(d\.id\) === d\.choice\) ownPicks\.delete\(d\.id\);/, "the follower retires the pick the ack names as it stands");
   assert.match(RENDER, /refreshAges\(document\.querySelectorAll<HTMLElement>\("#notices \[data-age-t\]"\), noticeNowSec\(\), relAge, \(\) => ""\);/, "the row's stamped ages repainted by the page's own pass");
   assert.match(MOD, /else age\.textContent = env\.relAge\(0\);/, "a part with no event time: the static '<1m ago' (the medium of round two: the row printed an epoch-sized age)");
 });
@@ -222,3 +233,58 @@ test("a follower's own pick survives the owner's map and reaches the owner; the 
   setSectionChoice("i7", "none"); receiveSectionSync({ kind: "map", entries: [["i7", "none"]] }); receiveSectionSync({ kind: "map", entries: [] });
   assert.equal(secChoice.get("i7"), undefined, "a map carrying the follower's own choice acknowledges it: a later map governs");
 });
+
+test("the owner acknowledges a follower's set and the follower retires its pick on that word alone; a stale acknowledgement spares a newer pick; owners ignore acks", () => {
+  const { configureSectionSync, setSectionChoice, receiveSectionSync, secChoice } = mod as any;
+  configureSectionSync({ role: "follower" });
+  setSectionChoice("i5", "bg");                                        // the row picks
+  receiveSectionSync({ kind: "ack", id: "i5", choice: "bg" });          // the feed applied it and says so
+  receiveSectionSync({ kind: "map", entries: [] });                     // the Collapsed clear (or the prune once the item left)
+  assert.equal(secChoice.get("i5"), undefined, "acknowledged, the pick yields to the next map that lacks it (the 0.17.1 fix: it outlived every such map before)");
+  setSectionChoice("i6", "bg"); setSectionChoice("i6", "stall");        // a newer pick after an older one
+  receiveSectionSync({ kind: "ack", id: "i6", choice: "bg" });          // the ack for the older pick arrives late
+  receiveSectionSync({ kind: "map", entries: [] });
+  assert.equal(secChoice.get("i6"), "stall", "a stale acknowledgement spares the newer pick, which stands over the map");
+  receiveSectionSync({ kind: "ack", id: "i6", choice: "summary" });     // an ack the allowlist admits, for a choice never picked
+  receiveSectionSync({ kind: "ack", id: "i6", choice: "sideways" });    // outside the allowlist: ignored
+  receiveSectionSync({ kind: "map", entries: [] });
+  assert.equal(secChoice.get("i6"), "stall", "neither retires the pick");
+  configureSectionSync({ role: "owner" });
+  secChoice.clear(); receiveSectionSync({ kind: "set", id: "i5", choice: "bg", from: "owner" });   // another owner's set: applied, never acknowledged (nothing to observe here but the map)
+  assert.equal(secChoice.get("i5"), "bg");
+  receiveSectionSync({ kind: "ack", id: "i5", choice: "bg" });          // an owner ignores acks: its map stands
+  assert.equal(secChoice.get("i5"), "bg");
+  configureSectionSync({ role: "follower" }); secChoice.clear();
+});
+
+test("the Collapsed flag flipped with no pick held: an unchanged map still re-applies every host unless quiet, since the default they resolve against moved; nothing is persisted", () => {
+  // the manager's read of the 0.17.1 fix: the feed's clear on the flip found its map unchanged and returned before the re-apply, so a card whose
+  // payload stood alone kept the old default until its next repaint (the chat page's rows follow from the page's own settings listener either way)
+  const { configureSectionSync, replaceSectionChoices, registerSectionHost, applySections, secChoice } = mod as any;
+  let writes = 0, applied = 0, collapsed = false;
+  configureSectionSync({ role: "owner", onChange: () => { writes++; } });
+  replaceSectionChoices([], { quiet: true });                        // the map is empty to begin with
+  const se = buildSectionElements() as unknown as Record<string, any>;
+  const host = Object.assign(new E("DIV"), { isConnected: true, _bgBtn: se.bgBtn, _takeBtn: se.takeBtn, _stallBtn: se.stallBtn, _subBtn: se.subBtn, _taskBtn: se.taskBtn, _taskLbl: se.taskLbl,
+                                             _bgBody: se.bgBody, _distill: se.distill, _stallBody: se.stallBody, _secs: se.secs, _checklist: se.checklist, _awaitSpin: se.awaitSpin, _awaitWhy: se.awaitWhy });
+  const hostEnv = { ...env, collapsed: () => collapsed, wireNode: () => {}, repoOf: () => null, nowSec: () => 0, relAge: () => "", ageTint: () => "", landing: () => {}, noAnchor: () => {}, afterApply: () => { applied++; } };
+  applySections(host, { itemId: "i5", sid: "s", text: "t", background: "why" }, true, hostEnv);
+  registerSectionHost("i5", host);
+  assert.equal(se.takeBtn.getAttribute("aria-pressed"), "true", "premise: no pick held, the default opens Summary");
+  collapsed = true;                                                  // the flag flips, the map stays empty
+  replaceSectionChoices([], { quiet: true });                        // the prune's road: unchanged and quiet, nothing happens
+  assert.equal(applied, 0, "a quiet unchanged map re-applies nothing (the prune runs on every render)");
+  replaceSectionChoices([]);                                         // the flip's road: unchanged, not quiet
+  assert.equal(applied, 1, "every host re-applied (before: the unchanged map returned first, and the card kept the old default until its next repaint)");
+  assert.equal(se.takeBtn.getAttribute("aria-pressed"), "false", "and resolved against the new default: nothing open under Collapsed");
+  assert.deepEqual([writes, secChoice.size], [0, 0], "nothing persisted, the map unchanged");
+});
+
+test("the warning chip on a page with no destination is a span that promises no click; with one it is a button whose hover says so", () => {
+  const withOut = stateBadges({ warns: [{ kind: "brief-failed", t: 1, msg: "the brief could not be written", detail: "" }] }, { ...env, openWarns: undefined } as any) as unknown as E[];
+  assert.deepEqual([withOut[0].tagName, withOut[0].title, withOut[0].dataset.act], ["SPAN", "the brief could not be written", undefined], "no button role, no click sentence, no act (the chat page)");
+  const withIt = badges({ warns: [{ kind: "brief-failed", t: 1, msg: "the brief could not be written", detail: "" }] });
+  assert.deepEqual([withIt[0].tagName, withIt[0].dataset.act], ["BUTTON", "sec-open-warns"], "the feed's chip keeps its destination");
+  assert.match(withIt[0].title, /click for what happened and why$/);
+});
+

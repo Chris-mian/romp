@@ -5530,7 +5530,7 @@ window.addEventListener("blur", () => { if (kbMode) kbExit(); });   // shell mov
 let lastCollapsedPref = feedPrefs().collapsed;
 function onSettingsChanged(): void {
   const p = feedPrefs();
-  if (p.collapsed !== lastCollapsedPref) { lastCollapsedPref = p.collapsed; replaceSectionChoices([]); }   // through the shared setter, which re-applies every card here (the render gate leaves a card whose payload stood alone) and posts the map, so the row's default follows too
+  if (p.collapsed !== lastCollapsedPref) { lastCollapsedPref = p.collapsed; replaceSectionChoices([]); }   // through the shared setter, which re-applies every card here (the render gate leaves a card whose payload stood alone) and posts the map; the chat page reads the same flag for the row's default in the browser
   applyStacked(p.stacked);
   if (viewMenuEl) paintViewMenu(viewMenuEl);   // an open view menu re-reads the prefs it shows
   render();
