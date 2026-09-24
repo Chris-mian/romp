@@ -676,7 +676,7 @@ test("pinned: the sheet: the shown header's wash and the stand-in's mark on the 
   assert.match(block, /\.snap-pip\.blocked \{ background: var\(--st-blocked-bg\); \}/);
   assert.match(block, /\.snap-pip\.awaiting \{ background: var\(--st-awaiting-bg\); \}/);
   assert.match(block, /\.snap-pip\.waiting \{ background: var\(--st-awaitbg-bg\); \}/);
-  assert.match(block, /\.snap-pip\.retrying \{ background: var\(--st-retrying-bg\); \}/, "the same status token the tab and the folded header's pip use");
+  assert.match(block, /\.snap-pip\.retrying \{ background: transparent; box-shadow: inset 0 0 0 [\d.]+px var\(--st-retrying-bg\); \}/, "a HOLLOW amber ring (2026-09-24): the same status token, now on an inset stroke, so form tells retrying from the filled working/awaiting pips under a red-green deficiency");
   assert.match(block, /\.snap-row:hover \{ border-color: var\(--accent\); background: var\(--accent-wash\); \}/);
   assert.match(block, /\.snap-row:focus-visible \{ outline: 1px solid var\(--accent\); outline-offset: -1px; \}/);
   assert.doesNotMatch(block, /\.snap-flag/, "no pill of the view's own (T322b): the state words are the shared status chip, .chip / .chip-<state>");

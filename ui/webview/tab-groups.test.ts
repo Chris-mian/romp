@@ -355,7 +355,7 @@ test("a folded section renders its header alone with the folded-away count and o
   assert.match(RENDER, /const stateCls = tabStateClass\(s\.status\);\s*\n\s*if \(stateCls\) tab\.classList\.add\(stateCls\);/);
   assert.match(CSS, /\.tab-group-pip \{ flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var\(--st-working-bg\); \}/, "small: subordinate to the label");
   assert.match(CSS, /\.tab-group-pip\.blocked \{ background: var\(--st-blocked-bg\); \}/, "status colours keep their meaning");
-  assert.match(CSS, /\.tab-group-pip\.retrying \{ background: var\(--st-retrying-bg\); \}/, "amber — the retrying STATUS token (2026-09-08; it sat raw here and on the tab)");
+  assert.match(CSS, /\.tab-group-pip\.retrying \{ background: transparent; box-shadow: inset 0 0 0 [\d.]+px var\(--st-retrying-bg\); \}/, "a HOLLOW amber ring (2026-09-24): the retrying STATUS token on an inset stroke, so form tells it from the filled working header pip");
 });
 
 test("row hairlines count section headers as row members (T134's floating look must not return), never the row breaks", () => {
@@ -718,8 +718,8 @@ test("the header's structure and gestures read as a label: the tag's chip, then 
     // no exception any more (2026-09-08): the retrying amber is a token, --st-retrying-bg, on the pip AND the tab
     assert.doesNotMatch(body.replace(/var\([^)]*\)/g, "V"), /#[0-9a-fA-F]{3,8}\b|rgba?\(/, "a raw color in " + sel.trim());
   }
-  assert.equal(CSS.match(/\.tab-group-pip\.retrying \{ background: (var\(--st-retrying-bg\)); \}/)![1], CSS.match(/\.tab\.tab-retrying \{ --state: (var\(--st-retrying-bg\)); \}/)![1],
-    "the pip's retrying amber IS the tab's — the same status token");
+  assert.equal(CSS.match(/\.tab-group-pip\.retrying \{ background: transparent; box-shadow: inset 0 0 0 [\d.]+px (var\(--st-retrying-bg\)); \}/)![1], CSS.match(/\.tab\.tab-retrying \{ --state: (var\(--st-retrying-bg\)); \}/)![1],
+    "the pip's retrying amber (now on an inset stroke, a hollow ring) IS the tab's, the same status token");
   const toks = new Set((rules.map((m) => m[2]).join(" ").match(/var\((--[a-z-]+)/g) || []).map((m) => m.slice(4)));
   for (const t of toks) assert.ok(["--fg", "--dim", "--accent", "--accent-wash", "--box-border", "--st-working-bg", "--st-blocked-bg", "--st-retrying-bg", "--st-needs-bg", "--tab-active-bg", "--chip-bg"].includes(t), "a token the strip does not already wear: " + t);   // --st-needs-bg: the Needs you ring's magenta, on the tab AND the pip (the ask ring of 2026-09-13, recoloured 2026-09-21)
 });

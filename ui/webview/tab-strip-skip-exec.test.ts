@@ -154,6 +154,7 @@ function lift(): (hooks: Hooks) => Api {
     // ring class off, then the first switched-on ring whose test holds (settings.tabWidgets.on, every ring on by default) — and the
     // switch predicate the folded header's pip reads
     const ringSwitch = (prefs) => (id) => !(prefs && prefs.on && prefs.on[id] === false);
+    const needsYouWidgetOn = (prefs) => ringSwitch(prefs)("ring-waiting-on-you");   // renderTabs reads this to gate the keycap-room strip class (the keycap-width fix 2026-09-24)
     const composeTabRing = (tab, sid, status, prefs) => { for (const id of H.RING_ORDER) tab.classList.remove(id); const r = H.tabRingId(status, ringSwitch(prefs)); if (r) tab.classList.add(r); return r; };
     const mentionRosterChanged = () => {};   // the @-mention roster hook at the top of renderTabs: not the strip's (composer-mention-pane.test.ts)
     function makeGroupHead(sec, folded, active, hidden) {

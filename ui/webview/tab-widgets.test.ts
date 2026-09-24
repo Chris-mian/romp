@@ -175,7 +175,7 @@ test("source: the strip and the gear draw from this ONE module; the dot rule has
   assert.equal((SRC.match(/tabDotClass\(status\.state\)/g) || []).length, 1, "the dot slot's one site (tab-dot-slot.test.ts's rule)");
   assert.match(SRC, /^export function tabCtxGauge\(ctxStr: string, ctxColor\?: number\[\]\): HTMLElement \{/m, "the gauge builder lives here now (the ctx widget calls it)");
   const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
-  assert.match(RENDER, /^import \{ composeTabWidgets, composeTabRing, applyTabBadgeMode, needsYouPhrase, ringSwitch, tabHotkey, miniChord \} from "\.\/tab-widgets";/m, "the rings compose from here too (2026-09-14); badge mode via applyTabBadgeMode (the state badge)");
+  assert.match(RENDER, /^import \{ composeTabWidgets, composeTabRing, applyTabBadgeMode, needsYouPhrase, ringSwitch, tabHotkey, miniChord, needsYouWidgetOn \} from "\.\/tab-widgets";/m, "the rings compose from here too (2026-09-14); badge mode via applyTabBadgeMode (the state badge)");
   assert.doesNotMatch(RENDER, /^function tabCtxGauge\(/m, "one builder, not two");
   assert.equal((RENDER.match(/const dotCls = tabDotClass\(st\);/g) || []).length, 0, "render.ts no longer appends the dot itself");
   const GEAR = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "gear.js"), "utf8");
@@ -422,7 +422,7 @@ test("state badge: a dense-chrome tab shrinks the count pill and tucks it into t
   // dense pill is the INTENDED effect, pinned by the rule's text so a re-cut cannot silently drop it; whether that
   // reduces the hover-lifted close's overpaint is not asserted as a measured fact here. dense-chrome-layout.test.ts
   // covers the dense tab box the pill sits in.
-  assert.match(STRIP_CSS, /body\.dense-chrome \.tab-badge \{ top: 2px; right: 2px; \}/, "the dense badge sits higher and tighter into the corner");
+  assert.match(STRIP_CSS, /body\.dense-chrome \.tab-badge \{ top: 1px; right: 1px; \}/, "the dense badge sits tucked into the very corner (1px inset, restored 2026-09-24 for PR 2023's measured reason: the hover-lifted close glyph overpaints less of the digits)");
   assert.match(STRIP_CSS, /body\.dense-chrome \.tab-badge:not\(:empty\) \{ min-width: 12px; height: 12px; border-radius: 6px; \}/, "the dense pill is a smaller box (not a smaller digit: the dense block carries no sub-10px font-size), tucked into the corner");
 });
 
