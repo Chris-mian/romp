@@ -5105,7 +5105,16 @@ combination shows on the tab after its name; pressing it switches to that sessio
 **Update hot key…**: press a new combination to change it, or Backspace or its **Remove**
 button to take it away. **Focus the next chat column** and
 **Focus the previous chat column** in **Keyboard shortcuts** take a hot key too, and cycle the
-focus between the columns; **Toggle notifications for this session** flips the bell of the
+focus between the columns. **Go to the next session** and **Go to the previous session**
+cycle the tabs of the column you are in, from the composer as well, and come bound
+to Ctrl+Alt+→ and Ctrl+Alt+← (Control+Option on a Mac, where the browser keeps ⌘⌥ with the
+arrows for its own tabs; the VS Code view binds its own pair to Ctrl+Alt+arrows, ⌘⌥ on a Mac,
+while its panel is active). From another pane they step the chat column you last worked in,
+showing a hidden chat pane first. A desktop or an assistive tool that binds Ctrl+Alt+arrows
+itself (GNOME's workspace switch, VoiceOver on a Mac) takes the key first; rebind them in the
+same dialog, where a combination you had already saved for another command keeps it and the
+new default yields. The bare ← and → keys still switch sessions while nothing is being typed,
+and the dialog shows them on the pair's rows as their built-in keys, beside the chord. **Toggle notifications for this session** flips the bell of the
 session you are looking at (the tab menu's **Notify me**) and flashes "Notifications enabled
 for web" or "disabled"; once it has a key, the menu's row shows it.
 
