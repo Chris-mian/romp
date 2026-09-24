@@ -219,10 +219,15 @@ class ClearBatchEchoRetires(unittest.TestCase):
         self.be.send(SID, "/clear", qid="echo:clear-swallow", user=True)
         self._echo_atom("echo:clear-swallow")["t"] = old_t   # age it so a later floor overtakes it
         self._feed()                                          # fed MID-turn (leaves _pending: settle_echoes no longer sees it queued)
-        # model the fold: the CLI took it mid-turn and folded it (recorded, fresh=False → NOT armed for the backstop)
-        self.s._untaken = None
-        self.s._taken_clear_qids = ["echo:clear-swallow"]
-        self.s._own_turn_clear_qid = None
+        # DRIVE the take: the CLI folds the /clear into the running turn (a mid-turn landing), so _untaken_taken
+        # fires and the take is RECORDED through the REAL path, EXERCISING the `fresh` gate (it must NOT arm
+        # _own_turn_clear_qid, fresh=False). Hand-setting the arm before skipped the gate, so the `if True:`
+        # mutant (always arm) stayed invisible; driving it makes that mutant red (the loss below goes missing).
+        self.be._text_landed = lambda *a, **k: True           # the fold: the /clear's text "landed" mid-turn (the CLI took it)
+        self._take_no_flip()                                  # a turn frame → _untaken_taken (via the landing) records the take
+        self.be._text_landed = lambda *a, **k: False          # restore for the settle / settle_echoes below
+        self.assertEqual(self.s._taken_clear_qids, ["echo:clear-swallow"], "the take was recorded through the real path")
+        self.assertIsNone(self.s._own_turn_clear_qid, "the `fresh` gate did NOT arm the backstop (mid-turn take, fresh=False)")
 
         self._settle()                                        # the running turn ends with no flip
         self.assertEqual(self._echo_texts(), ["/clear"], "the swallowed /clear's echo is NOT retired at settle")
@@ -333,6 +338,9 @@ class ClearBatchEchoRetires(unittest.TestCase):
         self._take_no_flip()                                 # TAKEN, awaiting its flip; the take is mirrored
         reg = sb.read_reg(self.d, SID) or {}
         self.assertEqual(reg.get("clearingTaken") or [], ["echo:cr2"], "the take is mirrored beside the echo")
+        # The OWN-TURN arm round-trips through the mirror too (the /clear was taken as its own fresh turn),
+        # so a restored no-flip /clear retires at its settle instead of being flagged lost. The reg KEY, by name:
+        self.assertEqual(reg.get("clearingOwnTurn"), "echo:cr2", "the own-turn arm is persisted under clearingOwnTurn")
 
         # restart with the lease SURVIVING: a fresh backend + session over the same reg restore the take
         be2 = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
@@ -340,6 +348,7 @@ class ClearBatchEchoRetires(unittest.TestCase):
         be2._lease_survives = lambda sid: True
         s2 = sb.SdkSession(be2, sb.read_reg(self.d, SID))
         self.assertEqual(s2._taken_clear_qids, ["echo:cr2"], "lease survives → the take is restored")
+        self.assertEqual(s2._own_turn_clear_qid, "echo:cr2", "…and the own-turn arm round-trips back from clearingOwnTurn")
         self.assertTrue(s2._clearing, "…and the clearing bracket is relit")
 
         # restart with the lease GONE: the take is not restored (the /clear never ran → its echo is a loss)
@@ -348,6 +357,7 @@ class ClearBatchEchoRetires(unittest.TestCase):
         be3._lease_survives = lambda sid: False
         s3 = sb.SdkSession(be3, sb.read_reg(self.d, SID))
         self.assertEqual(s3._taken_clear_qids, [], "lease gone → nothing restored; the echo is a genuine loss")
+        self.assertIsNone(s3._own_turn_clear_qid, "…and the own-turn arm is not restored either")
 
 
 if __name__ == "__main__":
