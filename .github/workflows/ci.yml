@@ -240,12 +240,17 @@ jobs:
     # growing: PR 1790's run 35138058863 was cancelled at 25 min 04 s mid served-lab on a slow runner,
     # every step green up to the cut (2026-09-16). 40 min: the served step's 20-odd minutes on a slow
     # runner plus the 600 s per-test timeout plus setup. The labs kept growing again: measured from the
-    # Actions API on 2026-09-23, the job took 36.2 to 36.7 min on each of main's last five merge commits
-    # (d56e9380, 0534ac86, ad70c3f6, 9b8e03d0, c1dae566), and PR 2061's run 35821212036, which adds one
-    # served lab, was CANCELLED at 40 min 15 s inside the served step at 05:56 UTC with every earlier step
-    # green. 60 min: the served step's 30-odd minutes plus the 600 s per-test timeout plus setup, with
-    # margin; the served labs in a job of their own, so both halves run in parallel under the cap, is the
-    # next step and changes the required-checks list, so it is a separate decision.
+    # Actions API on 2026-09-23, the job took 36.2 to 36.7 min on five recent merge commits of main
+    # (d56e9380, 0534ac86, ad70c3f6, 9b8e03d0, c1dae566), and PR 2061's run 35821212036 attempt 1, a RED run
+    # (ten failures in one served class at 87 percent added about 4 min to the step), was CANCELLED at
+    # 40 min 15 s inside the served step; attempt 2 on the same head passed in 37 min 03 s. 60 min, by the
+    # rule: a served step of up to 38 min plus the 600 s per-test timeout plus about 2 min of earlier steps
+    # is about 50, with margin. After the raise the served step took 35.97 to 37.92 min over sixteen
+    # consecutive main runs; the closest call was the run on 23c2a9960, its served step ending 40 min 09 s
+    # after the job started. A separate served-lab job would save only the earlier steps, about 2 min
+    # (they are about 6 percent of the job), and keeps the same cap rule; what shortens the served phase
+    # is shards across parallel jobs (a matrix, which changes the required-checks list), pytest -n inside
+    # the one job (the labs that print frame and timing figures stay serial), or cheaper labs.
     timeout-minutes: 60
     defaults:
       run:
@@ -325,8 +330,9 @@ jobs:
         # as "optional", which the switch leaves alone (WebKit's system libraries would need apt, which
         # this step does not run; see the install step above). The matrix jobs are unchanged: still no
         # browser, still skipping these. --durations=20 names the slowest labs in the log: this step is
-        # the job's long phase (12 min 44 s on main, 2026-09-14, against the job's cap above), and every
-        # served lab added grows it, so the next growth should be visible by name.
+        # the job's long phase (its measured minutes and the cap's rule live in the job's comment above,
+        # the one home for the figure), and every served lab added grows it, so the next growth should be
+        # visible by name.
         working-directory: ${{ github.workspace }}
         env:
           ROMP_SERVED_TESTS_REQUIRE: "1"

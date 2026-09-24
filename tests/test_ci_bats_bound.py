@@ -56,15 +56,19 @@ class PythonJobCeiling(unittest.TestCase):
 
 class ExtensionJobCeiling(unittest.TestCase):
     """The vscode-extension job runs the served labs, which grow with every lab added: PR 1790's run was cancelled at the
-    job's 25-minute ceiling after 25 min 04 s mid lab on a slow runner, every step green up to the cut (2026-09-16). Forty
-    minutes: the served step's twenty-odd minutes on a slow runner plus the 600 s per-test timeout plus setup."""
-    def test_the_extension_job_gets_forty_minutes(self):
+    job's 25-minute ceiling after 25 min 04 s mid lab (2026-09-16), and under the 40-minute cap that followed, PR 2061's red
+    run 35821212036 (attempt 1) was cut at 40 min 15 s. Sixty minutes (2026-09-23): the rule is a served step of up to 38 min
+    plus the 600 s per-test timeout plus about 2 min of earlier steps, about 50; the served step took 35.97 to 37.92 min over
+    main's sixteen runs after the raise, the closest call the run on 23c2a9960 ending its served step at 40 min 09 s. The
+    floor is 50, not 60, so the pin keeps the file's range style and a revert to 40 goes red on it."""
+    def test_the_extension_job_gets_sixty_minutes_and_never_reverts_below_fifty(self):
         src = open(WF).read()
         m = re.search(r"^  vscode-extension:\n((?:    .*\n|\n)+?)    defaults:\n", src, re.M)
         self.assertTrue(m, "the extension job's head moved: re-anchor this pin")
         t = re.search(r"^    timeout-minutes: (\d+)$", m.group(1), re.M)
         self.assertTrue(t, "the extension job has no plain timeout-minutes line")
-        self.assertGreaterEqual(int(t.group(1)), 40, "the served labs took 25 min 04 s on a slow runner against a 25-minute ceiling")
+        self.assertGreaterEqual(int(t.group(1)), 50, "the served step ran 35.97 to 37.92 min on main after 2026-09-23 (40 min 09 s to its end at the closest call): "
+                                                     "up to 38 min plus the 600 s per-test timeout plus about 2 min of earlier steps is about 50, so a cap below it cuts a green run")
         self.assertLessEqual(int(t.group(1)), 60, "past an hour a hung lab eats the run")
 
 
