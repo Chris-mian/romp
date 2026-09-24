@@ -5756,6 +5756,22 @@ class SdkSession:
         self._pending_meta: list = queue_meta_from_reg(reg)   # the ids the mirror carries, aligned with _pending
         self._fed_meta: list = []
         self._landed_qid: dict = {}
+        # A /clear the CLI has TAKEN is tracked by the IDENTITY of its optimistic echo (the taken copy's qid),
+        # so its echo retires on the exact event that proves THIS copy ran and never by text: a /clear resets
+        # the transcript and writes NO user record for itself, so its echo can never land, and, batched with a
+        # message in the same whole second, is never overtaken either. Keyed on the TAKE, not the FEED (round
+        # two's feed-time record stranded a /clear fed mid-turn: the message's result drained the list before
+        # the CLI ever took the /clear): a fed copy sits in self._untaken until _untaken_taken fires, and only
+        # THEN is its qid recorded here. _taken_clear_qids holds the qids of taken-not-yet-resolved /clears,
+        # FIFO: the lastSid-flipping init retires the oldest (that flip IS the fresh conversation), and the
+        # turn's settle drains the rest so no stranded entry can poison a later fork/reconnect flip. A /clear
+        # still QUEUED or fed-but-UNTAKEN has no qid here and keeps its echo, so an unplanned CLI death or a
+        # restart flags/re-delivers it on the resumable roads. _own_turn_clear_qid is the qid of a /clear the
+        # CLI took as its OWN fresh turn: the settle backstop retires it when that turn ends with no flip (a
+        # /clear that found nothing to clear still ran); a mid-turn SWALLOWED /clear is not its own turn, so it
+        # keeps its echo for settle_echoes to flag as a genuine loss.
+        self._taken_clear_qids: list[str] = []
+        self._own_turn_clear_qid: str | None = None
         self._ping_feeding = False   # a rename ping was fed and its turn hasn't streamed yet: hold the
         #                              queue so no message can share its pre-turn window (the CLI batches
         #                              everything pre-start into ONE record — the 2026-08-25 fold); cleared
@@ -5785,6 +5801,25 @@ class SdkSession:
             self._compacting = True
         if any(_is_clear_cmd(t) for t in self._pending):   # same restored-queue rule for a queued /clear
             self._clearing = True
+        # A /clear the previous kernel had already handed the CLI (TAKEN, awaiting its flip) is not in the
+        # queue any more, so restore its take-tracking from the persisted mirror (reg['clearingTaken']) and
+        # relight the bracket, but ONLY when the CLI its host KEPT still holds it (_lease_survives). A CLI
+        # the restart did not survive never runs that /clear, so its echo is a genuine loss (_reseed_echoes /
+        # _mark_dropped_echoes), not a boundary to wait on. Never inferred from the echoes (an old stuck
+        # /clear echo would relight a false Clearing row); only this explicit list restores.
+        try:
+            _kept = self.backend._lease_survives(self.sid) if hasattr(self.backend, "_lease_survives") else False
+        except Exception:
+            _kept = False
+        if _kept:
+            _taken = [q for q in (reg.get("clearingTaken") or []) if isinstance(q, str) and q]
+            if _taken:
+                self._taken_clear_qids = _taken[-16:]
+                self._clearing = True
+            _own = reg.get("clearingOwnTurn")   # a taken /clear that ran with NOTHING to clear retires at its OWN settle: restore its arm too
+            if isinstance(_own, str) and _own:
+                self._own_turn_clear_qid = _own
+                self._clearing = True
         self._input_wake: asyncio.Event | None = None
         self._cur_ask_fut: asyncio.Future | None = None
         self._ask_serial = asyncio.Lock()            # ONE live ask per session: the SDK dispatches every control
@@ -5871,6 +5906,9 @@ class SdkSession:
         if meta and meta.get("qid"):
             self._fed_meta.append({"qid": meta["qid"], "qts": meta.get("qts"), "text": text, "t": int(time.time())})
             del self._fed_meta[:-64]                       # bounded: a landing is paired within a turn or two
+        # A /clear's echo is tracked at the TAKE, not here at the feed: the copy sits in self._untaken until the
+        # CLI demonstrably takes it (_untaken_taken), and only then is its qid recorded for retirement (round
+        # two recorded it here and stranded a mid-turn-fed /clear). `fresh` (fed from idle) rides _untaken.
         return text, meta
 
     def pending_meta(self):
@@ -7371,6 +7409,7 @@ class SdkSession:
                         # before the yield: the CLI has not seen the text yet, so its record can only begin
                         # at or after the file's size now (_transcript_mark's argument).
                         self._untaken = {"text": str(item), "item": item, "fresh": fresh, "settled": False,
+                                         "qid": (_meta or {}).get("qid"),   # the copy's id, for the /clear-echo retire at the TAKE
                                          "t": int(time.time()), "off": None, "fsid": None}
                 if item is None:
                     await self._input_wake.wait()   # idle, or holding behind a wedged turn → wait for a change
@@ -8554,7 +8593,17 @@ class SdkSession:
             # the CLI took the last fed text (an exact event: _untaken_taken): the next queued text can go
             # in as its own message now. Checked BEFORE the result settle below marks the turn ended, so a
             # result frame is read against the state the text was fed into.
+            _took = self._untaken
             self._untaken = None
+            # a /clear the CLI has now TAKEN: record its echo's identity so it retires on THIS copy's own
+            # boundary (the flip it causes, or its own turn's settle), never by text and never before the CLI
+            # takes it (a still-queued or fed-but-untaken /clear is left owed, so an unplanned death flags it).
+            if _took and _took.get("qid") and _is_clear_cmd(_took.get("text") or ""):
+                self._taken_clear_qids.append(_took["qid"])
+                del self._taken_clear_qids[:-16]           # bounded: a /clear resolves within a turn
+                if _took.get("fresh"):
+                    self._own_turn_clear_qid = _took["qid"]   # taken from idle → its OWN turn (the no-flip backstop)
+                self.backend._persist_echoes(self.sid)     # mirror the take (reg['clearingTaken']) so a restart before its flip, on a host-kept CLI, restores it
             if self._input_wake is not None:
                 self._input_wake.set()
         if isinstance(msg, SystemMessage) and msg.subtype == "init":
@@ -8588,6 +8637,18 @@ class SdkSession:
                 # clearing bracket ends here (event-based; the ResultMessage below is only the backstop).
                 clearing = self._clearing
                 self._clearing = False
+                # Retire the echo of the TAKEN /clear this flip belongs to, by IDENTITY (the taken copy's
+                # qid), NEVER by text: the flip is the exact event that proves THIS /clear ran (the fresh
+                # conversation exists), and its optimistic echo can never land a record of its own. Keyed on
+                # the taken ledger, not the clearing BRACKET (send() lights it at enqueue) nor the feed (a
+                # fed-but-untaken /clear is not owned by this flip): a still-queued or untaken /clear keeps
+                # its echo; a fork/reconnect flip with no taken /clear retires nothing; two taken /clears
+                # retire one at a time (FIFO). A batched message's echo lands by its own record as ever.
+                taken_clear = self._taken_clear_qids.pop(0) if getattr(self, "_taken_clear_qids", None) else None
+                if taken_clear:
+                    if taken_clear == getattr(self, "_own_turn_clear_qid", None):
+                        self._own_turn_clear_qid = None    # the flip retired it: the settle backstop has nothing to do
+                    self.backend.retire_clear_echoes(self.sid, taken_clear)
                 if clearing:
                     # The CLI zeroed total_cost_usd and modelUsage at this instant (a /clear resets both,
                     # same lifecycle); reset the spend watermarks on the EVENT rather than waiting for the
@@ -9078,13 +9139,31 @@ class SdkSession:
                 # the authoritative flag so parked ops proceed immediately, instead of waiting out a 180s cap.
                 self._compacting = False
                 self._clearing = False   # /clear backstop: the turn settled, whatever the init did or didn't flip
+                # The turn the /clear rode has ended. A /clear the CLI took as its OWN fresh turn that reached
+                # NO flip (a /clear with nothing to clear still ran) retires here, the settle twin of the flip
+                # retire, by IDENTITY (the taken copy's qid) and never by text. The RETIRE CALL runs in the
+                # failed-step loop below, NOT inline: it touches a file and a lock (retire_clear_echoes ->
+                # _persist_echoes / _wake_push) and a raise here must never stop the settle (the block's rule
+                # at the finally comment above). A mid-turn SWALLOWED /clear was never its own turn, so it
+                # keeps its echo for settle_echoes to flag as a loss. Draining _taken_clear_qids ends the
+                # turn's tracking so no stranded entry poisons a later fork/reconnect flip.
+                _had_taken = bool(getattr(self, "_taken_clear_qids", None))
+                own_clear = getattr(self, "_own_turn_clear_qid", None)
+                self._own_turn_clear_qid = None
+                if hasattr(self, "_taken_clear_qids"):
+                    self._taken_clear_qids = []
                 self._settled_msg = msg  # the exact event the failure report reads: the settle ran for THIS result
                 if self._input_wake is not None:   # turn done → release the next queued turn, if any
                     self._input_wake.set()
                 failed = []
-                for what, step in (("the turn-end count", lambda: self.backend._turn_completed(self.sid)),
-                                   #   ↑ a landed result re-arms the crash-resume budget + bumps turn_seq
-                                   ("the 'waiting' state write", lambda: self._mark("waiting"))):
+                _settle_steps = [("the turn-end count", lambda: self.backend._turn_completed(self.sid)),
+                                 #   ↑ a landed result re-arms the crash-resume budget + bumps turn_seq
+                                 ("the 'waiting' state write", lambda: self._mark("waiting"))]
+                if own_clear:   # the no-flip /clear echo retire (guarded like the other file/lock steps; still ahead of the woken feeder)
+                    _settle_steps.append(("the /clear echo retire", lambda: self.backend.retire_clear_echoes(self.sid, own_clear)))
+                elif _had_taken:   # a swallowed /clear was drained without a retire: mirror the emptied take list so a restart restores nothing stale
+                    _settle_steps.append(("the /clear take mirror", lambda: self.backend._persist_echoes(self.sid)))
+                for what, step in _settle_steps:
                     try:
                         step()
                     except Exception as e:
@@ -14588,8 +14667,23 @@ class SdkBackend:
                     if a.get(flag):
                         e[flag] = True            # WHY it was dropped (the age line / the prompt gate), for the chat
                 snap.append(e)
+        # Beside the echo mirror: the qids of /clears the CLI has TAKEN but not yet resolved (the clearing
+        # bracket, per copy). A kernel restart between a /clear's take and its flip, on a CLI its host KEPT
+        # alive, would otherwise lose the take tracking (in-memory only), so the surviving CLI's flip would
+        # find nothing to retire and the /clear echo would later be flagged never-delivered though it ran.
+        # Persisted by IDENTITY (not inferred from the echoes: an old stuck /clear echo must not relight the
+        # bracket), restored in __init__ only when _lease_survives.
+        _s = getattr(self, "sessions", {}).get(sid)   # lockless dict.get (atomic under the GIL); a stand-in backend has none
+        kw = {"echoes": snap}
+        if _s is not None:
+            # Only a LIVE session owns the take mirror. A boot re-persist runs BEFORE the SdkSession is restored
+            # (sessions is empty then), so writing the mirror from the absent session would clobber the persisted
+            # clearingTaken to [] and defeat the restart restore; skip the keys instead and preserve them.
+            kw["clearingTaken"] = [q for q in list(getattr(_s, "_taken_clear_qids", None) or []) if isinstance(q, str) and q]   # the taken /clear ids
+            _own = getattr(_s, "_own_turn_clear_qid", None)   # the own-turn arm: a restored no-flip /clear retires at its settle, not flagged lost
+            kw["clearingOwnTurn"] = _own if isinstance(_own, str) and _own else None
         try:
-            self._update_reg(sid, echoes=snap)
+            self._update_reg(sid, **kw)
         except Exception as e:
             self._log("echo mirror (%s): registry write failed: %s" % (sid[:8], e))
 
@@ -17152,7 +17246,8 @@ class SdkBackend:
         THE RULE: every site that adds, replaces, pops, flags or REWORDS an atom in `_live` calls this,
         once per call that changed something: _stash_live, _forward (its eviction included), unqueue (the
         cancelled copy's echo), dismiss_echo, prune_live,
-        retire_live_work, settle_echoes (the overtaken flags, one bump per call that flagged), and the two
+        retire_live_work, retire_clear_echoes (the /clear echo popped at its boundary), settle_echoes (the
+        overtaken flags, one bump per call that flagged), and the two
         flag writes _mark_dropped_echoes makes outside the lock (each takes
         the lock for its bump). tests/test_live_tail_rev.py pins the set by source, so a new queue or echo
         mutator that touches `_live` fails that census until it bumps. Only a CHANGE bumps: a prune that
@@ -17339,6 +17434,48 @@ class SdkBackend:
                       % (sid[:8], a["_echo_text"]), problem=True)
         self._persist_echoes(sid)                      # the flag rides the mirror across a restart
         self._wake_push()
+
+    def retire_clear_echoes(self, sid: str, qid: str) -> None:
+        """Drop the ONE /clear input echo named by `qid` at the CLEAR BOUNDARY of the /clear the CLI took:
+        the lastSid flip that proves it ran (SdkSession._on_message init), or, for a /clear that found
+        nothing to clear, its own turn's ResultMessage settle. Keyed on the TAKEN copy's IDENTITY, NEVER by
+        text: the caller supplies the qid it recorded when the CLI TOOK this /clear (SdkSession._taken_clear_qids;
+        a still-queued or fed-but-untaken /clear is never passed here, so its echo is left owed).
+
+        A /clear resets the transcript and writes NO user record for itself, so its echo can never LAND
+        (prune_live's by-text match never fires) and, sent in the SAME whole second as a batched message,
+        is never OVERTAKEN either (settle_echoes' strictly-later floor): with neither exit it rode every
+        push as a dashed 'sending…' /clear chip that never retired, beside the delivered message and its
+        answer (the user's batch report). The boundary is the exact event that proves the /clear RAN, so its
+        echo has done its job and retires here, event-based, no floor. A /clear that was never taken (still
+        queued, boot-restored) or was taken but SWALLOWED (folded mid-turn, not its own turn) reaches no
+        boundary of its own and keeps its echo, so a genuine loss still shows: settle_echoes flags it dropped
+        once a later human turn overtakes it (the swallowed copy is drained from the taken list at settle so
+        it never poisons a later flip, but its echo is not retired).
+        The echo's dict key IS its qid (send() stashes it under the copy's key), and a command-feedback atom
+        is skipped as prune_live skips it (it owes no landing). A batched message's echo lands as ever by its
+        own record. Pops only, never a stash, so it is off the two-stash census (test_live_tail_rev.py) and
+        bumps the revision like every retiring sweep."""
+        if not qid:
+            return
+        removed = False
+        with self._live_lock:
+            d = self._live.get(sid)
+            if not d:
+                return
+            a = d.get(qid)      # the echo is stashed under its own qid (send: _stash_live(sid, key, echo))
+            if a is not None and a.get("_echo_text") and not a.get("command") \
+                    and _is_clear_cmd(a.get("_echo_text") or ""):
+                if d.pop(qid, None) is not None:
+                    removed = True
+            if removed:
+                self._touch_live(sid)
+            if not d and self._live.get(sid) is d:
+                self._live.pop(sid, None)
+        if removed:
+            self.forget_fed(sid, qid)      # the fed ledger entry too: its landing will never come (it wrote no record)
+            self._persist_echoes(sid)      # the mirror drops it too, so a restart mid-clear re-seeds nothing stale
+            self._wake_push()
 
     def retire_live_work(self, sid: str) -> None:
         """Drop the sid's live-tail WORK atoms (stream messages — not input echoes, not command feedback)

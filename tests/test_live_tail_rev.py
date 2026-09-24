@@ -38,6 +38,7 @@ SID2 = "77777777-8888-9999-aaaa-bbbbbbbbbbb2"
 
 def _backend():
     d = tempfile.mkdtemp()
+    open(os.path.join(d, "session-hosts"), "w").write("off")   # this backend's own root: hosts off (CLAUDE.md Testing)
     return sb.SdkBackend(d, "/bin/true", lambda *a, **k: None, log=lambda *a, **k: None)
 
 
@@ -167,13 +168,31 @@ class SdkLiveTailRevision(unittest.TestCase):
         self.assertFalse(e2.get("dropped"))
         self.assertEqual(self.rev(), r1 + 1, "the `_landed` verdict is a change too, counted once")
 
+    def test_retire_clear_echoes_bumps_on_the_qid_it_pops_and_never_sweeps_by_text(self):
+        # retire_clear_echoes pops the ONE /clear echo named by qid and bumps once; a message echo (not a
+        # /clear) or a qid nowhere is a no-op with no bump, and a second /clear echo is left standing (the
+        # retire is by identity, never a text sweep). Fails under: removing the _touch_live bump; dropping the
+        # qid key and sweeping by text (pops echo:c2 too); dropping the _is_clear_cmd guard (pops echo:m).
+        self.be._stash_live(SID, "echo:m", _echo("echo:m", "rebuild the index", 6))
+        self.be._stash_live(SID, "echo:c1", _echo("echo:c1", "/clear", 7))
+        self.be._stash_live(SID, "echo:c2", _echo("echo:c2", "/clear", 8))
+        base = self.rev()
+        self.be.retire_clear_echoes(SID, "echo:m")          # a message echo: not a /clear -> no pop, no bump
+        self.assertEqual(self.rev(), base, "a non-/clear qid is a no-op")
+        self.be.retire_clear_echoes(SID, "echo:nowhere")    # a qid nowhere -> no pop, no bump
+        self.assertEqual(self.rev(), base, "a qid nowhere is a no-op")
+        self.be.retire_clear_echoes(SID, "echo:c1")         # the /clear echo -> pop + exactly one bump
+        self.assertEqual(self.rev(), base + 1, "one bump for the popped /clear echo")
+        self.assertEqual(sorted(a["uuid"] for a in self.be.live_atoms(SID)), ["echo:c2", "echo:m"],
+                         "only echo:c1 popped: the message echo and the second /clear echo stay (never a text sweep)")
+
     def test_every_writer_site_bumps_by_source(self):
         """The writer set _touch_live's docstring names, pinned by source beside the behavioural tests above
         (which carry the claim that each bump happens): each mutator's source calls _touch_live, the two
         flag-writing lines in _mark_dropped_echoes are each followed by one, and _stash_live and _forward are
         the only sites that stash into _live, so a new mutator fails here until it is classified."""
         for name in ("_stash_live", "_forward", "unqueue", "dismiss_echo", "prune_live",
-                     "retire_live_work", "_mark_dropped_echoes", "settle_echoes"):
+                     "retire_live_work", "retire_clear_echoes", "_mark_dropped_echoes", "settle_echoes"):
             src = inspect.getsource(getattr(sb.SdkBackend, name))
             self.assertIn("self._touch_live(", src, "%s changes the tail without advancing its revision" % name)
         mde = inspect.getsource(sb.SdkBackend._mark_dropped_echoes)

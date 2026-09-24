@@ -64,7 +64,7 @@ import { notePendingFlag, dropPendingFlag, applyFrameFlags, type PendingFlags, t
 import { DEFAULT_CHORDS } from "./commands";
 import { NavHistory } from "./nav-history";
 import { StagedStack, quoteReplyBody, stagedPosts, type StagedMsg } from "./staged-messages";
-import { type PendingSend, type TailEvent, OPT_PREFIX, isOptimisticUuid, isKernelEchoUuid, newPending, mintQid, reconcilePending, queuedCopyToHide, dropPending, bareGroupLabel, sentAtLabel, pendingBody, refusedRestoreText } from "./send-pending";
+import { type PendingSend, type TailEvent, OPT_PREFIX, isOptimisticUuid, isKernelEchoUuid, newPending, mintQid, reconcilePending, clearBoundarySeen, queuedCopyToHide, dropPending, bareGroupLabel, sentAtLabel, pendingBody, refusedRestoreText } from "./send-pending";
 import { type FrameWm, frameOlder, droppedLandedHuman, dropsLandedRow, forgetHeldWm } from "./frame-guard";   // the frame watermark guard (2026-09-22): an older build's frame is ignored, a vanished landed turn is filed; a reconnect forgets the held watermarks
 import { type LandEvent, LandingWatch } from "./send-landing";   // the send-landing invariant (2026-09-23): observation only, around the frame dispatch (landingBefore / landingAfter)
 import { readBaseFp, checkBase, newResyncState, onMismatch, onAgree, forgetResync, staleAnswer } from "./chat-resync";   // the delta's base check (2026-09-23): a delta cut against a base the page does not hold is refused and the full asked for, bounded by event
@@ -498,14 +498,15 @@ function tailQueuedIdx(evs: ChatEvent[]): number {
 // the wrapper names the first event object the pass swapped (repaintFromChange) and the view compares its units from there by
 // content. A per-session signature of the shown texts marked the whole view stale instead, until 2026-09-23.
 
-function reconcileOptimistic(s: Session): void {
+function reconcileOptimistic(s: Session, clearBoundary: boolean = false): void {
   // The strip and the re-inject are ONE step: an exception between them would leave the events without our
   // bubble until the next push, and the frame painted meanwhile would let the browser clamp a bottom reader by
   // the bubble's height (T262h). So the group as it was is put back on any failure, and the failure is filed.
+  // `clearBoundary`: this ingest carried a /clear's fresh episode (a fork), the event that ends a /clear bubble.
   const prevGroup = s.events.filter((e) => isOptimistic(e));
   const before = s.events.slice();   // what the view painted from: the pass names the first event it swapped (repaintFromChange)
   try {
-    reconcileOptimisticInner(s);
+    reconcileOptimisticInner(s, clearBoundary);
   } catch (err) {
     if (!s.events.some((e) => isOptimistic(e))) s.events.push(...prevGroup);
     vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "reconcile-optimistic-failed",
@@ -525,7 +526,7 @@ function repaintFromChange(s: Session, before: readonly ChatEvent[]): void {
   if (!v) return;
   if (at === 0) v.rediff = true; else v.rendered = Math.min(v.rendered, at);   // never 0: that is the first build's mark
 }
-function reconcileOptimisticInner(s: Session): void {
+function reconcileOptimisticInner(s: Session, clearBoundary: boolean = false): void {
   stripOptimistic(s, true);   // kernel truth (plus the held copies, T262i) below: our bubbles and our hide marks are re-derived from it
   const list = pendingSent.get(s.id);
   if (!list || !list.length) return;
@@ -539,8 +540,18 @@ function reconcileOptimisticInner(s: Session): void {
   // send (a "not confirmed" label is cleared). The kernel's QUEUED copy of a send is different (T252): it
   // sits in the kernel's group at the tail while the bubble the user watches is ours, right below it — so
   // that copy is hidden and ours stays, one bubble per message; the group keeps its other texts.
-  const r = reconcilePending(s.events as TailEvent[], list);
+  const r = reconcilePending(s.events as TailEvent[], list, clearBoundary);
   noteLandings(s.id, s.events, r);   // observation only (send-landing.ts)
+  // DIAGNOSTIC TRAP (evidence, not a fix): a pending send KEPT though a LANDED record carrying its id is
+  // already resident is a reconcile miss (the other face of the never-reproduced leftover). One cheap row, the id and whether
+  // it was a /clear; the follow-up reads it. Cheap: it walks only the (small) kept list.
+  for (const kp of r.keep) {
+    const q = kp.qid;
+    if (!q) continue;
+    if ((s.events as TailEvent[]).some((e) => e.kind === "user" && !isKernelEchoUuid(e.uuid) && !isOptimisticUuid(e.uuid)
+                                       && (e.qid === q || (Array.isArray(e.qids) && e.qids.includes(q)))))
+      chatDiagRow("pending-survived-landing", { sid: s.id, qid: q, clear: !!kp.clear });
+  }
   if (r.keep.length) pendingSent.set(s.id, r.keep); else pendingSent.delete(s.id);
   const heldBy = new Map<PendingSend, NonNullable<Extract<ChatEvent, { kind: "queued" }>["held"]>>();
   const covered = new Set<PendingSend>();   // a kernel copy that stays shown (non-cancelable: no recall exists) covers ours
@@ -674,9 +685,9 @@ function hideQueuedCopy(s: Session, p: PendingSend): { held?: Extract<ChatEvent,
 // copy's id the caller minted at the press (mintQid) and posted with the send, so the kernel queues or parks the
 // copy under the id this bubble wears and the bubble, the kernel's chip and the ✕ agree from the press; a caller
 // that posts nothing (a provisional tab's send, held until the session exists) lets the entry mint its own.
-function registerOptimistic(id: string, text: string, imgPaths?: string[], qid?: string, paths?: string[]): void {
+function registerOptimistic(id: string, text: string, imgPaths?: string[], qid?: string, paths?: string[], clear?: boolean): void {
   const arr = pendingSent.get(id) || [];
-  const p = newPending(text, imgPaths, Date.now(), qid, paths);
+  const p = newPending(text, imgPaths, Date.now(), qid, paths, clear);
   arr.push(p);   // the anchor (`at`) is stamped by the reconcile just below
   pendingSent.set(id, arr);
   try { if (p.qid) landingWatch.send(id, p.qid, p.ts); } catch { /* observation only (send-landing.ts) */ }
@@ -8424,7 +8435,9 @@ function adoptProvisional(realId: string): void {
   for (const text of queued) {
     const qid = mintQid();                                  // the copy's id, minted here: the real send carries it…
     vscodeApi?.postMessage({ type: "sendMessage", id: realId, text, qid });
-    registerOptimistic(realId, text, undefined, qid);       // …and the bubble carries over to the tab that now owns it, under the same id
+    // …and the bubble carries over to the tab that now owns it, under the same id; a /clear among them ends at its
+    // clear boundary like any other (the `clear` flag, off for Codex, see routeUserMessage)
+    registerOptimistic(realId, text, undefined, qid, undefined, isClearCmd(text) && liveSession(realId)?.status?.backend !== "codex");
   }
   if (draft) { persistDrafts(); const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null; if (ta) growComposer(ta); }
 }
@@ -17212,10 +17225,12 @@ function routeUserMessage(sid: string, text: string, cites: Citation[] | undefin
   const quoteCites = cites ? cites.filter((c) => c.quote) : [];
   // EVERY branch echoes optimistically (the user 2026-08-23: quoted and follow-up sends showed
   // nothing until the kernel round-tripped, while plain sends painted instantly — the exact
-  // inconsistency reported). The reconcile ends a bubble on an EXACT text match with the landed event's
-  // md (send-pending.ts): the quote branch echoes the COMPOSED body, which is byte-identical to what
-  // lands (quoteReplyBody IS the send path); the follow-up echoes the typed words, which is what the
-  // kernel ships as the landed event's md once it strips the goal wrapper (_split_followup).
+  // inconsistency reported), /clear included (its bubble is the send's only trace and cancel through a
+  // socket outage, and a refused Codex /clear needs it to restore). The reconcile ends a bubble on an
+  // EXACT text match with the landed event's md (send-pending.ts): the quote branch echoes the COMPOSED
+  // body, which is byte-identical to what lands (quoteReplyBody IS the send path); the follow-up echoes
+  // the typed words, which is what the kernel ships as the landed event's md once it strips the goal
+  // wrapper (_split_followup). A /clear lands no record, so its bubble ends at the CLEAR BOUNDARY instead.
   // The copy's id is minted at the press and rides the post (`qid`), and the entry registered right after wears
   // the same one: the kernel queues or parks the copy under it, so the two never have to be paired by text
   // (send-pending.ts). The post still goes first: the paint that follows can never cost the send.
@@ -17225,7 +17240,14 @@ function routeUserMessage(sid: string, text: string, cites: Citation[] | undefin
   const att = paths && paths.length ? { paths } : {};
   if (goalCite?.itemId) { vscodeApi.postMessage({ type: "askFollowUp", itemId: goalCite.itemId, text, sid, qid, ...att }); registerOptimistic(sid, text, imgPaths, qid, paths); }
   else if (quoteCites.length) { const body = quoteReplyBody(quoteCites, text); vscodeApi.postMessage({ type: "sendMessage", id: sid, text: body, qid, ...att }); registerOptimistic(sid, body, imgPaths, qid, paths); }
-  else { vscodeApi.postMessage({ type: "sendMessage", id: sid, text, qid, ...att }); registerOptimistic(sid, text, imgPaths, qid, paths); }
+  // EVERY send gets its optimistic bubble, /clear included: it is the send's only trace and its only cancel
+  // during a socket outage, and a refused Codex /clear needs the entry for the warn handler to restore. A
+  // transcript-resetting /clear writes NO user record for itself, so it never LANDS and, in a same-second
+  // batch, is never OVERTAKEN either, so its bubble ends on the CLEAR BOUNDARY instead (the fresh episode it
+  // forks), which reconcileOptimistic pairs to it (the `clear` flag, gated OFF for Codex: a Codex /clear is
+  // refused, reaches no boundary, and its bubble ends the ordinary way on that refusal). The kernel retires
+  // its OWN /clear echo at the same boundary, by the taken copy's id (sdk_backend.retire_clear_echoes).
+  else { vscodeApi.postMessage({ type: "sendMessage", id: sid, text, qid, ...att }); registerOptimistic(sid, text, imgPaths, qid, paths, isClearCmd(text) && liveSession(sid)?.status?.backend !== "codex"); }
   // One breadcrumb per composer send (client-diag.jsonl): sid, when, how long, which route — never the
   // text. A send that "vanished" can then be traced from the press through the kernel's own logs
   // instead of reconstructed from memory. `key` is the copy's id, the one the `landed` row names (send-landing.ts), so the
@@ -18304,7 +18326,23 @@ function upsert(msg: any) {
   applyFrameFlags(s, msg, pendingFlags, msg.id);   // the flags the frame carries, under the click's pending guard: a frame built before a click cannot revert them (flag-pending.ts)
   reconcileRewind(s);       // pending-rewind overlay + the editable-bubble set, from the fresh payload
   reconcileHeldCopies(s);   // a queued copy the kernel no longer lists but has not landed keeps its slot (T262i)
-  reconcileOptimistic(s);   // re-assert (or retire) any in-flight optimistic sends across the rebuild
+  // A /clear ends its optimistic bubble at the CLEAR BOUNDARY, detected here (ahead of the reconcile, so it
+  // retires on THIS push, not one behind) on an APPLIED frame (a kept-resident refusal changed nothing). The
+  // boundary is a NEW clear card (the >=2-episode case) OR a FORK by transcript-turn identity: the fresh
+  // episode shares none of the held turns, which catches a SOLO /clear of a small session (empty or head-only
+  // fresh episode, no clear card, the constant system:head shared) that a bare all-uuid overlap test misses
+  // (clearBoundarySeen). Only when a /clear entry is pending does the reconcile act on it; one boundary ends
+  // one /clear, in press order.
+  const clearBoundary = !!(existed && !keepResident
+                           && clearBoundarySeen(prev ? (prev.events as TailEvent[]) : undefined, msg.events as TailEvent[]));
+  reconcileOptimistic(s, clearBoundary);   // re-assert (or retire) any in-flight optimistic sends across the rebuild
+  // DIAGNOSTIC TRAP (evidence for the never-reproduced clearing-row/message-bubble leftover follow-up, not a fix): a "Clearing conversation…" overlay
+  // left resident under a frame whose status is no longer clearing is a client leftover the kernel is not
+  // asserting. One cheap row when it happens, carrying the leaf, the watermark and whether the frame applied
+  // or was refused; the follow-up reads these to nail the edge (this reproduction never triggers it).
+  if (s.status && s.status.state && s.status.state !== "clearing" && s.events.some((e) => e.kind === "clearing"))
+    chatDiagRow("clearing-row-survived", { sid: msg.id, state: s.status.state, leaf: s.lastUuid ?? null,
+      wm: s.wm && typeof s.wm === "object" ? ((s.wm as { t?: number }).t ?? null) : null, mix: keepResident ? "refused" : "applied" });
   // A landed human turn the page held that this frame no longer carries is FILED, whatever the watermark said (frame-guard.ts,
   // 2026-09-22): a rebased fork or a rewind the page asked for removes rows on purpose and the row says so; anything else is
   // the kernel's newer list disagreeing with its older one about a record, the loss the user watched, never silent again.
@@ -20621,7 +20659,7 @@ function setupComposer() {
           return;
         }
         provisionalQueue.push(text);
-        registerOptimistic(sid, text, attached.filter((p) => previewKind(p) === "img"), undefined, attached);
+        registerOptimistic(sid, text, attached.filter((p) => previewKind(p) === "img"), undefined, attached, isClearCmd(text) && liveSession(sid)?.status?.backend !== "codex");
         sendOnShip.delete(sid);                       // a send happened — any held one is superseded
         histWalk.delete(sid);                         // …and the history walk starts fresh
         if (attached.length) { composerFiles.delete(sid); if (sid === activeId) renderComposerFiles(sid); }
@@ -20650,7 +20688,8 @@ function setupComposer() {
       // its sid from itemId, so this is inert locally; every other card op carries the sid the same way.
       const cites = composerCitations.get(activeId);
       flushStaged(sid, { text, cites, imgPaths: attached.filter((p) => previewKind(p) === "img"), paths: attached });
-      // (a citation follow-up/quote has its own kernel-side echo path; the optimistic bubble covers the plain send)
+      // (a citation follow-up/quote has its own kernel-side echo path; the optimistic bubble covers the plain send;
+      //  a /clear included, whose bubble ends at the clear boundary rather than on a landing, see routeUserMessage)
       if (cites) { composerCitations.delete(activeId); renderComposerChips(activeId); }   // consumed on send
       sendOnShip.delete(sid);                       // a send happened — any held one is superseded
       histWalk.delete(sid);                         // …and the history walk starts fresh
