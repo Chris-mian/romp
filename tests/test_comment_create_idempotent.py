@@ -265,6 +265,13 @@ class CreateIsIdempotent(unittest.TestCase):
         row = km._sdk_problem_rows()[-1]
         self.assertIn("first line of the note second line in the middle third line at the end", json.dumps(row))
 
+    def test_a_multi_line_reason_stays_on_one_line(self):
+        def boom(*a, **k):
+            raise RuntimeError("spawn refused\nexit status 1")
+        self.be.fork = boom
+        self._file_create()
+        self.assertIn("(thread not created: spawn refused exit status 1)", km._SDK_BOOT_PROBLEMS[-1]["text"])
+
     def test_the_recorded_words_are_capped(self):
         self._boom_fork()
         words = "w" * (km.COMMENT_FAILED_TEXT_CAP + 50)

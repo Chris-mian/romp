@@ -1066,7 +1066,7 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
   let seedSeq = 0;                                 // last gesture wins if two fresh reads race
   box.addEventListener("mouseup", (ev) => {
     if (editing) return;   // CodeMirror selections are edit gestures, not quotes
-    if (ev.button > 0) return;   // the right-click that opens the menu re-seeds nothing
+    if (ev.button > 0 || ev.ctrlKey) return;   // the right-click (or a Mac Ctrl+click) that opens the menu re-seeds nothing
     // A press on a title-bar CONTROL (A−, A+, the readout, Raw, Copy path, the GitHub link) settles no
     // selection: the mouseup lands on the button while a passage may still stand selected in the body,
     // and the seed below would re-read the file and re-seed the quote chip on every step of the text
@@ -1213,21 +1213,15 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
           ta.focus();
         },
       });
-      // The label's line is minted against a FRESH read at send, the seed's rule: the file may have moved
-      // since the open, and a failed re-read falls back to what the viewer shows.
-      fetch(fileUrl(path, s), { cache: "no-store" })
-        .then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
-        .catch(() => viewText())
-        .then((doc) => {
-          if (!cmtHooks.has(createId)) return;   // the viewer closed or was replaced while the read ran
-          const src = quoteSrcLabel(path, doc, picked);
-          if (hasComposer) {
-            toHost({ romp: "stageNote", sid: s, text: body, exact: picked, src, createId });
-          } else {
-            // An empty anchor asks the kernel to anchor the thread at the last chat event: a file passage has none.
-            post({ type: "commentCreate", id: s, uuid: "", exact: picked, text: body, src, createId });
-          }
-        });
+      // Labelled from what the viewer shows, and sent at once: a fresh read here would hold the send open
+      // on the network, and a close in that window would drop the words.
+      const src = quoteSrcLabel(path, viewText(), picked);
+      if (hasComposer) {
+        toHost({ romp: "stageNote", sid: s, text: body, exact: picked, src, createId });
+      } else {
+        // An empty anchor asks the kernel to anchor the thread at the last chat event: a file passage has none.
+        post({ type: "commentCreate", id: s, uuid: "", exact: picked, text: body, src, createId });
+      }
     });
     ta.addEventListener("keydown", (e: KeyboardEvent) => {
       if (e.key === "Escape") { e.preventDefault(); close(); }

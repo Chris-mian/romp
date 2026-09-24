@@ -17458,8 +17458,8 @@ function routeUserMessage(sid: string, text: string, cites: Citation[] | undefin
     data: { sid, key: qid, ts: Date.now(), len: text.length, route: goalCite?.itemId ? "followup" : quoteCites.length ? "quote" : "plain" } });
 }
 
-/** How many messages a Submit would send for `sid`: the staged run. A loose chip is a selection, not a note,
- *  and waits for the words typed about it. */
+/** How many staged items a Submit would send for `sid`. A loose chip is a selection, not a note, and waits
+ *  for the words typed about it. */
 function composerPendingCount(sid: string | null): number {
   return sid ? stagedMsgs.list(sid).length : 0;
 }
@@ -17488,8 +17488,8 @@ function stageViewerNote(sid: string, text: string, exact: string, src: string |
   toViewer({ romp: "noteStaged", sid, createId });
 }
 
-/** Send the notes staged for `sid`, as the send path releases the staged run. Returns how many went; 0 means the
- *  session was unreachable and nothing moved, which the toast says. */
+/** Send the notes staged for `sid`, as the send path releases the staged run. Returns flushStaged's count; 0 means
+ *  the session was unreachable and nothing moved, which the toast says. */
 function submitComposerPending(sid: string): number {
   if (hostIsDown(sid) || isProvisionalId(sid)) {
     warnToast("Can't send yet — the session isn't reachable. Your notes stay where they are.");

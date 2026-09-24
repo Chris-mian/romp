@@ -306,12 +306,15 @@ test("the FILE VIEWER owns its own selection menu, so every pane that mounts it 
   assert.match(FILEVIEW, /if \(editing \|\| !sid\) return;/, "an edit gesture, or no session to hang a thread on");
   // routed to the sid the file was opened FOR, matching the quote chip's rule — never the active tab
   assert.match(FILEVIEW, /toHost\(\{ romp: "stageNote", sid: s, text: body, exact: picked, src, createId \}\);/);
-  // the label is minted against a fresh read at send, falling back to what the viewer shows
-  assert.match(FILEVIEW, /\.catch\(\(\) => viewText\(\)\)\n\s*\.then\(\(doc\) => \{\n\s*if \(!cmtHooks\.has\(createId\)\) return;[^\n]*\n\s*const src = quoteSrcLabel\(path, doc, picked\);/);
+  // the label comes from what the viewer shows and the send goes at once: a close can't strand the words
+  assert.match(FILEVIEW, /const src = quoteSrcLabel\(path, viewText\(\), picked\);\n\s*if \(hasComposer\) \{\n\s*toHost\(\{ romp: "stageNote"/);
+  assert.doesNotMatch(FILEVIEW, /if \(!cmtHooks\.has\(createId\)\) return;/);
+  // the box paints only on the answer, never on the post
+  assert.doesNotMatch(FILEVIEW, /romp: "stageNote"[\s\S]{0,400}?send\.textContent = "Saved";/);
   // the composer-less pane keeps the kernel path: a thread is the only place a note can land there
   assert.match(FILEVIEW, /post\(\{ type: "commentCreate", id: s, uuid: "", exact: picked, text: body, src, createId \}\);/);
   assert.match(FILEVIEW, /const createId = mintCreateId\(\);/, "one id per send, echoed back to settle this box");
-  assert.match(FILEVIEW, /if \(ev\.button > 0\) return;/, "the right-click's release seeds no quote chip");
+  assert.match(FILEVIEW, /if \(ev\.button > 0 \|\| ev\.ctrlKey\) return;/, "the right-click's release seeds no quote chip");
   // the chat bundle keeps the TRANSCRIPT menu and nothing else — one owner per surface, no duplicate
   assert.doesNotMatch(RENDER, /fileViewSelection/);
   assert.match(RENDER, /if \(!content \|\| !sel \|\| !sel\.anchorNode \|\| !content\.contains\(sel\.anchorNode\) \|\| !text\.trim\(\)\) return;/);
