@@ -108,6 +108,7 @@ import { userTurnShows } from "./user-turn-content";
 import { ScrollDiagBudget, classifyScroll, scrollWriteRow, tailChangeRow, tailLabel, spacerRow, readScrollDiagCap, summarizeTailMutations, tailMutRow, unitChangeRow, unitChanges, boxChanges, boxLabel, BOX_FROM_TAIL } from "./scroll-write";
 import { TailBackWatch, priorChildren, spotAt, tailGoneInfo, type TailFound, type TailGone } from "./tail-back";   // the tailback watch (2026-09-23): a tail removal followed to its return, observation only
 import { reloadScrollRecord, takeReloadScroll, type ReloadScroll } from "./reload-restore";
+import { RELOAD_COMMENT_KEY, reloadCommentRecord, takeReloadComment, type ReloadComment } from "./reload-comment";
 import { keepResidentEvents } from "./frame-merge";
 import { activeTabToReannounce } from "./relay-active";
 import { dirStatusHint, nextDirActive, createDirPrompt, type DirStatus } from "./dir-complete";
@@ -9820,6 +9821,9 @@ let commentPopPos: { x: number; y: number } | null = null;
 // ResizeObserver tells our own sizing from the user's pull by it, so only a pull is remembered (2026-09-10)
 let cmtPopApplied: { w: number; h: number } | null = null;
 let cmtPopPreMax: CmtPopFrac | null = null;     // the size the box had before the last maximize this page-load: restore's target
+// true only for the instant a RELOAD reopens the thread the reader had open (reopenCommentForReload): nobody asked
+// for the popover this time, so it must not take the caret away from someone already typing in the composer
+let restoringCommentPop = false;
 
 // the popover's own file picker (the user 2026-08-17: the attach clip, like the chat's) — files
 // ship through the SAME dropFile flow; the droppedPath ack sees the open popover and lands there
@@ -9869,7 +9873,7 @@ function applyCommentMarks(sid: string): void {
   // the rail cue clears first (idempotent re-apply): a thread viewed, resolved, or removed must
   // drop its turn's tint on this very pass, not linger until the next anchor match
   for (const t of Array.from(v.el.querySelectorAll(".turn.cmt-rail-unread"))) t.classList.remove("cmt-rail-unread");
-  if (!threads.length) { paintCommentOutlines(sid); if (sid === activeId) updateReplyChips(); return; }   // no threads → no boxes, no chips (the last one resolved/deleted)
+  if (!threads.length) { paintCommentOutlines(sid); if (sid === activeId) updateReplyChips(); reopenCommentForReload(sid); return; }   // no threads → no boxes, no chips (the last one resolved/deleted)
   for (const [uuid, list] of threadsByAnchor(threads)) {
     const turn = v.el.querySelector(`.turn[data-uuid="${cssEscape(uuid)}"]`) as HTMLElement | null;
     if (!turn) continue;                       // windowed out — the mark returns when the turn does
@@ -9884,6 +9888,37 @@ function applyCommentMarks(sid: string): void {
   // the reply chips MEASURE the marks (above/below the viewport), so they recount after this pass has the
   // highlights back in the DOM — this is the comments frame's and every transcript rebuild's hook for them
   if (sid === activeId) updateReplyChips();
+  reopenCommentForReload(sid);                 // …and a reload's kept thread reopens on the pass that placed its marks
+}
+
+// ── the comment thread you had open comes back after a reload (the user 2026-09-23) ─────────────────────────────
+// The second half of T265's "a reload must not cost the reader their place": the scroll position came back, the
+// thread popup beside it did not. reload-comment.ts holds the record and its reading; this is the one place it is
+// spent. It hangs off the MARKS PASS, which already runs after every transcript sync and after every comments
+// frame — no timer, no poll, no retry loop.
+//
+// The deciding EVENT is this tab's own comments frame over a landed transcript: only then does this pass know
+// whether the thread still exists and where its highlight is. Before either has happened the pass decides nothing
+// and the record stays armed (the next marks pass is the next event, not a retry). The first pass that HAS both
+// spends the record whatever it finds — one reload, one restore. A thread resolved away, promoted, merged or
+// deleted reopens nothing; so does a thread whose marks are not in the rendered window, which is the deliberate
+// rule for a windowed transcript (the reader scrolled far above the tail): the alternative is to stay armed across
+// later re-windows and drop a popover on someone minutes after they had moved on, and a popup that did not come
+// back costs a click, where one that arrives late costs attention. Either way nothing is left behind.
+function reopenCommentForReload(sid: string): void {
+  const rec = takeReloadComment(pendingReloadComment, activeId);
+  if (!rec || rec.id !== sid) return;
+  if (!commentThreads.has(sid)) return;        // this tab's comments frame has not landed: nothing is known yet
+  const v = views.get(sid);
+  if (!v || !v.shown) return;                  // the transcript has not landed either, so its marks cannot exist
+  pendingReloadComment = null;                 // decided now, once, on whatever this pass sees
+  if (document.getElementById("cmt-pop")) return;   // the reader opened something themselves: theirs wins
+  const th = (commentThreads.get(sid) || []).find((t) => t.tid === rec.tid);
+  if (!th || th.status !== "open") return;      // resolved, promoted, merged or deleted → no trace of it reopens
+  if (!v.el.querySelector(`mark.cmt-hl[data-tid="${cssEscape(rec.tid)}"]`)) return;   // its passage is not rendered
+  if (rec.pos) commentPopPos = { x: rec.pos.x, y: rec.pos.y };   // back where they left it, not at the default
+  restoringCommentPop = true;                  // …and without taking the caret from anyone typing (renderCommentPopover)
+  try { openCommentPopover(sid, rec.tid); } finally { restoringCommentPop = false; }
 }
 
 /** The needs-you cue on an unread open thread's passage, in the tab strip's idiom (the user 2026-09-12): a dashed stroke
@@ -11179,7 +11214,10 @@ function renderCommentPopover(): void {
   syncCmtMaxState(pop);                              // a stored cap-sized preference opens reading "Restore"
   const msgs = pop.querySelector(".cmt-msgs") as HTMLElement | null;
   if (msgs) msgs.scrollTop = msgs.scrollHeight;
-  if (create || hadFocus || !th || !th.msgs.length) (pop.querySelector(".cmt-input") as HTMLTextAreaElement | null)?.focus();
+  // …and the caret, EXCEPT while a reload is putting the reader's thread back (restoringCommentPop): nobody asked
+  // for this popover on this page-load, so a reader who started typing in the composer the instant the transcript
+  // landed must not have the caret pulled out from under them (the user 2026-09-23)
+  if (!restoringCommentPop && (create || hadFocus || !th || !th.msgs.length)) (pop.querySelector(".cmt-input") as HTMLTextAreaElement | null)?.focus();
 }
 
 // BREAK OUT (the user 2026-08-13: "a button that breaks it out into its own session") — the fork
@@ -14000,6 +14038,11 @@ function landActive(content: HTMLElement | null, v: View): void {
   v.shown = true;
   scheduleRailSticky();
   updateJumpBtn();   // per-tab truth: the entering tab's restored position decides the chip, not the left one's
+  // …and the LAND is the reload restore's other decision point (reopenCommentForReload): the marks pass ran just
+  // BEFORE this land, when v.shown was still false, so a page whose comments frame arrived ahead of its first chat
+  // frame would otherwise wait for a later pass that an idle session never sends. After the scroll writes above, so
+  // the reopened box can never take the land from the reader's place.
+  if (activeId) reopenCommentForReload(activeId);
 }
 
 // Scroll ANCHORING for scrolled-up re-renders (the user 2026-07-05). "Appended content is below the
@@ -14051,9 +14094,34 @@ function persistScrollForReload(): void {
 function persistNoticesForReload(): void {
   try { keepReloadNotices(sessionStorage, liveNotices(document.getElementById("warn-toasts"))); } catch { /* ignore */ }
 }
-function persistForReload(): void { persistScrollForReload(); persistNoticesForReload(); }   // the core's hook: both records
+// The comment THREAD on screen when the page goes (reload-comment.ts, the user 2026-09-23). The reader's place came
+// back after a reload; the thread popup they had open beside it did not, and they asked for it. Kept: the tab, the
+// mode, the thread's id and the box's LIVE position, so it reopens where they parked it. NOT kept: a CREATE popup
+// (a comment being written — unsent text, which they said plainly should not survive a reload) and the draft text
+// of any popover (commentDrafts is an in-memory Map and stays one). Rides pagehide with the scroll record, not the
+// core's hook alone as the notices do: the thread you had open is the reader's VIEW, the same kind of thing as the
+// place they were reading, so a navigation of their own restores both. Nothing open REMOVES the key rather than
+// leaving a record a refused reload wrote, which would otherwise reopen a thread they had since closed.
+function persistCommentForReload(): void {
+  const pop = document.getElementById("cmt-pop");
+  const rec = reloadCommentRecord(activeId, pop?.dataset.mode, openCommentKey?.tid,
+                                  pop ? { x: pop.offsetLeft, y: pop.offsetTop } : null);
+  try {
+    if (rec) sessionStorage.setItem(RELOAD_COMMENT_KEY, JSON.stringify(rec));
+    else sessionStorage.removeItem(RELOAD_COMMENT_KEY);
+  } catch { /* ignore */ }
+}
+let pendingReloadComment: ReloadComment | null = (() => {
+  try {
+    const raw = sessionStorage.getItem(RELOAD_COMMENT_KEY);
+    if (raw) sessionStorage.removeItem(RELOAD_COMMENT_KEY);   // one reload, one restore
+    return raw ? (JSON.parse(raw) as ReloadComment) : null;
+  } catch { return null; }
+})();
+function persistForReload(): void { persistScrollForReload(); persistNoticesForReload(); persistCommentForReload(); }   // the core's hook: all three records
 (window as any).__rompPersistForReload = persistForReload;
 window.addEventListener("pagehide", persistScrollForReload);
+window.addEventListener("pagehide", persistCommentForReload);   // the reader's VIEW rides the belt with their place
 
 function captureScrollAnchor(content: HTMLElement, v: View): { uuid: string; y: number } | null {
   const cTop = content.getBoundingClientRect().top;
