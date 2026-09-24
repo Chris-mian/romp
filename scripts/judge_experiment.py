@@ -960,15 +960,37 @@ def seal_pre_cut_adopt(jd, fsid, session, store, cut_t):
     return sealed
 
 
+# The planner-unit kinds a MODEL-CALL fault would silence: the excuse counts only the units THE ARM's planner plans with an
+# UNCONDITIONAL planner MODEL CALL from a sealable own-turn position. plan_units yields five phases; only these two reach
+# plan_llm unconditionally once the unit is applied (kernel/judge.py _plan_session), and are reachable by the pre-cut seal, so
+# an unplanned one in the own turn is a fault (a seal-boundary fault, a dead planner):
+#   work  an ended segment's work   -> always a planner call
+#   live  an open segment's re-plan  -> always a planner call
+# EXCLUDED (an unplanned own-turn instance is NOT a fault, so it never blocks the excuse):
+#   prompt      the OPENER judge's unit (a workless opening message) -- never a planner call.
+#   nudge       a romp Nudge on a goal: resolve-or-noop. It CAN drive a planner call (plan_llm) on a still-working goal, so it
+#               is not excluded as never-plannable; but the seal reaches only PRE-CUT units, so an OWN-TURN nudge is never
+#               sealed -- if the arm left it unplanned (its own record: no planner call), the nudge took one of the kernel's
+#               three no-call roads (no resolvable target in the store; the moot retirement when the goal is already done; the
+#               goal not open, e.g. view-cleared), never a missed call. (kernel/judge.py _plan_session nudge branch.)
+#   delegation  a peer segment filed under the COURIER's goal. The ARM runs no courier (run_arm_inprocess never plants one), and
+#               store_before drops the own turn's bare seg_id placement, so the delegation branch reads its target UNSET and
+#               `continue`s with NO planner call in EVERY arm. An unplanned own-turn delegation is thus a HARNESS LIMITATION
+#               symmetric across arms, not a fault -- delegation endings' planner behaviour is unmeasured by the experiment
+#               (named as a residual in the plan).
+_PLANNER_CALL_PHASES = ("work", "live")
+
+
 def own_turn_plannable_count(jd, fsid, session, store):
-    """The PLANNER-served units of the ending's OWN final turn (the parse's last turn), before any seal. The ground for the
+    """The planner-MODEL-CALL units of the ending's OWN final turn (the parse's last turn), before any seal. The ground for the
     corpus-unplanned excuse (manager 2026-09-24): an ending unplanned in every arm is excused ONLY when this count is zero, so
     the excuse rests on the ending's own content, not on cross-arm agreement (which cannot tell a nothing-to-plan turn from one
-    a harness fault silenced in every arm). Read from the parsed turn, NEVER the seed boundary, whose fault this catches: a seed
-    boundary at or past the cut seals the own turn's units, so a count taken AFTER the seal reads zero for a faulted ending,
-    while this count, over the last turn's own segments, still finds them. A `prompt` unit is the opener judge's (a workless
-    opening message, kernel/judge.py); it is not a planner unit, so an ending whose own turn yields only a prompt had nothing
-    for the planner and counts zero. A unit the seed store already places is not counted."""
+    a harness fault silenced in every arm). Counts only the kinds that drive a planner model call from a sealable own-turn
+    position (`_PLANNER_CALL_PHASES`: work / live); a `prompt` (opener), a `nudge` (resolve-or-noop; an own-turn nudge is never
+    sealed, so an unplanned one is one of the kernel's no-call roads, not a fault) and a `delegation` (the arm runs no courier,
+    so it never drives a planner call in any arm) are NOT counted, per the premise stated at _PLANNER_CALL_PHASES. Read from the parsed turn, NEVER the seed boundary, whose fault this catches: a seed boundary at or
+    past the cut seals the own turn's units, so a count taken AFTER the seal reads zero for a faulted ending, while this count,
+    over the last turn's own segments, still finds them. A unit the seed store already places is not counted."""
     turns = session.get("turns") or []
     if not turns:
         return 0
@@ -979,7 +1001,7 @@ def own_turn_plannable_count(jd, fsid, session, store):
     n = 0
     for u in jd.plan_units(session, store, floor=floor, lazy_text=True):
         seg_id, phase = u[0], u[1]
-        if seg_id not in last_ids or phase == "prompt":                              # not the own turn, or an opener unit: not a planner unit
+        if seg_id not in last_ids or phase not in _PLANNER_CALL_PHASES:              # not the own turn, or a kind that does not drive a planner call from a sealable position (prompt/nudge)
             continue
         if not jd._placed_key(placements, jd._unit_key(seg_id, phase), live, floor=floor):
             n += 1
