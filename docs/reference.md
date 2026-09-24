@@ -202,8 +202,9 @@ turn in flight, a compaction, or background work it dispatched — Romp confirms
 first, naming its open cards and saying that the running turn is cut off. The
 turn is interrupted and the relaunch follows at that turn's end, so the program
 is never torn down from under a live turn. Work the old process was running,
-its subagents and its background tasks, ends with it; a message you had queued
-survives and is delivered by the new one.
+its subagents and its background tasks, ends with it. A message you had queued
+survives: one the old process had already picked up runs there first, and the
+relaunch follows that turn; one still waiting is delivered by the new process.
 
 A session that is not running has nothing to restart: the row refuses and
 points at Revive, which is the same thing for a closed session. Every refusal
