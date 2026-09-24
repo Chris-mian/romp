@@ -449,13 +449,6 @@ if (fr) {
 // the choice crosses the two documents (card-sections.ts, one builder for both).
 out.content = { frame: !!fr };
 if (fr) {
-  // 6b'. A PICK ON THE ROW BEFORE THE FEED DOCUMENT IS UP (the verifier's round two): the feed pane is not shown yet, so the owner of the section
-  // choice has not hydrated; Summary pressed on the row closes it; when the feed comes up and posts its map, the row's own pick must stand and
-  // reach the card. Restored to the default afterwards so the reads below see it
-  await openNeedsBox(fr, 2);
-  const rowToggle = (label) => fr.evaluate((a) => { const r = document.querySelector(a.sel); const b = r && Array.from(r.querySelectorAll(".ntc-secs-row .fask-secbtn")).find((x) => (x.textContent || "").trim() === a.label); if (b) b.click(); return !!b; }, { sel: rowSel(cfg.g6), label });
-  const rowToggleIs = (label, pressed) => fr.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && Array.from(r.querySelectorAll(".ntc-secs-row .fask-secbtn")).find((x) => (x.textContent || "").trim() === a.label); return !!b && b.getAttribute("aria-pressed") === a.pressed; }, { sel: rowSel(cfg.g6), label, pressed }, { timeout: 10000 }).then(() => true).catch(() => false);
-  out.content.early = { pressed: await rowToggle("Summary"), closed: await rowToggleIs("Summary", "false") };
   await shell.evaluate(() => { window.__rompPaneToggle("feed", true); });
   let ff = null; for (let i = 0; i < 150 && !ff; i++) { ff = shell.frames().find((f) => /\/feed(\?|$)/.test(f.url())) || null; if (!ff) await shell.waitForTimeout(200); }   // loop-ok: bounded
   out.content.feedFrame = !!ff;
@@ -469,10 +462,6 @@ if (fr) {
     const vis = "const vis = (x) => !!x && getComputedStyle(x).display !== 'none' && x.getBoundingClientRect().height > 0;";
     out.content.cardReady = await ff.waitForFunction((s) => { const c = document.querySelector(s); if (!c) return false; const vis = (x) => !!x && getComputedStyle(x).display !== "none" && x.getBoundingClientRect().height > 0;
       const b = Array.from(c.querySelectorAll(".fask-row3 > .fask-secbtn")).find((x) => (x.textContent || "").trim() === "Background"); return vis(b) && vis(c.querySelector(".fask-row2 .fask-origin")); }, cardSel, { timeout: 60000 }).then(() => true).catch(() => false);   // the card wears the Background toggle and the origin badge once the build reaches the feed page
-    // the early pick's fate: the card, up now with the owner's map posted, shows Summary closed (the row's pick reached it) and the row still holds it
-    out.content.early.cardClosed = await ff.waitForFunction((s) => { const c = document.querySelector(s); const b = c && Array.from(c.querySelectorAll(".fask-row3 > .fask-secbtn")).find((x) => (x.textContent || "").trim() === "Summary"); return !!b && b.getAttribute("aria-pressed") === "false"; }, cardSel, { timeout: 15000 }).then(() => true).catch(() => false);
-    out.content.early.rowStillClosed = await fr.evaluate((s) => { const r = document.querySelector(s); const b = r && Array.from(r.querySelectorAll(".ntc-secs-row .fask-secbtn")).find((x) => (x.textContent || "").trim() === "Summary"); return b ? b.getAttribute("aria-pressed") : null; }, rowSel(cfg.g6));
-    out.content.early.restored = await rowToggle("Summary"); out.content.early.cardRestored = await ff.waitForFunction((s) => { const c = document.querySelector(s); const b = c && Array.from(c.querySelectorAll(".fask-row3 > .fask-secbtn")).find((x) => (x.textContent || "").trim() === "Summary"); return !!b && b.getAttribute("aria-pressed") === "true"; }, cardSel, { timeout: 15000 }).then(() => true).catch(() => false);   // back to the default for the reads below
     const readCard = () => ff.evaluate((s) => { const c = document.querySelector(s); if (!c) return null; const vis = (x) => !!x && getComputedStyle(x).display !== "none" && x.getBoundingClientRect().height > 0;
       const t = c.querySelector(".fcard-title"); const d = c.querySelector(".fask-secs > .fask-distill");
       return { title: t ? (t.textContent || "").trim() : null, distill: d ? (d.textContent || "").trim() : null,
@@ -499,6 +488,19 @@ if (fr) {
     out.content.cardAfterRowPress = await readCard(); out.content.rowAfterRowPress = await readRow();
     out.content.cardPressSummary = await pressCard("Summary"); out.content.rowFollowed = await rowPressed("Summary");
     out.content.cardAfterCardPress = await readCard(); out.content.rowAfterCardPress = await readRow();
+    // 6h. A PICK WITH NO FEED DOCUMENT UP (the round-three verdict: the shell loads the feed document at boot, so a pick made before the feed PANE is
+    // shown reaches a live owner and proves nothing; here the premise is real): the feed's frame is navigated away, Background is picked on the row
+    // with nobody to hear it, and the feed document comes back: it hydrates its persisted map, which knows nothing of the pick, and posts it; the
+    // row keeps its own pick over that map and re-posts it, so the card comes up showing Background. Back to the default afterwards
+    const feedUrl = ff.url();
+    await ff.goto("about:blank").catch(() => {});
+    out.content.noOwner = { blank: /about:blank/.test(ff.url()) };
+    out.content.noOwner.pressed = await pressRow("Background"); out.content.noOwner.rowPressed = await rowPressed("Background");
+    await ff.goto(feedUrl).catch(() => {});
+    out.content.noOwner.cardUp = await ff.waitForSelector(cardSel, { timeout: 60000 }).then(() => true).catch(() => false);
+    out.content.noOwner.cardFollowed = await cardPressed("Background");
+    out.content.noOwner.rowStill = await fr.evaluate((s) => { const r = document.querySelector(s); const b = r && Array.from(r.querySelectorAll(".ntc-secs-row .fask-secbtn")).find((x) => (x.textContent || "").trim() === "Background"); return b ? b.getAttribute("aria-pressed") : null; }, rowSel(cfg.g6));
+    await pressCard("Summary"); await rowPressed("Summary");
     // 6f. A PICK RE-RUNS THE ROW'S MORE PASS, AND THE ITEMS LEVEL SHOWS THE CLAMPED LINE WHATEVER THE PICK (round three of the box content PR, a
     // contributor's review): no store write between a press and its read (a write repaints the row and would hide the defect). Background pressed on
     // the row hides its line and takes its More with it; Summary pressed back brings the clipped line and its More; at the items level a Background
@@ -569,7 +571,7 @@ await browser.close();
 """
 
 
-# the driver's budget. Its bounded waits sum to about 2700 s serially (every helper counted PER CALL, the round-one verifier of PR 2105: the
+# the driver's budget. Its bounded waits sum to about 2800 s serially (every helper counted PER CALL, the round-one verifier of PR 2105: the
 # kernel's four 90 s deadlines, the 60 s row, card and credential-row waits, the 30 s and 15 s waits of the brief helpers per call, the fold
 # helper's three 5 s waits per call, the shorter button, dialog, level, settings-card and frame waits, the frame loops), more than any per-test ceiling the runner gives (CI's served-page step runs pytest with --timeout=600, thread method), so
 # the cap cannot be the sum: it is the ceiling less the SETUP the same per-test timer wraps (pytest-timeout's thread method times the first
@@ -1017,15 +1019,17 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertTrue(c.get("cardReady"), "the card wears the Background toggle and the origin badge once the build reaches the feed page: %r (kernel: %s)" % (c.get("cardL1"), self._kernel_tail()))
         return c   # the row's own repaint is each test's pin, not a premise here: a page before the round reds each test on its own line
 
-    def test_a_pick_on_the_row_before_the_feed_is_up_stands_when_the_feed_hydrates(self):
-        """The verifier's round two: a pick made on the row before the feed document came up was discarded when the feed hydrated and posted its
-        map. A follower keeps its own picks over a received map and re-posts them, so the owner persists them: Summary closed on the row before
-        the feed pane is shown, then the feed comes up and its card shows Summary closed too."""
-        c = self._content(); e = c.get("early") or {}
-        self.assertTrue(e.get("pressed") and e.get("closed"), "Summary pressed on the row before the feed pane was shown, and closed: %r" % e)
-        self.assertTrue(e.get("cardClosed"), "the card, up after the pick, shows Summary closed: the row's pick stood over the owner's map and reached it (before: the map overwrote it): %r" % e)
-        self.assertEqual(e.get("rowStillClosed"), "false", "and the row still holds its pick: %r" % e)
-        self.assertTrue(e.get("restored") and e.get("cardRestored"), "restored to the default for the scenes after: %r" % e)
+    def test_a_pick_made_on_the_row_while_no_feed_document_is_up_stands_when_one_comes_up(self):
+        """The verifier's round two, with the premise made real in round four (the shell loads the feed document at boot, so a pick before the feed
+        pane is shown reaches a live owner): the feed's frame is navigated away, Background is picked on the row with nobody to hear it, and the
+        feed document comes back and posts the map it hydrated, which knows nothing of the pick. A follower keeps its own picks over a received
+        map and re-posts them, so the card comes up showing Background (before: the map overwrote the row's pick)."""
+        c = self._content(); e = c.get("noOwner") or {}
+        self.assertTrue(e.get("blank"), "the feed document is down while the row picks: %r" % e)
+        self.assertTrue(e.get("pressed") and e.get("rowPressed"), "Background pressed on the row with no owner up: %r" % e)
+        self.assertTrue(e.get("cardUp"), "the feed document back with the card: %r" % e)
+        self.assertTrue(e.get("cardFollowed"), "the card shows Background: the row's own pick stood over the hydrated map and reached the owner (before: the map overwrote it): %r" % e)
+        self.assertEqual(e.get("rowStill"), "true", "and the row still holds it: %r" % e)
 
     def test_the_row_at_the_items_level_shows_the_card_at_a_glance(self):
         """The user 2026-09-23, from a screenshot: a row at the items level showed its title and two buttons alone, while the feed card carried a

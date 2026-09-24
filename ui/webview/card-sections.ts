@@ -146,10 +146,11 @@ export function toggleTreeBranch(key: string, itemId: string): void {
   reapplyHosts(itemId);
 }
 /** THE BUILDER'S CLICKS, DELEGATED (ui/CLAUDE.md, click-safe controls; round three of the box content PR): the badges, the line and its
- *  paragraphs, the awaited peers, the sub-goal triangles and a sub-goal's text are rebuilt on every apply, so a repaint between mousedown and
- *  mouseup would drop a handler set on the node itself. They carry data-act instead, and each page installs this map on a stable root through
- *  actions.ts delegate: the feed on each card (installed before the card's own open-modal click, so the act's stopImmediatePropagation keeps
- *  the modal shut), the chat page on #notices. `hostOf` finds the host element (the card or the row) whose remembered item the act reads. */
+ *  paragraphs, the awaited peers, the sub-goal triangles and a sub-goal's text are rebuilt on every apply, so instead of a handler on each
+ *  rebuilt node they carry data-act, and each page installs this map ONCE on a stable root through actions.ts delegate (one binding that the
+ *  rebuilds never touch, with the repository's press pulse on the control): the feed on each card (installed before the card's own open-modal
+ *  click, so the act's stopImmediatePropagation keeps the modal shut), the chat page on #notices. `hostOf` finds the host element (the card or
+ *  the row) whose remembered item the act reads. */
 export function sectionActs(env: SectionEnv, hostOf: (el: HTMLElement) => HTMLElement | null): Record<string, (el: HTMLElement, ev: Event) => void> {
   const item = (el: HTMLElement) => { const h = hostOf(el) as any; return h && h._it ? { host: h as HTMLElement, it: h._it as SectionItem & BadgeItem } : null; };
   return {

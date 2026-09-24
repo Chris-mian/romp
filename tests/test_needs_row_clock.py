@@ -14,7 +14,8 @@ from unittest import mock
 
 from romp_load import load_source
 
-os.environ.setdefault("ROMP_STATE_DIR", tempfile.mkdtemp(prefix="romp-needs-row-clock-"))
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp(prefix="romp-needs-row-clock-")   # the hermetic preamble (tests/test_state_isolation_order.py): before the first romp load
+os.environ.pop("ROMP_STATE_DIR", None)                                          # a live kernel exports it to its sessions, and it outranks the XDG floor
 km = load_source("romp_kernel_needs_row_clock", os.path.join(os.path.dirname(__file__), "..", "kernel", "kernel.py"))
 jd = km.jd
 

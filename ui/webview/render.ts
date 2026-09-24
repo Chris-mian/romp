@@ -21471,7 +21471,7 @@ setupSettings();
     "ntc-cont": (el) => { const p = item(el); if (!p || !activeId) return; vscodeApi?.postMessage({ type: "askFollowUp", itemId: p[1].itemId, sid: activeId, cont: true }); latch(p[0], el as HTMLButtonElement); },
     "ntc-clear": (el) => { const p = item(el); if (!p || !activeId) return; vscodeApi?.postMessage({ type: "askClear", itemId: p[1].itemId, sid: activeId }); latch(p[0], el as HTMLButtonElement); },
     "ntc-fix": () => openSettingsOn("general"),   // the Billing block sits at the top of the General tab; the row stays until the judges' next call succeeds and the card leaves the column
-    ...sectionActs(noticeSectionEnv, (el) => el.closest(".ntc-row") as HTMLElement | null),   // the shared builder's clicks (the badges, the line and its paragraphs, the awaited peers, the sub-goal triangles and texts), delegated here: the rows' nodes are rebuilt on every frame
+    ...sectionActs(noticeSectionEnv, (el) => el.closest(".ntc-row") as HTMLElement | null),   // the shared builder's clicks (the badges, the line and its paragraphs, the awaited peers, the sub-goal triangles and texts): one binding on this stable root, since the rows' nodes are rebuilt on every frame (ui/CLAUDE.md)
   });
 })();
 // Background-task rows toggle open/closed — delegated to the stable #bg-tasks container (installed once),

@@ -1563,9 +1563,9 @@ function makeAskCard(it: AskItem): HTMLElement {
   });
   // card BODY single click → open the modal; double click → pin/unpin (locks the
   // journey in place; hovering others still previews, leave returns to the pin).
-  // the shared builder's clicks (the badges, the line and its paragraphs, the awaited peers, the sub-goal triangles), delegated on the card,
-  // the stable root above nodes rebuilt on every update (ui/CLAUDE.md, click-safe controls), installed BEFORE the card's own click below so
-  // an act's stopImmediatePropagation keeps the modal shut (round three of the box content PR)
+  // the shared builder's clicks (the badges, the line and its paragraphs, the awaited peers, the sub-goal triangles): one binding on the card,
+  // the stable root above nodes rebuilt on every update (ui/CLAUDE.md, click-safe controls; these controls wear the repository's press pulse
+  // now), installed BEFORE the card's own click below so an act's stopImmediatePropagation keeps the modal shut (round three of the box content PR)
   delegate(card, sectionActs(sectionEnv, () => card));
   // Debounced ~220ms so a double never opens the modal first.
   let pending: number | undefined;
