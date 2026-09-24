@@ -39236,7 +39236,7 @@ def _sendvis_diag(sid):
                              "echo": (a.get("_echo_text") or "")[:120] or None,
                              # flagged never delivered: overtaken, refused, past the age line, or held by a CLI that died
                              "dropped": bool(a.get("dropped")) if sdk_flags else None,
-                             "dropReason": next((f for f in SENDVIS_DROP_REASONS if a.get(f)), None),
+                             "dropReason": next((f for f in SENDVIS_DROP_REASONS if a.get(f)), None) if sdk_flags else None,
                              # the boot or spawn scan found its record; a landing inside a running session reads False
                              "landed": bool(a.get("_landed")) if sdk_flags else None,
                              "command": a.get("command") or None}

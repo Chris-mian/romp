@@ -87,7 +87,7 @@ class SendVisDiag(unittest.TestCase):
         finally:
             km._codex = saved
         self.assertEqual(out["backend"], "codex")
-        self.assertEqual({(a["dropped"], a["landed"]) for a in out["liveAtoms"]}, {(None, None)})
+        self.assertEqual({(a["dropped"], a["dropReason"], a["landed"]) for a in out["liveAtoms"]}, {(None, None, None)})
 
     def test_route_is_wired_and_read_only(self):
         src = open(os.path.join(BIN, "romp-kernel")).read()
@@ -101,6 +101,8 @@ class SendVisOverARealBackend(unittest.TestCase):
     def setUp(self):
         self.state = tempfile.mkdtemp()
         os.makedirs(os.path.join(self.state, "sdk"))
+        with open(os.path.join(self.state, "session-hosts"), "w") as f:
+            f.write("off")                                # never start a real session host from this root
         os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(self.state, "claude")
         self.cwd = os.path.join(self.state, "proj")
         os.makedirs(self.cwd, exist_ok=True)
@@ -117,7 +119,8 @@ class SendVisOverARealBackend(unittest.TestCase):
         echoes = [{"t": 123, "text": "landed before the restart", "author": "human", "uuid": "echo:" + "a" * 32,
                    "landed": True},
                   {"t": 124, "text": "refused at the gate", "author": "human", "uuid": "echo:" + "b" * 32,
-                   "dropped": True, "refused": True}]
+                   "dropped": True, "refused": True},
+                  {"t": 125, "text": "past the age line", "author": "human", "uuid": "echo:" + "c" * 32}]
         sb.write_reg(self.state, SID, {"sid": SID, "name": "web", "mode": "acceptEdits", "alive": True, "cwd": self.cwd,
                                        "lastSid": SID, "queue": [], "echoes": echoes})
         be = sb.SdkBackend(self.state, "/bin/true", lambda *a, **k: None)
@@ -126,7 +129,8 @@ class SendVisOverARealBackend(unittest.TestCase):
         self.assertEqual(out["backend"], "sdk")
         rows = {a["echo"]: (a["dropped"], a["dropReason"], a["landed"]) for a in out["liveAtoms"] if a["echo"]}
         self.assertEqual(rows, {"landed before the restart": (False, None, True),
-                                "refused at the gate": (True, "refused", False)})
+                                "refused at the gate": (True, "refused", False),
+                                "past the age line": (True, "stale", False)})
 
 
 if __name__ == "__main__":
