@@ -86,7 +86,9 @@ test("the kernel answers the op off the request thread, advertises it, and never
     "off the recv loop, as the revive beside it");
   assert.match(KERNEL, /KERNEL_WS_CAPS = \([^)]*"restartSession"[^)]*\)/, "advertised, so an older kernel's unknownOp is the degrade path");
   const door = KERNEL.slice(KERNEL.indexOf("def _restart_session("), KERNEL.indexOf("# ───────────────────── the unowned route"));
-  assert.match(door, /Sessions\.backend_for\(sid\)\.relaunch\(sid\)/, "the owning backend does the work; nothing here duplicates the revive's resume");
+  assert.match(door, /be = Sessions\.backend_for\(sid\)/, "the owning backend does the work; nothing here duplicates the revive's resume");
+  assert.match(door, /be\.relaunch\(sid\) if hasattr\(be, "relaunch"\) else sb\.SessionBackend\.relaunch\(be, sid\)/,
+    "a backend with no relaunch (Codex) answers the base refusal, never an AttributeError (2026-09-24)");
   for (const forbidden of ["_record_death", "_kill_at_end_door", '"closed"', "_reveal_chat_for"])
     assert.ok(!door.includes(forbidden), "the restart door never " + forbidden + "s: the session stays live and the focus stays where the user put it");
 });

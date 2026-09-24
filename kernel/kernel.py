@@ -21691,7 +21691,11 @@ def _restart_session(sid, client=None):
                   "that means the pane addressed the wrong kernel" % sid)
     else:
         try:
-            detail = Sessions.backend_for(sid).relaunch(sid)
+            be = Sessions.backend_for(sid)
+            # a backend with no relaunch primitive answers the base refusal, never an AttributeError: CodexBackend
+            # duck-types the interface without subclassing SessionBackend, so it inherits nothing (the review of
+            # #2059, 2026-09-24; the move door's hasattr guard)
+            detail = be.relaunch(sid) if hasattr(be, "relaunch") else sb.SessionBackend.relaunch(be, sid)
         except Exception as e:
             detail = str(e)[:200]
     if detail:
