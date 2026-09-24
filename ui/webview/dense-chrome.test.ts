@@ -118,7 +118,7 @@ test("the dense rules exist under the class, with these exact values", () => {
   assert.match(denseRule(".bg-sum"), /font-size: 11px;/);
   assert.match(denseRule(".bg-since"), /font-size: 10px;/);
   const badge = denseRule(".tab-badge");
-  assert.match(badge, /top: 2px;/); assert.match(badge, /right: 2px;/);
+  assert.match(badge, /top: 1px;/); assert.match(badge, /right: 1px;/);   // dense inset back to 1px (2026-09-24), PR 2023's measured reason (the hover-lifted close glyph overpaints less of the digits)
   const badgeFull = denseRule(".tab-badge:not(:empty)");
   assert.match(badgeFull, /min-width: 12px;/); assert.match(badgeFull, /height: 12px;/); assert.match(badgeFull, /border-radius: 6px;/);
 });

@@ -3556,10 +3556,9 @@ the viewer on the heading the viewer gave that id.
 
 The comments frame follows the same own-slot model. The `{type: "comments"}` frame carries a
 thread's anchorUuid, which the chat page joins with the anchored reply turn (`data-uuid`) to draw
-the reply's mark, and it reaches a page on four roads: the pusher's full cycle, the targeted
-per-session push (`_push_session_now`, so a mark lands with its turn when a page connects before
-the session is built), the create handler's direct send when a comment is written, and the ready
-reset's re-send once a reconnecting page's listeners are up.
+the reply's mark, and it reaches a page on three roads: the pusher's full cycle, the create
+handler's direct send when a comment is written, and the ready reset's re-send once a reconnecting
+page's listeners are up.
 
 The chat page compiles one matcher per index (`glossary-links.ts`): every form
 (the term, its aliases, and their plurals by the everyday rule; nothing shorter
@@ -5052,9 +5051,11 @@ session keeps its gold dot at the left. The count follows the feed, one refresh 
 and goes when the card does: answer it, resolve it or clear it and the tab is plain again. A session
 **retrying** an API error on its own shows a hollow **amber left dot**, a ring around the dot's slot
 whose distinct shape tells it from the filled working gold and awaiting green without relying on
-colour. Blocked outranks Needs you, and Needs you outranks retrying. The three rings are rows of **Settings**, **Chat**, **Tab widgets**
-(**Blocked**, **Needs you**, **Retrying**), each with its own switch, listed in that order because
-a tab wears one cue at a time and the first that applies wins: Blocked over Needs you over retrying. A
+colour. Blocked outranks Needs you, and Needs you outranks retrying. With the badge off a tab wears the one outline ring the
+first applying state gives it; with the state badge on (the default), the Needs-you count dot also shows beside Blocked's red
+ring and beside the retrying amber dot, so a session that needs you stands out even while it is blocked or retrying. The three
+rings are rows of **Settings**, **Chat**, **Tab widgets** (**Blocked**, **Needs you**, **Retrying**), each with its own switch,
+listed in that precedence order: Blocked over Needs you over retrying. A
 cue switched off leaves the tab with its dot; the small dot on a folded group's header and the
 phone's picker follow the same switches. With notifications on, the card entering Needs you is
 also what notifies you (see [Notifications on your phone](guide.md#notifications-on-your-phone)):

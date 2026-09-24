@@ -513,7 +513,7 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
    meaning). Not the header's own status: the header wears no state class. */
 .tab-group-pip { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--st-working-bg); }
 .tab-group-pip.blocked { background: var(--st-blocked-bg); }
-.tab-group-pip.retrying { background: var(--st-retrying-bg); }
+.tab-group-pip.retrying { background: transparent; box-shadow: inset 0 0 0 1.5px var(--st-retrying-bg); }   /* HOLLOW amber ring (2026-09-24): the same shape cue as the tab dot and the overview pip, so retrying reads apart from the filled working gold header pip under a red-green deficiency (theme-parity.test.ts) */
 .tab-group-pip.ask { background: var(--st-needs-bg); }   /* the Needs you magenta: a hidden member has a card that needs you (plans/needs-you.md) */
 /* ONE GROUP PER LINE (T264, the user 2026-09-08: the grouped strip read as one long concatenation).
    A break is a zero-height flex item spanning the whole row, so the item after it — a group's header,
@@ -638,14 +638,20 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
 .tab-badge:not(:empty) { width: auto; min-width: 14px; height: 14px; border-radius: 7px; padding: 0 3px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; color: #000; font-weight: 700; font-size: 9px; line-height: 1; }
 /* the digit is 9px bold TEXT, so the 4.5:1 floor: black clears on the dark magenta (~6.07:1); on the lighter light-theme magenta (#a21caf) black is 3.32:1, short, so the state's own light-theme foreground (white) rides there (~6.32:1). The user chose black in dark; theme-parity.test.ts pins 4.5:1 in BOTH themes (plans/tab-state-badge.md). */
 body.theme-light .tab-badge:not(:empty) { color: var(--st-needs-fg); }
-/* WIDEN FOR A KEYCAP UNDER THE BADGE (the user 2026-09-23, who wanted the tab widened when the keycap shows): a tab
-   carrying BOTH the hot-key keycap (.tab-key, a right-end in-flow flex item) AND a non-empty count badge (the absolute
-   top-right corner above) would let the badge overpaint the run's right end. Reserve the badge's box at the right so the
-   whole in-flow run (the gauge, the keycap, the ✕) sits LEFT of it: 3px inset + the 14px min-width box + a 4px gap
-   (the tab's own gap) = 21px of right padding, over the tab's 7px. Fires ONLY with a keycap present, so a plain badge
-   tab is unchanged; the badge stays anchored to the padding box, so its corner does not move. Pinned by
-   test_tab_badge_browser.py (the keycap and the ✕ stay left of the badge box). */
-.tab:has(.tab-key):has(.tab-badge:not(:empty)) { padding-right: 21px; }
+/* WIDEN FOR A KEYCAP UNDER THE BADGE (the user 2026-09-23, who wanted the tab widened when the keycap shows; the
+   keycap-width fix 2026-09-24): a tab carrying the hot-key keycap (.tab-key, a right-end in-flow flex item) would let
+   the top-right count badge overpaint the run's right end. Reserve the badge's box at the right so the whole in-flow run
+   (the gauge, the keycap, the ✕) sits LEFT of it: 3px inset + the 14px min-width box + a 4px gap (the tab's own gap) =
+   21px of right padding, over the tab's 7px. The reserve is on the KEYCAP ALONE, NOT gated on a non-empty badge: it fires
+   under the strip-level .badge-keycap-room class, which the strip carries only in badge mode with the Needs-you widget on
+   (render.ts renderTabs, following applyTabBadgeMode's own gate). So a keycap tab's width changes ONLY on a user action
+   (assigning a hot key, switching the mode or the widget), NEVER as a Needs-you count appears or clears: a tab's width
+   must not change with its state (T262g), or the strip's row count flaps at a wrap boundary and the transcript slides
+   under the reader. Ring mode and the widget off carry NO reserved room, so the pre-badge strip stays the lab's reference.
+   The badge stays anchored to the padding box, so its corner does not move. Pinned by test_tab_badge_browser.py (the
+   keycap and the ✕ stay left of the badge box; a count flip on a keycap tab moves nothing; ring mode and the widget off
+   read the bare 7px). */
+#tabs.badge-keycap-room .tab:has(.tab-key) { padding-right: 21px; }
 /* the slot with no dot to show (idle, blocked, closed…): laid out, invisible — a tab's width must not change with its
    state, or the strip's row count flaps at a wrap boundary and the transcript slides under the reader (T262g, 2026-09-08) */
 .tab-dot.none { visibility: hidden; }
@@ -1563,7 +1569,7 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .snap-pip.working { background: var(--st-working-bg); }
 .snap-pip.blocked { background: var(--st-blocked-bg); }
 .snap-pip.awaiting { background: var(--st-awaiting-bg); }
-.snap-pip.retrying { background: var(--st-retrying-bg); }
+.snap-pip.retrying { background: transparent; box-shadow: inset 0 0 0 1.5px var(--st-retrying-bg); }   /* HOLLOW amber ring (2026-09-24): a distinct SHAPE tells retrying from the filled working gold / awaiting green / waiting green pips, whose amber cannot clear the red-green deficiency floor by colour alone (the tab dot's shape cue extended to this overview pip; theme-parity.test.ts) */
 .snap-pip.compacting { background: var(--st-compacting-bg); }
 .snap-pip.waiting { background: var(--st-awaitbg-bg); }
 .snap-pip.unknown { box-shadow: inset 0 0 0 1.5px var(--dim); }
@@ -4683,13 +4689,15 @@ body.filebrowse-open { overflow: hidden; }
    (kernel.py _CHAT_MOBILE_CSS) the bar holds the session picker, not the strip, so on a phone only the panel
    tightens. */
 body.dense-chrome .tab { gap: 3px; padding: 3px 5px; font-size: 0.86em; }              /* 4px; 6px 7px; 0.92em */
-/* the Needs-you count pill on a dense ~25px tab sits a hair smaller and higher into the corner, so the hover-lifted
-   close glyph (z 4, above the badge) overpaints less of the digits (the second contributor on PR 2017, 2026-09-22). */
-body.dense-chrome .tab-badge { top: 2px; right: 2px; }                                 /* 3px; 3px */
+/* the Needs-you count pill on a dense ~25px tab sits a hair smaller and tucked to the very corner (1px inset), so the
+   hover-lifted close glyph (z 4, above the badge) overpaints less of the digits: about 7% of the digit ink on a dense
+   "12" at 1px against about 11% at 2px (PR 2023's measured reason; the 2px of 2026-09-22 partly undid it, restored 2026-09-24). */
+body.dense-chrome .tab-badge { top: 1px; right: 1px; }                                 /* 3px; 3px */
 body.dense-chrome .tab-badge:not(:empty) { min-width: 12px; height: 12px; border-radius: 6px; }   /* 14px; 14px; 7px */
-/* the keycap-widen (above) in dense chrome: the dense badge box is smaller (2px inset + 12px min-width) and the dense gap
-   is 3px, so 17px of right padding over the dense tab's 5px keeps the run left of the badge (the user 2026-09-23) */
-body.dense-chrome .tab:has(.tab-key):has(.tab-badge:not(:empty)) { padding-right: 17px; }
+/* the keycap-widen (above) in dense chrome, under the same strip-level .badge-keycap-room gate, on the keycap alone: 17px
+   of right padding over the dense tab's 5px keeps the run left of the dense badge box (a 12px min-width box a 1px inset
+   from the right, cleared with the 3px gap and a pixel to spare) (the user 2026-09-23) */
+body.dense-chrome #tabs.badge-keycap-room .tab:has(.tab-key) { padding-right: 17px; }
 /* a federated tab's host prefix is a 0.86em child of the label (host-prefix.ts hostNameNodes), so under the 0.86em tab
    it would compound to 9.6px (0.86 x 0.86 x 13), under the 10px floor; 0.92em (on the ladder) puts it back at the
    default's rendered 10.3px. The tab's other em child, .tab-close at 1.1em, stays above the floor on its own. */

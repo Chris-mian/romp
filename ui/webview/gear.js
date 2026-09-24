@@ -264,7 +264,7 @@ var GEAR_HTML =
   // THE RINGS (the rings-as-widgets change, 2026-09-14): the three dashed rings a tab can wear are widgets too, each with
   // its own switch, listed as their own group under the title's rows and their preview (the preview box lands between
   // the two hosts at build). No grip: their order is the precedence, red over magenta over amber, and is the registry's
-  '<div class=rs-hint>One cue at a time on the tab: the first state that applies wins, in this order.</div>' +
+  '<div class=rs-hint>With the outline ring, one cue at a time: the first state that applies wins, in this order. With the state badge on, the Needs-you count also shows beside Blocked and retrying.</div>' +
   '<div id=rs-rings class=rs-widgets></div>' +
   // STATUS LINE (T409, the user 2026-09-13): the items the line above the composer carries besides its fixed parts, one
   // row per registered widget (status-widgets.ts); the rows are the whole entry point (the user: no gear on the line,

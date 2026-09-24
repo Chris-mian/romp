@@ -126,7 +126,7 @@ for (const t of themes) { await setTheme(page, t); await page.waitForTimeout(100
 
 // ── (the user 2026-09-23, who wanted the badge a pixel lower and further from the edge) the count badge's inset from the
 //    tab's TOP and RIGHT edges, read in DENSE chrome too (a body class, dense-chrome.ts applyDenseChrome), so the dense
-//    2px inset is pinned beside the normal 3px. The desktop context carries no keycap, so this is the clean corner
+//    1px inset (restored 2026-09-24) is pinned beside the normal 3px. The desktop context carries no keycap, so this is the clean corner
 //    geometry; the class is pure CSS, toggled on the open page, then restored before the geometry reads below. ──
 out.badgeDense = {};
 for (const t of themes) { await setTheme(page, t); await page.evaluate(() => document.body.classList.add("dense-chrome")); await page.waitForTimeout(150); out.badgeDense[t] = await readBadge(page); }
@@ -139,7 +139,7 @@ const geomOn = await page.evaluate(geomEval, cfg.one);
 // ── RING mode (badge off), a chosen-off browser (byte-identical to the pre-badge strip): a SEPARATE context with its own localStorage, so no reload can
 //    fight the init script. Same viewport and sessions, so the tab layout is comparable for "nothing moved". ──
 const ctxOff = await browser.newContext({ viewport: { width: 1400, height: 900 } });
-await ctxOff.addInitScript(RING);   // explicit false: pins ring mode even after the default flips to badge later
+await ctxOff.addInitScript(RING);   // explicit false: a chosen-off browser keeps ring mode under the badge default (since 2026-09-23)
 const off = await ctxOff.newPage(); off.on("pageerror", (e) => errors.push("ring: " + String(e).slice(0, 200)));
 await off.goto(cfg.chat);
 await off.waitForFunction((id) => { const t = document.querySelector('#tabs .tab[data-id="' + id + '"]'); return !!t && t.classList.contains("ring-waiting-on-you"); }, cfg.one, { timeout: 60000 }).catch(async () => {
@@ -159,7 +159,7 @@ for (const t of themes) { await setTheme(off, t); await off.waitForTimeout(150);
 //    (romp:tabkeys names the sid so tabHotkey looks it up; romp:keys carries the chord override effectiveChord reads)
 //    plus badge mode, and reads the keycap and badge rects in both themes and both chromes (normal + dense-chrome). ──
 out.hotkey = { normal: {}, dense: {} };
-const HKIDS = [cfg.one, cfg.many, cfg.over];
+const HKIDS = [cfg.one, cfg.many, cfg.over, cfg.calm];   // + the idle `calm` tab: a keycap tab with NO count, for the no-count-side padding (the keycap-width fix)
 const hkCtx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
 await hkCtx.addInitScript((ids) => {
   try {
@@ -268,8 +268,8 @@ async function openGear(seed) {
     const rows = {};
     for (const r of document.querySelectorAll("#rs-rings .rs-widget[data-widget]")) {
       const demo = r.querySelector(".rs-widget-demo .tab"); if (!demo) continue;
-      const cs = getComputedStyle(demo); const badge = demo.querySelector(".tab-badge"); const dot = demo.querySelector(".tab-dot.retrying");
-      rows[r.dataset.widget] = { cls: demo.className, tab: R(demo), outlineStyle: cs.outlineStyle, outlineColor: cs.outlineColor,
+      const cs = getComputedStyle(demo); const badge = demo.querySelector(".tab-badge"); const dot = demo.querySelector(".tab-dot.retrying"); const key = demo.querySelector(".tab-key");
+      rows[r.dataset.widget] = { cls: demo.className, tab: R(demo), outlineStyle: cs.outlineStyle, outlineColor: cs.outlineColor, key: key ? R(key) : null,
         badge: badge ? { bg: getComputedStyle(badge).backgroundColor, position: getComputedStyle(badge).position, rect: R(badge), text: badge.textContent } : null,
         dot: dot ? { bg: getComputedStyle(dot).backgroundColor, shadow: getComputedStyle(dot).boxShadow, visibility: getComputedStyle(dot).visibility } : null };
     }
@@ -295,6 +295,66 @@ out.live.added = await liveBadge();
 fs.writeFileSync(cfg.oneGoalPath, cfg.oneStore1);   // clear it -> count 2 to 1
 await page.waitForFunction((id) => { const b = document.querySelector('#tabs .tab[data-id="' + id + '"] .tab-badge'); return !!b && b.textContent === "1"; }, cfg.one, { timeout: 40000 }).catch(() => errors.push("live: the badge never dropped back to 1 after the card cleared"));
 out.live.cleared = await liveBadge();
+
+// ── the keycap-widen GATE (the keycap-width fix 2026-09-24, T262g): the reserve sits on the keycap ALONE under a
+//    strip-level class (#tabs.badge-keycap-room) the strip carries ONLY in badge mode with the Needs-you widget on. So a
+//    keycap tab's right padding is the reserved 21px (17px dense) in badge mode WHETHER OR NOT a count shows (the idle
+//    `calm` keycap tab equals the counted `one`), and the bare 7px (5px dense) in ring mode AND with the Needs-you widget
+//    off (no reserved room, the pre-badge strip). `calm` (no count) in badge mode is the red-first case: 7px/5px at the
+//    base, where the reserve was gated on the non-empty badge, so a keycap tab's width flipped as a count appeared. ──
+out.gate = {};
+const readPad = (p, id) => p.evaluate((id) => { const t = document.querySelector('#tabs .tab[data-id="' + id + '"]'); const bar = document.getElementById("tabs");
+  return { pad: t ? getComputedStyle(t).paddingRight : null, room: bar ? bar.classList.contains("badge-keycap-room") : null,
+           key: !!(t && t.querySelector(".tab-key")), badge: !!(t && t.querySelector(".tab-badge:not(:empty)")) }; }, id);
+const GATE_TABKEYS = JSON.stringify({ [cfg.one]: true, [cfg.calm]: true });
+const GATE_KEYS = JSON.stringify({ ["session.hotkey." + cfg.one]: "Ctrl+Shift+1", ["session.hotkey." + cfg.calm]: "Ctrl+Shift+2" });
+for (const [label, sset] of [["badge", { tabStateBadge: true }], ["ring", { tabStateBadge: false }], ["widgetOff", { tabStateBadge: true, tabWidgets: { on: { "ring-waiting-on-you": false } } }]]) {
+  const gc = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+  await gc.addInitScript((a) => { try {
+    localStorage.setItem("romp:settings", JSON.stringify(a.sset));
+    localStorage.setItem("romp:tabkeys", a.tabkeys);
+    localStorage.setItem("romp:keys", a.keys);
+  } catch (e) {} }, { sset, tabkeys: GATE_TABKEYS, keys: GATE_KEYS });
+  const gp = await gc.newPage(); gp.on("pageerror", (e) => errors.push("gate/" + label + ": " + String(e).slice(0, 200)));
+  await gp.goto(cfg.chat);
+  await gp.waitForSelector('#tabs .tab[data-id="' + cfg.calm + '"] .tab-key', { timeout: 60000 }).catch(() => errors.push("gate/" + label + ": no keycap on the idle tab"));
+  out.gate[label] = {};
+  for (const t of themes) { await setTheme(gp, t);
+    await gp.evaluate(() => document.body.classList.remove("dense-chrome")); await gp.waitForTimeout(120);
+    out.gate[label][t] = { normal: { one: await readPad(gp, cfg.one), calm: await readPad(gp, cfg.calm) } };
+    await gp.evaluate(() => document.body.classList.add("dense-chrome")); await gp.waitForTimeout(120);
+    out.gate[label][t].dense = { one: await readPad(gp, cfg.one), calm: await readPad(gp, cfg.calm) };
+  }
+  await gc.close();
+}
+
+// ── nothing moves when a keycap tab's count flips (the keycap-width fix 2026-09-24, T262g): at a narrow, wrapping
+//    viewport a keycap tab in badge mode keeps its width AND #tabbar's height when its Needs-you count clears, because the
+//    reserve is on the keycap, not the count. RED at this PR's base, where the reserve was gated on the non-empty badge,
+//    so the tab's width flipped (21px->7px) as the count cleared and the strip's row count flapped. Own context: badge
+//    default + a hot key on `one`; read (tab width, strip height) with the count, clear the count (an empty goal store),
+//    read again; restore the store (this is the LAST context, so the default page's live legs above are untouched). ──
+out.wrapFlip = {};
+const wrapCtx = await browser.newContext({ viewport: { width: 360, height: 900 } });
+await wrapCtx.addInitScript((s) => { try {
+  localStorage.setItem("romp:tabkeys", s.tabkeys);
+  localStorage.setItem("romp:keys", s.keys);
+} catch (e) {} }, { tabkeys: JSON.stringify({ [cfg.one]: true }), keys: JSON.stringify({ ["session.hotkey." + cfg.one]: "Ctrl+Shift+1" }) });   // no tabStateBadge seed: the badge is the default
+const wp = await wrapCtx.newPage(); wp.on("pageerror", (e) => errors.push("wrap: " + String(e).slice(0, 200)));
+await wp.goto(cfg.chat);
+await wp.waitForSelector('#tabs .tab[data-id="' + cfg.one + '"] .tab-key', { timeout: 60000 }).catch(() => errors.push("wrap: no keycap on the badge-mode tab"));
+await wp.waitForSelector('#tabs .tab[data-id="' + cfg.one + '"] .tab-badge:not(:empty)', { timeout: 60000 }).catch(() => errors.push("wrap: the keycap tab never took a count badge"));
+const readWrap = (id) => wp.evaluate((id) => { const t = document.querySelector('#tabs .tab[data-id="' + id + '"]'); const bar = document.getElementById("tabbar");
+  return { w: t ? t.getBoundingClientRect().width : null, pad: t ? getComputedStyle(t).paddingRight : null, barH: bar ? bar.getBoundingClientRect().height : null,
+           hasBadge: !!(t && t.querySelector(".tab-badge:not(:empty)")) }; }, id);
+await setTheme(wp, "dark"); await wp.waitForTimeout(200);
+out.wrapFlip.withCount = await readWrap(cfg.one);
+fs.writeFileSync(cfg.oneGoalPath, cfg.oneStore0);   // clear the needs-you card -> count 0, the badge goes
+await wp.waitForFunction((id) => { const t = document.querySelector('#tabs .tab[data-id="' + id + '"]'); return !!t && !t.querySelector(".tab-badge:not(:empty)"); }, cfg.one, { timeout: 40000 }).catch(() => errors.push("wrap: the badge never cleared after the card was removed"));
+await wp.waitForTimeout(200);
+out.wrapFlip.noCount = await readWrap(cfg.one);
+fs.writeFileSync(cfg.oneGoalPath, cfg.oneStore1);   // restore
+await wrapCtx.close();
 
 process.stdout.write("RESULT:" + JSON.stringify({ ...out, errors }) + "\n");
 await browser.close();
@@ -388,6 +448,7 @@ class TabBadgeServed(unittest.TestCase):
                 json.dump({"chat": base + "/chat?token=" + self.token, "url": base + "/?token=" + self.token, "token": self.token,
                            "one": SIDS["one"], "few": SIDS["few"], "many": SIDS["many"], "calm": SIDS["calm"], "over": SIDS["over"], "ids": ids,
                            "oneGoalPath": os.path.join(self.lab, "xdg", "romp", "goals", SIDS["one"] + ".json"),
+                           "oneStore0": json.dumps({"rompUuid": SIDS["one"], "seq": 1, "lastNode": None, "closedTurns": [], "nodes": {}, "placements": {}, "status": {}}),
                            "oneStore1": json.dumps(blocked_store(SIDS["one"], 1, self.t0)),
                            "oneStore2": json.dumps(blocked_store(SIDS["one"], 2, self.t0))}, f)
             driver = os.path.join(self.lab, "driver.mjs")
@@ -528,8 +589,13 @@ class TabBadgeServed(unittest.TestCase):
             self.assertEqual(nu["badge"]["text"], "2", "%s: the Needs-you demo carries the count 2, so the preview draws the NUMBERED dot (the :not(:empty) rules live, not the bare older-kernel dot): %r" % (t, nu["badge"]))
             self.assertGreaterEqual(nu["badge"]["rect"]["width"], 14, "%s: the numbered dot is at least the 14px the :not(:empty) rule sizes it: %r" % (t, nu["badge"]))
             self.assertEqual(nu["outlineStyle"], "none", "%s: the Needs-you demo dropped its ring for the dot: %r" % (t, nu))
-            self.assertLessEqual(abs(nu["badge"]["rect"]["top"] - nu["tab"]["top"]), 8, "%s: the demo badge sits at the tab's TOP, not below in the flow: %r" % (t, nu))
-            self.assertLessEqual(abs(nu["tab"]["right"] - nu["badge"]["rect"]["right"]), 8, "%s: the demo badge sits at the tab's RIGHT corner: %r" % (t, nu))
+            self.assertAlmostEqual(nu["badge"]["rect"]["top"] - nu["tab"]["top"], 3.0, delta=0.6, msg="%s: the demo badge sits a 3px inset from the tab's TOP (no border on the demo tab): %r" % (t, nu))
+            self.assertAlmostEqual(nu["tab"]["right"] - nu["badge"]["rect"]["right"], 3.0, delta=0.6, msg="%s: the demo badge sits a 3px inset from the tab's RIGHT (guards gear.css's 3px offset against a 2px revert): %r" % (t, nu))
+            # (the keycap-width fix 2026-09-24) the demo carries the hot-key keycap AND, in badge mode, the count of 2, so
+            # the gear.css keycap-widen twin must reserve the badge box: the keycap sits LEFT of the badge, not under it.
+            # RED at the base and at 60fffcbfb (the demo has no twin), where the count badge overpaints the keycap.
+            self.assertIsNotNone(nu["key"], "%s: the Needs-you demo carries the hot-key keycap" % t)
+            self.assertLessEqual(nu["key"]["right"], nu["badge"]["rect"]["left"] + 0.5, "%s: the demo keycap sits left of the badge box, not under it (the gear twin reserves the room): key.right=%.1f badge.left=%.1f" % (t, nu["key"]["right"], nu["badge"]["rect"]["left"]))
             # Retrying (ring-retrying): the amber ring gives way to the amber LEFT status dot
             rt = rows.get("ring-retrying")
             self.assertIsNotNone(rt, "%s: the Retrying demo row rendered a tab" % t)
@@ -572,10 +638,11 @@ class TabBadgeServed(unittest.TestCase):
             self.assertIn("inset", p["shadow"], "%s: the phone retrying dot is a hollow ring (a distinct shape): %r" % (t, p))
 
     def test_the_count_badge_sits_a_3px_inset_from_the_tab_top_and_right_2px_in_dense_chrome(self):
-        # (the user 2026-09-23, who wanted the badge a pixel lower and further from the edge) the dot sits a 3px inset from
-        # the tab's TOP and RIGHT edges in normal chrome, 2px in dense-chrome. Measured as the gap from the tab's
-        # border-box edge to the badge's, which the tab's own 1px border adds one to (4px normal, 3px dense). RED at the
-        # base's old offsets (2px, dense 1px), where these gaps read 3px and 2px. Both themes.
+        # (the user 2026-09-23, who wanted the badge a pixel lower and further from the edge in NORMAL chrome; DENSE back
+        # to 1px 2026-09-24, restoring PR 2023's measured reason that the hover-lifted close glyph overpaints less of the
+        # digits) the dot sits a 3px inset from the tab's TOP and RIGHT edges in normal chrome, 1px in dense-chrome.
+        # Measured as the gap from the tab's border-box edge to the badge's, which the tab's own 1px border adds one to
+        # (4px normal, 2px dense). RED at this PR's base, where dense was 2px and the dense gaps read 3px. Both themes.
         r = self._result()
         self.assertEqual(r["errors"], [], "the badge geometry was read in normal and dense chrome")
         for t in ("dark", "light"):
@@ -585,17 +652,19 @@ class TabBadgeServed(unittest.TestCase):
                 self.assertAlmostEqual(d["top"] - tab["top"], 4.0, delta=0.6, msg="%s/%s: the badge sits a 3px inset from the tab's top (1px border + 3px): %r" % (t, name, b["badge"]["rect"]))
             for name in ("one", "many"):
                 b = r["badgeDense"][t][name]; d, tab = b["badge"]["rect"], b["tab"]
-                self.assertAlmostEqual(tab["right"] - d["right"], 3.0, delta=0.6, msg="%s/%s dense: the badge sits a 2px inset from the tab's right (1px border + 2px): %r" % (t, name, b["badge"]["rect"]))
-                self.assertAlmostEqual(d["top"] - tab["top"], 3.0, delta=0.6, msg="%s/%s dense: the badge sits a 2px inset from the tab's top (1px border + 2px): %r" % (t, name, b["badge"]["rect"]))
+                self.assertAlmostEqual(tab["right"] - d["right"], 2.0, delta=0.6, msg="%s/%s dense: the badge sits a 1px inset from the tab's right (1px border + 1px): %r" % (t, name, b["badge"]["rect"]))
+                self.assertAlmostEqual(d["top"] - tab["top"], 2.0, delta=0.6, msg="%s/%s dense: the badge sits a 1px inset from the tab's top (1px border + 1px): %r" % (t, name, b["badge"]["rect"]))
 
     def test_a_bound_hotkey_keycap_stays_left_of_the_badge_box_and_the_content_run_clears_it(self):
         # (the user 2026-09-23, who wanted the tab widened when the keycap shows) a tab carrying BOTH the hot-key keycap
         # (.tab-key) and a non-empty count badge reserves the badge's box at the right, so the whole in-flow run (the
         # keycap and the rightmost ✕) sits LEFT of the badge instead of under it, in both themes AND both chromes.
-        # RED at the base (no widen rule): the 99+ badge overpaints the keycap (by 6px, 9px dense) and the min-width badge
-        # overpaints the ✕ (by 10px). The keycap and badge overlap vertically, so the left-of check IS the no-intersection
-        # test. Sizing the room off the badge's min-width box, a wider count's ✕ may still ride under the wide badge (the
-        # accepted close-over-badge overlap), but the keycap clears every count.
+        # WITHOUT the widen (no reserved room): the 99+ badge overpaints the keycap by about 6px (9px dense) and the
+        # min-width badge overpaints the ✕ by about 10px, measured at the NEW offsets (3px normal, 1px dense); at the older
+        # offsets those overpaints were about 5px (8px dense) and 9px (8px dense). The keycap and badge overlap vertically,
+        # so the left-of check IS the no-intersection test. Sizing the room off the badge's min-width box, a wider count's ✕
+        # may still ride under the wide badge (the accepted close-over-badge overlap), but the keycap clears every count.
+        # (Green at this PR's base and head: the widen is present here; the keycap-width fix keeps it, gated on the strip.)
         r = self._result()
         self.assertEqual(r["errors"], [], "no page error and the keycap rendered on the needs-you tab")
         ids = {name: SIDS[name] for name in ("one", "many", "over")}
@@ -613,6 +682,45 @@ class TabBadgeServed(unittest.TestCase):
                 self.assertIsNotNone(one["close"], "%s/%s: the tab has a ✕ close glyph" % (chrome, t))
                 self.assertLessEqual(one["close"]["right"], one["badge"]["left"] + 0.5,
                                      "%s/%s: the ✕ (rightmost in flow) clears the min-width badge box, so the tab widened to reserve it: close.right=%.1f badge.left=%.1f padRight=%s" % (chrome, t, one["close"]["right"], one["badge"]["left"], one["padRight"]))
+
+    def test_the_keycap_reserve_is_gated_on_badge_mode_and_the_widget_not_the_count(self):
+        # (the keycap-width fix 2026-09-24, T262g: a tab's width must not change with its state) the room for the top-right
+        # badge is reserved on the keycap ALONE, under a strip-level class (#tabs.badge-keycap-room) the strip carries only
+        # in badge mode with the Needs-you widget on. So a keycap tab's right padding is the reserved 21px (17px dense) in
+        # badge mode whether or not a count shows (the idle `calm` keycap tab equals the counted `one`, so width is constant
+        # across the count), and the bare 7px (5px dense) in ring mode and with the Needs-you widget off. RED at this PR's
+        # base, where the reserve was gated on the non-empty badge: the idle keycap tab read 7px (5px dense) in badge mode,
+        # so its width flipped as a count appeared or cleared. Deleting the dense widen rule also reds here (the normal
+        # rule's specificity would win, giving 21px in dense chrome instead of 17px).
+        r = self._result()
+        self.assertEqual(r["errors"], [], "no page error and the keycap rendered under each gate config")
+        for t in ("dark", "light"):
+            for chrome, want in (("normal", "21px"), ("dense", "17px")):
+                g = r["gate"]["badge"][t][chrome]
+                self.assertTrue(g["calm"]["room"], "%s/%s: the strip carries badge-keycap-room in badge mode" % (t, chrome))
+                self.assertTrue(g["calm"]["key"], "%s/%s: the idle tab has a keycap (romp:tabkeys/romp:keys seeded)" % (t, chrome))
+                self.assertFalse(g["calm"]["badge"], "%s/%s: the idle tab has NO count badge" % (t, chrome))
+                self.assertEqual(g["calm"]["pad"], want, "%s/%s: the IDLE keycap tab reserves the room in badge mode with no count: %r" % (t, chrome, g["calm"]))
+                self.assertEqual(g["one"]["pad"], want, "%s/%s: the COUNTED keycap tab reserves the SAME room, so width is constant across the count: %r" % (t, chrome, g["one"]))
+            for label in ("ring", "widgetOff"):
+                for chrome, want in (("normal", "7px"), ("dense", "5px")):
+                    g = r["gate"][label][t][chrome]
+                    self.assertFalse(g["calm"]["room"], "%s/%s/%s: the strip does NOT carry badge-keycap-room (no reserved room)" % (label, t, chrome))
+                    self.assertEqual(g["calm"]["pad"], want, "%s/%s/%s: a keycap tab reads the bare padding, the pre-badge strip's reference: %r" % (label, t, chrome, g["calm"]))
+
+    def test_nothing_moves_when_a_keycap_tabs_count_flips_at_a_wrap_boundary(self):
+        # (the keycap-width fix 2026-09-24, T262g: a tab's width must not change with its state) at a narrow, wrapping
+        # viewport a keycap tab in badge mode keeps its width AND the strip's (#tabbar) height when its Needs-you count
+        # clears, because the reserve is on the keycap, not the count. RED at this PR's base, where the reserve was gated
+        # on the non-empty badge, so the tab's width flipped (21px -> 7px) as the count cleared and the strip's rows flapped.
+        r = self._result()
+        self.assertEqual(r["errors"], [], "no page error and the count flip resolved")
+        w = r["wrapFlip"]
+        self.assertTrue(w["withCount"]["hasBadge"], "the keycap tab starts with a count badge: %r" % w["withCount"])
+        self.assertFalse(w["noCount"]["hasBadge"], "…and the badge cleared when the card was removed: %r" % w["noCount"])
+        self.assertEqual(w["withCount"]["pad"], w["noCount"]["pad"], "the keycap tab's right padding is unchanged across the count flip: %r vs %r" % (w["withCount"], w["noCount"]))
+        self.assertAlmostEqual(w["withCount"]["w"], w["noCount"]["w"], delta=0.5, msg="the keycap tab's width is unchanged across the count flip (T262g): %r vs %r" % (w["withCount"], w["noCount"]))
+        self.assertAlmostEqual(w["withCount"]["barH"], w["noCount"]["barH"], delta=0.5, msg="the strip's height is unchanged, so the transcript does not slide under the reader: %r vs %r" % (w["withCount"], w["noCount"]))
 
 
 if __name__ == "__main__":

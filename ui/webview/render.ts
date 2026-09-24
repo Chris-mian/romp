@@ -61,7 +61,7 @@ import { planStrip, readTabGroups, writeTabGroups, setSectionCollapsed, sectionR
 import { snapshotModel, snapshotHeading, rowWords, type SnapModel, type SnapRow } from "./tab-snapshot";
 import { rowStillOpen, installSnapshotEscape, reconcileRows } from "./tab-snapshot-view";
 import { tabStateClass, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
-import { composeTabWidgets, composeTabRing, applyTabBadgeMode, needsYouPhrase, ringSwitch, tabHotkey, miniChord } from "./tab-widgets";   // the tab-title widgets (T379): the dot, the context bar and the hot-key keycap compose onto every tab from the registry, and the rings too, one class at a time; miniChord is the chord the strip signature reads
+import { composeTabWidgets, composeTabRing, applyTabBadgeMode, needsYouPhrase, ringSwitch, tabHotkey, miniChord, needsYouWidgetOn } from "./tab-widgets";   // the tab-title widgets (T379): the dot, the context bar and the hot-key keycap compose onto every tab from the registry, and the rings too, one class at a time; miniChord is the chord the strip signature reads; needsYouWidgetOn gates the keycap-room strip class
 import { titleWithKey, keyHint, chordOf, effectiveChord, loadOverrides, saveOverride, KEYS_EVENT } from "./keybindings";
 import { hotkeyCommandId, loadTabKeys, rememberTabKey, forgetTabKey, goneTabKeys, renamedTabKeys } from "./tab-keys";   // per-tab hot keys (2026-09-10): the set and its bookkeeping; the keycap on the tab is the T379 widget, read from the same store
 import { notePendingFlag, dropPendingFlag, applyFrameFlags, type PendingFlags, type SessionFlag } from "./flag-pending";   // the per-session view flags' pending guard (review 2026-09-14)
@@ -6514,7 +6514,7 @@ function sectionHeadOf(node: HTMLElement): HTMLElement | null {
   return dropZoneOf(node).head;
 }
 
-// ── tab builders shared by the loaded tab (renderTabs) and the skeleton tab (2026-09-07) ──────────────────────
+// ── tab builders shared by the loaded tab (renderTabs), the skeleton tab and the loading tab (2026-09-07) ─────
 // The chip — the status → class/dot/bar block every tab wears, lifted out of renderTabs (2026-09-07) so a
 // SKELETON tab draws EXACTLY the same chip from the status frames the kernel still sends it, and never from
 // the stale pre-outage session it holds underneath. `s.status` may be EMPTY (a skeleton before its first
@@ -7000,6 +7000,11 @@ function renderTabs() {
   const focusedGear = !!focusedEl?.closest(".tab-widgets-gear");   // the gear held the keyboard when a push rebuilt the strip (a lock toggle's rebuild finds the focus on the menu's row, and the menu's own Escape refocuses the live gear): the gear keeps the focus, not the active tab (T395 round one, moved by T405; round two, low 6)
   const refocusTab = bar.contains(document.activeElement);
   bar.replaceChildren();
+  // Reserve keycap room only where the Needs-you count badge can appear: badge mode AND the Needs-you widget on
+  // (applyTabBadgeMode's own gate). Carried as a strip-level class so a keycap tab's width is CONSTANT across a count
+  // flip (T262g: a tab's width must not change with its state); ring mode and the widget off get no reserved room, so
+  // the pre-badge strip stays the lab's reference. Only a user action (a hot key, the mode, the widget) changes it.
+  bar.classList.toggle("badge-keycap-room", !!settings.tabStateBadge && needsYouWidgetOn(settings.tabWidgets));
   // A session under several tags has a COPY in each group (T264b, the user 2026-09-08: tags are
   // equivalent, none takes precedence). Every copy below is the full tab of the ONE session — same
   // identity colour, same state class and dot, the active highlight on all of them (the loop reads
