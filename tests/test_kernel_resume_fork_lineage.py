@@ -205,6 +205,10 @@ class ContinuedRootStitches(unittest.TestCase):
         self.assertIsNone(adapter.parent_of.get("c1"), "an in-file /clear root keeps its history dropping")
         self.assertIn("u1", em._membership_of(adapter)["clear"])
 
+    def test_a_parent_cycle_in_the_fork_ends_the_walk_without_a_stitch(self):
+        adapter = _adapter([uline(T0 + 320, "loop a", "f1", "f2"), aline(T0 + 380, "loop b", "f2", "f1")])
+        self.assertEqual((adapter.parent_of.get("f1"), adapter.parent_of.get("f2")), ("f2", "f1"))
+
 
 class ResumeForkStates(unittest.TestCase):
     def test_appender_reader_and_links_roundtrip(self):

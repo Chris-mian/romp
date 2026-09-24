@@ -5150,7 +5150,7 @@ def _asm_fold(entry, delta, leaf_recs, leaf_key, leaf_stem, rompuuid, postal_ind
 # ids and atom uuids. Bodies come back on demand (hydrate). Anything that does not verify is a counted fallback to a
 # whole parse; a compaction landing after the document demotes the tail fold to a whole parse exactly as before, and
 # the next settle writes a new document with the new cut.
-_ASM_CKPT_V = 8                       # 2: atom rows carry [offset, len], nt for every atom; 3: the carry holds skill_loads (T333);
+_ASM_CKPT_V = 9                       # 2: atom rows carry [offset, len], nt for every atom; 3: the carry holds skill_loads (T333);
 #                                       4: a `turns` section over the pre-cut rows (T323 stage 4c: the lazy index)
 #                                       5: lazy markers carry pc (assistant prose chars) and mid (postal message ids); a turn row
 #                                          carries pcs and hT, a segment row w, mids and hp (T358: the per-cycle walkers read scalars).
@@ -5173,6 +5173,8 @@ _ASM_CKPT_V = 8                       # 2: atom rows carry [offset, len], nt for
 #                                          records' stored verdict is "a", not "r", and the pre-cut atom rows hold the results a v7 document
 #                                          dropped, so a v7 document restores a history the whole parse no longer builds; refused once
 #                                          (`version`) at the deploy boot and rewritten at the next settle, as v7 was
+#                                       9: a resumed fork's continued root is stitched to the linked file's tail (_stitch_resume_forks):
+#                                          its pre-cut records' verdict is "a", not "r"; refused once (`version`) and rewritten, as v8 was
 _MAT_CAP = _env_or("ROMP_ASM_INDEX_CAP", max(500_000, _machine_memory_bytes() // (32 * 1024)))
 _MAT_LRU = collections.OrderedDict()  # (id(LazyAtoms), row) → (weakref.ref(LazyAtoms), row): eviction drops the memo, never a field
 #                                       in place. The list is held WEAKLY (measured 2026-09-15): a strong reference here kept every
