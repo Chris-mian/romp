@@ -2109,7 +2109,8 @@ serialized until a request reads them. `romp perf` takes two snapshots
 one screen: pusher cycles and wakes per second, cycle time percentiles, the
 share of cycle time in each stage, CPU split between the pusher thread, the
 judge threads and the rest of the process, builds served from cache against
-rebuilds, bytes sent per slot as full frames, deltas and deduplicated frames,
+rebuilds, the kernel's parse-store misses by road with the bytes of its whole
+parses, bytes sent per slot as full frames, deltas and deduplicated frames,
 goal-store loads and writes per second, judge passes and their durations,
 memory and thread count. `romp perf --json` prints one raw snapshot. If the
 kernel restarted between the two snapshots the counters have started over, so
@@ -2705,12 +2706,29 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   before its caption landed keeps the caption-less card until an eviction.
 - `parses`: the cold event-model parses through the one parse store the
   kernel and the judges share: `total` (every miss, whoever asked), `kernel`
-  (the display's asks among them, with `bytes`, the parsed files' sizes, and
-  `bySid`, per session by the first eight characters of its id), `judge` (the
-  rest), `hits` (the display's asks served from the store) and `sharedHits`
-  (every hit). The acceptance number of the lazy-transcript work: a boot with
-  no client connected reads `kernel` zero, and a connecting chat client adds
-  at most its shown tabs.
+  (the display's asks among them, with `byRoad`, `wholeBytes` and `bySid`,
+  below), `judge` (the rest), `hits` (the display's asks served from the
+  store) and `sharedHits` (every hit). The acceptance number of the
+  lazy-transcript work: a boot with no client connected reads `kernel` zero,
+  and a connecting chat client adds at most its shown tabs. A miss is not a
+  whole parse: `byRoad` counts the display's misses by the road the parse
+  took (`serve`: the transcript did not move and the held tree was served
+  again, after a states row, a cleared rollback cut, or a stored parse the
+  store dropped while the event model still held the tree; `fold`: the
+  appended records folded onto the held tree; `restore`: the pre-cut part
+  from the assembly document and the tail from its cut; `full`, `bypass` (a
+  pending rollback's cut) and `fallback` (a road raised and a plain parse
+  ran, counted here and not under the road that raised): the transcript
+  walked from its first record), and the roads sum to `kernel`.
+  `wholeBytes` adds the leaf transcript's size for the last three only, the
+  parses that walk the whole file. It counts the leaf alone: a whole parse of
+  a session resumed into a new transcript file also walks the files it
+  resumed from, which are not added, so for such a session, whose new leaf
+  is short and whose history sits in the earlier file, the figure reads low.
+  Until 2026-09-24 a `bytes` field added the leaf's size at every miss, a
+  fold's included, which read as a whole re-parse per miss; it is gone.
+  `bySid` counts the misses per session by the first eight characters of its
+  id.
 - `stages_ms`: `prelude` (the cycle's opening: the liveness snapshot and the
   names), `jobs` (the cycle's tick jobs outside the push) and inside it one
   `jobs.<job>` per tick job (`jobs.interruptBlock`, `jobs.autoNudge`,
