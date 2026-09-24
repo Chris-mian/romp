@@ -10,7 +10,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
 // ── the switch: the View menu's fourth row ───────────────────────────────────────────────────────────
@@ -200,7 +200,8 @@ test("the three follow-ups after the review: Tab keeps the copy, Clear from a co
   // (b) Clear from the copy still gives the board run's header its one-motion exit (the section has no run headers)
   assert.match(FEED, /dressHeaderIfLast\(askEls\.get\(it\.itemId\) \?\? card, it\.sid\);/);
   // (c) a section pill picked on either copy repaints both: the disclosure is the card's
-  assert.match(FEED, /const twins = cardTwins\(id\);\s*\n\s*if \(twins\.length\) \{ for \(const c of twins\) applySections\(c as any, \(c as any\)\._it \?\? it, distillShown\); \}/);
+  assert.match(FEED, /const twins = sectionHosts\(id\);\s*\n\s*if \(twins\.length\) \{ for \(const c of twins\) applySections\(c as any, \(c as any\)\._it \?\? it, \(c as any\)\._distillShown \?\? distillShown, env\); \}/);   // the card's sections, tree and badges moved to card-sections.ts (plans/needs-you.md, one builder with the Needs you row)
+  assert.match(FEED, /askEls\.set\(e\.ask\.itemId, card\);\s*\n\s*registerSectionHost\(e\.ask\.itemId, card\);/, "the board card joins the item\'s host set"); assert.match(FEED, /fsAskEls\.set\(e\.ask\.itemId, card\);\s*\n\s*registerSectionHost\(e\.ask\.itemId, card\);/, "and the focused copy");
 });
 
 // ── feed.css: the section's rules, through the variables ─────────────────────────────────────────────

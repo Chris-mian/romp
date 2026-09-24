@@ -164,7 +164,7 @@ test("a settled card displaced to Working loses its line but never its caption",
 });
 
 // --- wiring: feed.ts must actually call the module (the rule is useless unbound) --------------------
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
 
 test("feed.ts routes the card's swirl through spinFor and keeps no inline copy of the ladder", () => {
   assert.match(FEED, /import \{ spinFor, awaitWord, groupRows, waitsNote, GROUP_TITLE, ROW_KIND_OF_LEGACY, type AwaitRow \} from "\.\/spin-caption";/);   // slice 2: the rows' vocabulary rides the same import
@@ -173,7 +173,7 @@ test("feed.ts routes the card's swirl through spinFor and keeps no inline copy o
   // waitedSuffix's rule (" · " + the duration for a known start, nothing otherwise) rendered as a stamped
   // element the 15 s live pass keeps moving (feed-age.ts fmt "dur")
   assert.match(FEED, /function durNodes\(since: number \| null \| undefined\): \(string \| HTMLElement\)\[\] \{\n\s*return since && since > 0 \? \[" · ", durSpan\(since\)\] : \[\];/);
-  assert.match(FEED, /pillLbl\.append\(\.\.\.durNodes\(it\.awaiting && it\.awaiting\.since\)\);\s*\/\/ the waited time, live/);
+  assert.match(FEED, /pillLbl\.append\(\.\.\.env\.durNodes\(it\.awaiting && it\.awaiting\.since\)\);\s*\/\/ the waited time, live/);   // the card's sections, tree and badges moved to card-sections.ts (plans/needs-you.md, one builder with the Needs you row)
   assert.match(FEED, /const woDur = durNodes\(wo\.since\);/);
   // …and the ladder itself runs on the kernel's clock, like every other age on the board
   assert.match(FEED, /dCompleted, nowSec\(\)\);/);

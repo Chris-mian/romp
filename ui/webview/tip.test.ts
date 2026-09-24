@@ -13,7 +13,7 @@ const W = (f: string) => fs.readFileSync(path.resolve(process.cwd(), "..", "ui",
 const TIP = W("tip.ts");
 const STYLES = W("styles.css");
 const FEEDCSS = W("feed.css");
-const FEED = W("feed.ts");
+const FEED = W("feed.ts") + W("card-sections.ts");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
 const RENDER = W("render.ts");
 const MODULE = W("status-controls.ts");   // the status line's controls moved here from render.ts (T415 part two)
 const FLEET = W("fleet.ts");
@@ -65,7 +65,7 @@ test("feed: the age tip rides wireTip with prune semantics — the 1s-vanish fix
 
 test("upgraded spots wire through setTip — the native title= on them is gone", () => {
   // feed badges + the card bell
-  assert.match(FEED, /setTip\(intingBadge, "stop sent/);
+  assert.match(FEED, /setTip\(intingBadge, BADGE_WORDS\.interrupting\.title\);/); assert.match(FEED, /interrupting: \{ text: "interrupting…", title: "stop sent/);   // the card's sections, tree and badges moved to card-sections.ts (plans/needs-you.md, one builder with the Needs you row)
   assert.match(FEED, /setTip\(a\._blocked as HTMLElement, it\.blocked\.what/);
   assert.match(FEED, /setTip\(a\._apiBadge as HTMLElement,/);
   assert.match(FEED, /setTip\(a\._jauthBadge as HTMLElement,/);

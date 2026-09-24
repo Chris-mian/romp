@@ -134,6 +134,7 @@ class ChatNotices(unittest.TestCase):
         g1, g2, g3, g4, g5 = (SID + ":g%d" % i for i in range(1, 6))
         frame = {"asks": [
             {"itemId": g1, "sid": SID, "text": "which database does the suite target?", "blockSummary": "Postgres or SQLite: the fixtures differ",
+             "background": "the suite has two databases and the fixtures load into one", "origin": {"peer": "api", "peerSid": "22222222-2222-3333-4444-000000000902", "live": True},   # a section's and a badge's field: the row must carry them (a mutant dropping one passed a fixture without them)
              "live": True, "t": 100, "board": "feed", "category": "needs_input", "column": "needs_input", "blocked": None},
             {"itemId": g2, "sid": SID, "text": "keep going on the parser", "live": True, "t": 101, "board": "feed", "category": "working", "column": "working", "blocked": None},
             {"itemId": g3, "sid": SID, "text": "the suite's fixtures directory", "live": True, "t": 102, "board": "feed", "category": "needs_input", "column": "needs_input",
@@ -150,12 +151,18 @@ class ChatNotices(unittest.TestCase):
         ]}
         rows = rows_fn(frame)
         self.assertEqual(sorted(rows), sorted([SID, "22222222-2222-3333-4444-000000000902"]), "rows per session, only sessions with one")
+        # the card's own fields ride the plain row (the row carries what the card carries, plans/needs-you.md): the list is written out here so a
+        # kernel without them reds on the rows themselves, and the kernel's own list is held to it below
+        CARD_FIELDS = ("summary", "blockSummary", "briefParts", "summaryParts", "distillState", "summaryStale", "relayNote", "background",
+               "stalled", "tree", "awaiting", "recheck", "rejudging", "nudgeFailed", "nudged", "interrupting", "interrupted", "waitingOn", "origin", "handoffTo")
+        card_fields = lambda a: {f: a.get(f) for f in CARD_FIELDS}
         self.assertEqual(rows[SID], [
-            {"itemId": g1, "kind": "goal", "title": "which database does the suite target?", "body": "Postgres or SQLite: the fixtures differ", "cont": True, "t": 100},
-            {"itemId": g4, "kind": "goal", "title": "a dead session's question", "body": "", "cont": False, "t": 105},
+            {"itemId": g1, "kind": "goal", "title": "which database does the suite target?", "body": "Postgres or SQLite: the fixtures differ", "cont": True, "t": 100, **card_fields(frame["asks"][0])},
+            {"itemId": g4, "kind": "goal", "title": "a dead session's question", "body": "", "cont": False, "t": 105, **card_fields(frame["asks"][5])},
             {"itemId": g5, "kind": "goal", "title": "the judges cannot read this session", "body": "romp can't analyze this session: the API key its judges bill is being refused", "cont": False, "fix": "credential", "t": 107}],
             "the judge's questions in the frame's order: a working card, a live-block card, the placeholder and the notice card stay out; "
             "no brief yet reads as an empty line; Continue only on a live session; the judges' credential refusal is a row whose action is the fix")
+        self.assertEqual(km._NEEDS_ROW_CARD_FIELDS, CARD_FIELDS, "the kernel's list of the card's fields on the row, the one the chat signature keys")
         self.assertTrue(km._hard_stop_card(frame["asks"][2]) and not km._hard_stop_card(frame["asks"][0]), "a hard stop is a card with a live-block object")
         self.assertFalse(km._hard_stop_card(frame["asks"][7]), "the judges' credential refusal is NOT a hard stop (plans/needs-you.md, the sixth floor): the session runs")
         km._feed_needs_rows[0] = rows
@@ -164,12 +171,12 @@ class ChatNotices(unittest.TestCase):
         self.assertEqual([(r["itemId"], r["kind"]) for r in box], [(g1, "goal"), (g4, "goal"), (g5, "goal"), ("notice:%s:m1:1" % SID, "notice")], "goal rows first, then the notices")
         for r in box[:3]:
             self.assertNotIn("t", r, "the unkeyed time never rides the wire (the third review of PR 1967): %r" % sorted(r))
-            self.assertEqual(set(r) - {"fix"}, {"itemId", "kind", "title", "body", "cont"}, "the row's face, and nothing else")
+            self.assertEqual(set(r) - {"fix"} - set(CARD_FIELDS), {"itemId", "kind", "title", "body", "cont"}, "the row's face, the card's fields it carries since the row carries what the card carries (plans/needs-you.md), and nothing else")
         self.assertEqual(box[0]["title"], "which database does the suite target?"); self.assertEqual(box[3]["actions"], _held("m1"))
         self.assertEqual((box[2]["fix"], box[2]["cont"]), ("credential", False), "the credential row: the fix as its action, no Continue")
         km._feed_needs_rows[0] = {}
         self.assertEqual([r["kind"] for r in km._chat_notices(SID)], ["notice"], "a frame that re-filed the goals drops their rows")
-        self.assertIn('sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("title") or "", n.get("body") or "", bool(n.get("cont")), n.get("fix") or "") for n in (_chat_notices(sid) or ())))', KSRC,
+        self.assertIn('sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("title") or "", n.get("body") or "", bool(n.get("cont")), n.get("fix") or "",', KSRC,
                       "the chat signature carries the rows' ids and faces in its one value: a brief landing or a Continue offered repaints the box")
         self.assertIn("    _rows_now = _needs_you_rows(feed)", KSRC, "the feed build files the rows beside the needs-you set")
 
@@ -238,7 +245,7 @@ class ChatNotices(unittest.TestCase):
         self.assertIn('"needsYou": needs_you,', src)
         self.assertIn('"notices": _chat_notices(sid),', src, "beside needsYou on the STATUS, so a status-only delta carries a decision")
         self.assertIn("sig.append((_feed_needs_input_of(sid) is True, _feed_needs_input_count_of(sid) or 0))\n", KSRC)
-        self.assertIn('sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("title") or "", n.get("body") or "", bool(n.get("cont")), n.get("fix") or "") for n in (_chat_notices(sid) or ())))', KSRC, "the chat signature: a hold posted or a decision taken brings a frame forward")
+        self.assertIn('sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("title") or "", n.get("body") or "", bool(n.get("cont")), n.get("fix") or "",', KSRC, "the chat signature: a hold posted or a decision taken brings a frame forward")
         labels = km._CHAT_SIG_LABELS
         self.assertEqual(labels[labels.index("needs") + 1], "notices", "one label per signature position, the new one right after needs (the builder appends them in that order)")
 

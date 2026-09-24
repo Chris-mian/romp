@@ -35088,7 +35088,16 @@ def _chat_build_sig(sess, tm=None, now=None, live_map=None, deps=None):
         # (None before the first build and 0 for no card share the no-dot value, as the boolean's None and False do).
         sig.append((_feed_needs_input_of(sid) is True, _feed_needs_input_count_of(sid) or 0))
         # notices: the approval box's rows by id (a hold posted, a decision taken), so the box and the ring move in one frame
-        sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("title") or "", n.get("body") or "", bool(n.get("cont")), n.get("fix") or "") for n in (_chat_notices(sid) or ())))   # the box's rows by id AND face (phase three): a brief landing, a Continue moving or a retitle (the judge retitles a top under its id; the second review of PR 1967, 2026-09-21) repaints the box; `t` is _NEEDS_ROW_UNKEYED; one value per label
+        sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("title") or "", n.get("body") or "", bool(n.get("cont")), n.get("fix") or "",
+                          # the card's fields the row draws since it carries what the card carries (plans/needs-you.md): each by value, the
+                          # structured ones as canonical JSON, so a brief paragraph, a stamp, a sub-goal or a badge moving repaints the row
+                          _row_field_key(n.get("summary")), _row_field_key(n.get("blockSummary")), _row_field_key(n.get("briefParts")),
+                          _row_field_key(n.get("summaryParts")), _row_field_key(n.get("distillState")), _row_field_key(n.get("summaryStale")),
+                          _row_field_key(n.get("relayNote")), _row_field_key(n.get("background")), _row_field_key(n.get("stalled")),
+                          _row_field_key(n.get("tree")), _row_field_key(n.get("awaiting")), _row_field_key(n.get("recheck")),
+                          _row_field_key(n.get("rejudging")), _row_field_key(n.get("nudgeFailed")), _row_field_key(n.get("nudged")),
+                          _row_field_key(n.get("interrupting")), _row_field_key(n.get("interrupted")), _row_field_key(n.get("waitingOn")),
+                          _row_field_key(n.get("origin")), _row_field_key(n.get("handoffTo"))) for n in (_chat_notices(sid) or ())))   # the box's rows by id AND face (phase three): a brief landing, a Continue moving or a retitle (the judge retitles a top under its id; the second review of PR 1967, 2026-09-21) repaints the box; `t` is _NEEDS_ROW_UNKEYED; one value per label
         # floor: the render floor decision (T323 stage 4b): True while a proto-1 client is connected (the pusher's
         # per-push flag), so a payload built from turn 0 is never served from the cache once the floor climbs
         sig.append(bool(getattr(_live_scope, "chat_floor0", False)))
@@ -58141,6 +58150,18 @@ _built_timeline = [None, None, 0.0, 0.0]          # [fleet_sig, payload, built_a
 _feed_needs_input = [None]
 _feed_needs_input_count = [None]   # per-sid count of needs-you cards, for the numbered badge (plans/tab-state-badge.md); set beside _feed_needs_input from the same feed rule
 _feed_needs_rows = [None]        # sid -> the Needs you box's GOAL rows from the last feed build (plans/needs-you.md, phase three); None before it
+def _row_field_key(v):
+    """A Needs-you row field as a hashable key: a scalar as itself, a structured value (a tree, the awaited rows, a badge's record) as
+    canonical JSON, None as None; the chat signature keys every field the row draws (plans/needs-you.md: the row carries what the card
+    carries), so a change inside a structure repaints the row."""
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    try:
+        return json.dumps(v, sort_keys=True, separators=(",", ":"), default=str)
+    except Exception:
+        return repr(v)
+
+
 _NEEDS_ROW_UNKEYED = frozenset(("t",))   # a goal row's fields the box does not draw: outside the chat key (_chat_build_sig) AND the wake compare
 #                                          below, as _CHAT_ROW_UNKEYED is for the liveness row; every other field (itemId, kind, title, body,
 #                                          cont, fix) is the row's face and moves both (the second review of PR 1967, 2026-09-21)
@@ -58169,7 +58190,9 @@ def _needs_you_rows(feed):
     (_hard_stop_card), in the frame's order. A placeholder (no stable identity) and a notice card (its row comes from the
     notice store with its stored actions, see _chat_notices) stay out. Each row: the item id, the card's text as the title,
     the decision brief as the line (empty until the distiller writes it; the client shows the title alone then), and whether
-    Continue is offered (a live session: the feed card's own rule for its Continue button)."""
+    Continue is offered (a live session: the feed card's own rule for its Continue button). Since the row carries what the card
+    carries (plans/needs-you.md, the user 2026-09-23), every field the card's sections and state badges read rides along from the
+    same feed item (_NEEDS_ROW_CARD_FIELDS), so the chat page draws the row with the card's own builder, never a second copy."""
     out = {}
     for a in (feed.get("asks") or []):
         sid = a.get("sid")
@@ -58183,8 +58206,27 @@ def _needs_you_rows(feed):
                                                  "body": b.get("what") or "", "cont": False, "fix": "credential", "t": a.get("t")})
             continue
         out.setdefault(str(sid), []).append({"itemId": a.get("itemId"), "kind": "goal", "title": a.get("text") or "",
-                                             "body": a.get("blockSummary") or "", "cont": bool(a.get("live")), "t": a.get("t")})
+                                             "body": a.get("blockSummary") or "", "cont": bool(a.get("live")), "t": a.get("t"),
+                                             # the card's own fields, as the feed item carries them (None where the card has none): the
+                                             # sections (_NEEDS_ROW_CARD_FIELDS names them beside the key that reads them)
+                                             "summary": a.get("summary"), "blockSummary": a.get("blockSummary"), "briefParts": a.get("briefParts"),
+                                             "summaryParts": a.get("summaryParts"), "distillState": a.get("distillState"), "summaryStale": a.get("summaryStale"),
+                                             "relayNote": a.get("relayNote"), "background": a.get("background"), "stalled": a.get("stalled"),
+                                             "tree": a.get("tree"), "awaiting": a.get("awaiting"),
+                                             # and the state badges of the card's name row
+                                             "recheck": a.get("recheck"), "rejudging": a.get("rejudging"), "nudgeFailed": a.get("nudgeFailed"),
+                                             "nudged": a.get("nudged"), "interrupting": a.get("interrupting"), "interrupted": a.get("interrupted"),
+                                             "waitingOn": a.get("waitingOn"), "origin": a.get("origin"), "handoffTo": a.get("handoffTo")})
     return out
+
+
+# the feed item's fields the card's sections and its name-row badges read (ui/webview/card-sections.ts, feed.ts updateAskCard): the
+# section bodies (the distill line with its stamps, the background paragraph, the stall note, the sub-goal tree, the awaited rows) and
+# the state badges (re-judging, follow-up failed, interrupted, awaiting a peer, a delegation's origin or handoff). Every one is keyed in
+# _chat_build_sig (the row signature test reads the two lists against each other).
+_NEEDS_ROW_CARD_FIELDS = ("summary", "blockSummary", "briefParts", "summaryParts", "distillState", "summaryStale", "relayNote", "background",
+                          "stalled", "tree", "awaiting", "recheck", "rejudging", "nudgeFailed", "nudged", "interrupting", "interrupted",
+                          "waitingOn", "origin", "handoffTo")
 
 
 def _needs_input_sids(feed):

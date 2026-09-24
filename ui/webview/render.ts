@@ -1,7 +1,9 @@
 import { marked } from "marked";
 import { GEAR_GLYPH, ICON_FORK } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
 import { sanitizeMd, userContentTarget } from "./md-sanitize";
-import { noticeBodyNodes, noticeAttachmentNodes, type NoticeAttachment } from "./notice-face";   // the notice face the feed card shows, for the approval box   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
+import { noticeBodyNodes, noticeAttachmentNodes, type NoticeAttachment } from "./notice-face";
+import { applySections, registerSectionHost, unregisterSectionHost, stateBadges, type SectionEnv, type SectionItem, type BadgeItem, type AskTreeNode } from "./card-sections";   // the card's sections and badges: one builder with the feed card (plans/needs-you.md, the row carries what the card carries)
+import { applyDistillLine, distillParas } from "./distiller-line";   // the notice face the feed card shows, for the approval box   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
 import python from "highlight.js/lib/languages/python";
@@ -344,7 +346,14 @@ interface ChatNotice { itemId: string; key: string; rev: number; title: string; 
                        actions: { label: string; kind?: string; route?: string; body: Record<string, unknown> }[];
                        kind?: "goal" | "notice";   // "goal": a judge's question on a goal card, Reply / Continue where offered / Clear; absent or "notice": a notice with its stored actions, Clear when it has none (plans/needs-you.md, phase three)
                        cont?: boolean;              // a goal row offers Continue (the kernel: a live session; the feed card's own rule)
-                       fix?: "credential" }         // the judges' credential refused (plans/needs-you.md, the sixth floor): the row's one action is the fix, no Clear
+                       fix?: "credential";          // the judges' credential refused (plans/needs-you.md, the sixth floor): the row's one action is the fix, no Clear
+                       // the card's fields the row carries since it carries what the card carries (plans/needs-you.md, the user 2026-09-23; the kernel's
+                       // _NEEDS_ROW_CARD_FIELDS): the sections' inputs and the state badges', read by the shared builder, never drawn here
+                       summary?: string | null; blockSummary?: string | null; briefParts?: { id?: string; since: number }[] | null; summaryParts?: { id?: string; since: number }[] | null;
+                       distillState?: "completed" | "blocked" | null; summaryStale?: boolean | null; relayNote?: string | null; background?: string | null;
+                       stalled?: SectionItem["stalled"]; tree?: AskTreeNode[] | null; awaiting?: SectionItem["awaiting"];
+                       recheck?: boolean | null; rejudging?: boolean | null; nudgeFailed?: boolean | null; nudged?: BadgeItem["nudged"]; interrupting?: boolean | null; interrupted?: boolean | null;
+                       waitingOn?: BadgeItem["waitingOn"]; origin?: BadgeItem["origin"]; handoffTo?: BadgeItem["handoffTo"] }
 interface Status { state: ChipState; sinceEpoch: number | null; modelFallback?: ModelFallback | null; notices?: ChatNotice[] | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; needsYou?: boolean | null; needsYouCount?: number | null; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; apiNoRetry?: boolean; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions): the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you: the red tab) rather than a transient API error (amber, retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried: retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried: a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); apiNoRetry = the blocking notice is one nothing retries (the launch error's noRetry, the Codex bracket's end notices: a compaction Codex could not run, the app-server's death, or a kernel restart whose outcome the new kernel cannot learn; the ends named 2026-09-22, when the restart end outgrew a gloss of one failed compaction): the card draws no Retry, no Stop-all and no retrying-soon meta (2026-09-21); needsYou = the FEED filed a card of this session under needs-you (build_session, from the kernel's last feed build; null before the first) → the Needs you ring widget wears a dashed magenta ring on the tab in every live state, working included (tab-state.ts RING_TEST, tab-widgets.ts composeTabRing; the ask ring of 2026-09-13, renamed and recoloured 2026-09-21); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
 // The side a pick this box cannot bill actually fell to ("login" | "key"), "" when nothing did: the kernel's
@@ -15080,18 +15089,86 @@ function buildNoticeRow(n: ChatNotice, sid: string): NoticeRowEl {
   const note = document.createElement("textarea"); note.className = "ntc-note"; note.placeholder = "optional: tell the sender why (delivered to them as postal mail)"; note.style.display = "none";
   const acts = document.createElement("div"); acts.className = "ntc-actions";
   const err = document.createElement("div"); err.className = "ntc-err"; err.style.display = "none";
-  row.append(title, body, att, note, acts, err);
+  row.append(title, body, att, note, acts, err);   // the card's sections and badges join after the attachment when the frame calls for them (noticeSectionsFor)
   updateNoticeRow(row, n, sid);
   return row;
 }
+// THE CARD'S DISCLOSURE ON THE ROW (plans/needs-you.md, the user 2026-09-23: a row at the items level showed its title and two buttons alone):
+// the card's section toggles in the card's order, the bodies they drive and the sub-goal tree, built with the card's own builder
+// (card-sections.ts, applySections) from the same fields the kernel puts on the row; the state badges of the card's name row between the
+// default-open section and the buttons. The toggles show at the full context only (styles.css); at the items level the open section's
+// body shows under the title, the distill line clamped to four lines with More, as the brief was.
+// Only a goal row without a fix wears them: a notice row (held mail) has the kernel's body and attachment, and the credential row its
+// fault's explanation, drawn as before. The rows are reused by item across frames and a goal row can turn credential row and back (the
+// judges' credential refused, then fixed), so the machinery is built when a frame first calls for it and removed when one stops, never
+// decided at build time. Returns whether the row wears the sections now.
+function noticeSectionsFor(row: HTMLElement, n: ChatNotice): boolean {
+  const rowAny = row as any; const want = n.kind === "goal" && !n.fix;
+  if (want && !rowAny._distill) {
+    const badges = el("div", "ntc-badges");
+    const secsRow = el("div", "ntc-secs-row fask-row3");
+    const mk = (cls: string, text?: string) => { const b = el("button", cls) as HTMLButtonElement; b.type = "button"; if (text) b.textContent = text; return b; };
+    const bgBtn = mk("fask-secbtn", "Background"), takeBtn = mk("fask-secbtn", "Summary"), stallBtn = mk("fask-secbtn fask-stallbtn", "Stalled"), subBtn = mk("fask-secbtn");
+    const taskBtn = mk("fask-secbtn fask-taskbtn"); const taskGlyph = el("span", "fask-awaiting-swirl"); taskGlyph.setAttribute("aria-hidden", "true"); const taskLbl = el("span", "fask-taskbtn-lbl"); taskBtn.append(taskGlyph, taskLbl);
+    secsRow.append(bgBtn, takeBtn, stallBtn, subBtn, taskBtn);
+    const secs = el("div", "fask-secs ntc-secs"); const bgBody = el("div", "fask-bg-body"); const distill = el("div", "fask-distill ntc-distill"); const stallBody = el("div", "fask-stall-body");
+    secs.append(bgBody, distill, stallBody);
+    const checklist = el("div", "fask-checklist");
+    Object.assign(rowAny, { _bgBtn: bgBtn, _takeBtn: takeBtn, _stallBtn: stallBtn, _subBtn: subBtn, _taskBtn: taskBtn, _taskLbl: taskLbl, _bgBody: bgBody, _distill: distill, _stallBody: stallBody, _secs: secs, _checklist: checklist, _badges: badges });
+    (row.querySelector(".ntc-attach") as HTMLElement).after(secsRow, secs, checklist, badges);   // after the attachment, before the note and the buttons
+    registerSectionHost(n.itemId, row);   // the item's twin set: a press on the card's toggles or the row's reaches both (card-sections.ts)
+  } else if (!want && rowAny._distill) {
+    for (const k of ["_secs", "_checklist", "_badges"]) (rowAny[k] as HTMLElement).remove();
+    (row.querySelector(".ntc-secs-row") as HTMLElement | null)?.remove();
+    row.querySelector(".ntc-more")?.remove();   // the line the disclosure rode is gone; the body's own pass remakes it if the body overflows
+    for (const k of ["_bgBtn", "_takeBtn", "_stallBtn", "_subBtn", "_taskBtn", "_taskLbl", "_bgBody", "_distill", "_stallBody", "_secs", "_checklist", "_badges", "_it", "_sectionEnv", "_distillShown"]) delete rowAny[k];
+    unregisterSectionHost(n.itemId, row);
+    const body = row.querySelector<HTMLElement>(".ntc-body"); if (body) body.style.display = "";
+  }
+  return want;
+}
+// the row's LINE, the element the disclosure measures and clamps: the distill line on a row wearing the card's sections, else the markdown body
+function noticeLineOf(row: HTMLElement): HTMLElement | null { return ((row as any)._distill as HTMLElement | undefined) ?? row.querySelector<HTMLElement>(".ntc-body"); }
+// what the chat page hands the shared section builder: no collapsed-by-default preference here, display-only sub-goal rows (the modal's
+// click zones are the feed's), no PR repo for a row's links, static ages, and the page's own way to open a peer's session
+const agoText = (t: number): string => { const d = Math.max(0, Math.floor(Date.now() / 1000) - t); return d < 60 ? "<1m ago" : d < 3600 ? Math.floor(d / 60) + "m ago" : d < 86400 ? Math.floor(d / 3600) + "h ago" : Math.floor(d / 86400) + "d ago"; };
+const noticeSectionEnv: SectionEnv = {
+  collapsed: () => false,
+  wireNode: () => { /* display-only on the row */ },
+  repoOf: () => null,
+  durNodes: (since) => { if (!since || since <= 0) return []; const sp = el("span", "ntc-age"); sp.textContent = agoText(since); return [" · ", sp]; },
+  openSession: (sid) => { vscodeApi?.postMessage({ type: "openSession", id: sid }); },
+};
+const noticeBadgeEnv = { durNodes: noticeSectionEnv.durNodes, openSession: noticeSectionEnv.openSession, clockHM: (t: number) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) };
 function updateNoticeRow(row: NoticeRowEl, n: ChatNotice, sid: string): void {
   const title = row.querySelector<HTMLElement>(".ntc-title"), body = row.querySelector<HTMLElement>(".ntc-body"), att = row.querySelector<HTMLElement>(".ntc-attach");
   if (title && row._title !== (n.title || "")) { title.textContent = n.title || "Needs you"; row._title = n.title || ""; }
   if (body && row._body !== (n.body || "")) { body.replaceChildren(...noticeBodyNodes(n.body || "")); body.style.display = n.body && n.body.trim() ? "" : "none"; row._body = n.body || ""; }
   // the brief past the clamp (the second contributor's review, 2026-09-22): a disclosure keyed by the item id in the one fold store, re-applied on
   // every update (the switch's off-then-on rebuilds the rows), its button shown only when the body overflows its four lines
+  // the card's sections and badges on a goal row (plans/needs-you.md): the distill line (the brief or the takeaway, split into its stamped
+  // paragraphs by the card's own gate), the section toggles and bodies through applySections, the badges through stateBadges; the old
+  // markdown body stands only for a notice row and the credential row, whose line is the kernel's what
+  const sections = noticeSectionsFor(row, n);   // a goal row without a fix wears the card's sections and badges; the machinery follows the frame
+  const rowAny = row as any; const badgesEl = rowAny._badges as HTMLElement | undefined;
+  if (sections) {
+    const it = { ...n, sid } as unknown as SectionItem & BadgeItem;
+    rowAny._it = it;
+    const dCompleted = n.distillState === "completed", dBlocked = n.distillState === "blocked" || (!n.distillState && !!(n.blockSummary || "").trim());
+    const shown = applyDistillLine(rowAny._distill as HTMLElement, dCompleted, dBlocked, n.summary, n.blockSummary);
+    if (shown) {
+      const split = distillParas(shown, dCompleted ? n.summaryParts : dBlocked ? n.briefParts : null);
+      if (split.stamps) {
+        const dle = rowAny._distill as HTMLElement; dle.textContent = "";
+        split.paras.forEach((p, i) => { const para = el("div", "fask-para"); para.textContent = p; const st = split.stamps![i]; if (st) { const age = el("span", "fask-para-age"); age.textContent = agoText(st.since || 0); para.append(" ", age); } dle.appendChild(para); });
+      }
+    }
+    applySections(rowAny, it, !!shown, noticeSectionEnv);
+    if (body) body.style.display = "none";   // the brief rides the distill line now
+    if (badgesEl) { badgesEl.replaceChildren(...stateBadges(it, noticeBadgeEnv)); badgesEl.style.display = badgesEl.childNodes.length ? "" : "none"; }
+  }
   row.classList.toggle("ntc-open", openFolds.has("notice:" + n.itemId + ":brief"));   // both ways: applyFold only opens, and a closed disclosure must fold the row back
-  noticeMoreButton(row, body);
+  noticeMoreButton(row, noticeLineOf(row));   // the disclosure past four lines rides the row's line: the distill line on a goal row, else the body
   const attKey = JSON.stringify(n.attachment || null);
   if (att && row._att !== attKey) { att.replaceChildren(...noticeAttachmentNodes(n.attachment, sid)); att.style.display = att.childNodes.length ? "" : "none"; row._att = attKey; }
   const sig = noticeActionsSig(n);
@@ -15113,7 +15190,7 @@ function noticeMoreButton(row: HTMLElement, body: HTMLElement | null): void {
   const overflows = !!body && body.style.display !== "none" && body.scrollHeight > body.clientHeight + 1;
   const open = row.classList.contains("ntc-open");
   if (!overflows && !open) { if (b) b.remove(); return; }
-  if (!b) { b = document.createElement("button"); b.className = "ntc-btn ntc-more"; b.dataset.act = "ntc-more"; body?.after(b); }
+  if (!b) { b = document.createElement("button"); b.className = "ntc-btn ntc-more"; b.dataset.act = "ntc-more"; (body?.closest(".ntc-secs") ?? body)?.after(b); }   // after the sections container when the line is the distill line (the box content round), so the button stands whichever section is open
   b.textContent = open ? "Less" : "More"; (b as any)._idle = b.textContent;
 }
 function buildNoticeBar(): HTMLElement {
@@ -15222,7 +15299,7 @@ function renderNotices(): void {
 function renderNoticeDisclosures(): void {
   const host = document.getElementById("notices");
   if (!host || host.style.display === "none") return;
-  for (const r of Array.from(host.querySelectorAll<HTMLElement>(".ntc-row"))) noticeMoreButton(r, r.querySelector<HTMLElement>(".ntc-body"));
+  for (const r of Array.from(host.querySelectorAll<HTMLElement>(".ntc-row"))) noticeMoreButton(r, noticeLineOf(r));
 }
 
 function renderBgTasks() {
@@ -19122,7 +19199,8 @@ function awaitKey(st: Status | undefined): string {
                          // the approval box's rows by id AND face (2026-09-19; the second review of PR 1967, 2026-09-21): a brief landing, a Continue offered,
                          // a retitle or the credential fix repaints the box, not only a row coming or going (the key was id and action count; goal rows
                          // carry no actions, so a status-only frame with a new brief left the row's body empty until the next gesture)
-                         (st.notices || []).map((n) => JSON.stringify([n.itemId, n.kind || "notice", n.title || "", n.body || "", !!n.cont, n.fix || "", (n.actions || []).length]))]);
+                         (st.notices || []).map((n) => JSON.stringify(n))]);   // the row's WHOLE face since it carries what the card carries (plans/needs-you.md): a
+                         //   section field or a badge moving repaints the box; the kernel keys the same fields (_chat_build_sig)
 }
 
 function statusOnly(msg: any) {
@@ -21351,7 +21429,7 @@ setupSettings();
     "ntc-deny-bare": (el) => { const p = pick(el); if (p) go(p[0], p[1], p[2], el as HTMLButtonElement); },
     "ntc-fold": () => { if (!activeId) return; const s = liveSession(activeId); setNoticeBoxLevel(activeId, noticeBoxNextLevel(activeId, (s && s.status && s.status.notices) || [])); renderNotices(); },   // the header line: one click the items, a second the full context, a third folds back; the page's state, never a timer (the user 2026-09-23)
     "ntc-gear": () => openSettingsOn("chat", "boxes"),   // the box's own gear: the settings' Chat tab scrolled to the section that holds the box's switch
-    "ntc-more": (el) => { const row = rowOf(el); if (!row) return; const key = "notice:" + (row.dataset.item || "") + ":brief"; if (openFolds.has(key)) openFolds.delete(key); else openFolds.add(key); row.classList.toggle("ntc-open", openFolds.has(key)); noticeMoreButton(row, row.querySelector<HTMLElement>(".ntc-body")); },   // the brief's disclosure: no latch, a toggle (the second contributor's review)
+    "ntc-more": (el) => { const row = rowOf(el); if (!row) return; const key = "notice:" + (row.dataset.item || "") + ":brief"; if (openFolds.has(key)) openFolds.delete(key); else openFolds.add(key); row.classList.toggle("ntc-open", openFolds.has(key)); noticeMoreButton(row, noticeLineOf(row)); },   // the brief's disclosure: no latch, a toggle (the second contributor's review)
     "ntc-back": (el) => { const row = rowOf(el); const n = row && noticeOf(row); if (row && n) noticeRowPlain(row, n); },
     "ntc-reply": (el) => { const p = item(el); if (p && activeId) setCitation(activeId, { itemId: p[1].itemId, title: p[1].title }); },
     "ntc-cont": (el) => { const p = item(el); if (!p || !activeId) return; vscodeApi?.postMessage({ type: "askFollowUp", itemId: p[1].itemId, sid: activeId, cont: true }); latch(p[0], el as HTMLButtonElement); },

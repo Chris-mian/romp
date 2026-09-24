@@ -10,7 +10,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const UI = path.resolve(process.cwd(), "..", "ui", "webview");
-const FEED = fs.readFileSync(path.join(UI, "feed.ts"), "utf8");
+const FEED = fs.readFileSync(path.join(UI, "feed.ts"), "utf8") + fs.readFileSync(path.join(UI, "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
 const RENDER = fs.readFileSync(path.join(UI, "render.ts"), "utf8");
 const CSS = fs.readFileSync(path.join(UI, "styles.css"), "utf8");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
@@ -65,7 +65,7 @@ test("per-paragraph landings (T220): the user's ruling, wired end to end with ho
     "a re-split that disagrees with the stored alignment drops the anchors — never a mis-mapped click");
   assert.match(FEED, /anchorUuid: u, quote: aq/, "the paragraph's click carries ITS span — the T218 landing highlights it");
   // the hover affordance: exactly the hovered paragraph highlights
-  const FEEDCSS = fs.readFileSync(path.join(UI, "feed.css"), "utf8");
+  const FEEDCSS = fs.readFileSync(path.join(UI, "feed.css"), "utf8") + fs.readFileSync(path.join(UI, "card-sections.css"), "utf8");   // the paragraph rules moved to the sheet both pages import (plans/needs-you.md)
   assert.match(FEEDCSS, /\.fask-para-link:hover \{ background: rgba\(255, 255, 255, 0\.07\);/);
   // judge: the parser + store helpers exist with the honest-gap discipline
   assert.match(JUDGE, /def _split_sources\(text\):/);

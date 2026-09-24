@@ -12,7 +12,7 @@ import { mergeHostFeeds } from "./federation";
 import { FEED_COLUMNS } from "./feed-view-state";
 
 const read = (...p: string[]) => fs.readFileSync(path.resolve(process.cwd(), "..", ...p), "utf8");
-const FEED = read("ui", "webview", "feed.ts");
+const FEED = read("ui", "webview", "feed.ts") + read("ui", "webview", "card-sections.ts");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
 const KERNEL = read("kernel", "kernel.py");
 const BOARD_SRC = read("ui", "webview", "board-def.ts");
 

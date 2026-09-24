@@ -290,8 +290,11 @@ click showing the items, a second the full context under each, a third folding i
 the header is a button, so Tab reaches it and Enter or Space opens it, and the header's own gear opens the
 setting below. While a row says romp's judges are refused their credential, the box stands open to the items,
 so the fault is not hidden under the header. Each item has a way to act: a question a
-judge filed (the card's title and its decision brief, with **Reply**, which points the composer at that
-card the way Follow up does, and **Clear**), and a held message from another session with its own **Approve** and
+judge filed (at the items level the card's title, its decision brief or takeaway and the state badges the
+card wears, with **Reply**, which points the composer at that card the way Follow up does, and **Clear**;
+at the full context the card's own section toggles, Background, Summary, Stalled, the sub-goals and Awaiting
+task, opening the same sections, and a section opened on the row or on the card opens on both), and a held
+message from another session with its own **Approve** and
 **Deny**; and, when romp's judges cannot read the session because the credential they bill is
 refused, a row whose one action is **Fix credential…**, which opens the gear's Billing block (no
 Clear: clearing would hide the fault while the refusals go on). A stop the chat already shows

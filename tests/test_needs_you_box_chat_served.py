@@ -43,6 +43,7 @@ SID = "cccccccc-1111-2222-3333-444444444444"
 API = "dddddddd-1111-2222-3333-444444444444"     # a second session with a question and NO hard stop: its tab wears the Needs you ring
 API_Q = "which port should the api listen on in the fixtures?"
 BRIEF = "the suite targets Postgres in CI and SQLite locally; which should the fixtures load into?"
+BACKGROUND = "The suite loads its fixtures through two loaders, one per database, and the CI job runs both in an order nobody wrote down."   # the distiller's re-orientation paragraph, the card's Background section
 LONG_BRIEF = " ".join("The fixtures load into one database and the suite has two: Postgres in CI and SQLite on a laptop, with different "
                       "date handling, so a fixture written for one fails on the other." for _ in range(30))   # past four lines at any width the lab runs at (CI's browser fit five repetitions in four; the round-fifteen CI red)
 MID = "aaaaaaaa-bbbb-cccc-dddd-000000000301"
@@ -67,6 +68,9 @@ const errors = []; page.on("pageerror", (e) => errors.push(String(e).slice(0, 30
 const out = { errors };
 const mark = () => process.stdout.write("PARTIAL:" + JSON.stringify(out) + "\n");   // the record so far, after every scene: what a run that hits the driver's budget still reports
 const rowSel = (id) => '#notices .ntc-row[data-item="' + id + '"]';
+// a row's LINE (read as `.ntc-secs > .fask-distill` or `.ntc-body` below): on a goal row the card's distill line (the brief or the takeaway), drawn by the card's
+// own builder since the box content round (plans/needs-you.md); on a notice row and on the credential row the kernel's markdown body, as before. A page
+// before the round has no distill element on the row, so the reads fall to the body there
 const readBox = () => page.evaluate(() => {
   const box = document.getElementById("notices"); const cs = box ? getComputedStyle(box) : null;
   const rows = box ? Array.from(box.querySelectorAll(".ntc-row")) : [];
@@ -81,9 +85,9 @@ const readBox = () => page.evaluate(() => {
            head2: (() => { const h = box && box.querySelector(".ntc-head"); return h ? { role: h.getAttribute("role"), tabIndex: h.tabIndex, expanded: h.getAttribute("aria-expanded"), title: h.title, border: getComputedStyle(h.closest(".ntc-bar") || h).borderBottomColor, caretHidden: (h.querySelector(".ntc-caret") || {}).getAttribute ? h.querySelector(".ntc-caret").getAttribute("aria-hidden") : null, gear: !!(h.closest(".ntc-bar") || h).querySelector(".ntc-gear") } : null; })(),   // the header as a control: its role, its tab stop, its expanded state and title, its rule's colour, the caret's aria, the gear
            laidTitles: rows.map((r) => { const t = r.querySelector(".ntc-title"); return !!t && t.getBoundingClientRect().height > 0; }),   // LAID OUT, by rect: a hidden ancestor keeps a child's computed display and its textContent (the second contributor's post-merge review of PR 2093)
            laidButtons: rows.map((r) => Array.from(r.querySelectorAll(".ntc-actions button")).filter((b) => b.getBoundingClientRect().height > 0).length),
-           headVisible: box ? vis(box.querySelector(".ntc-head")) : null, rowsVisible: rows.map((r) => vis(r)), bodiesVisible: rows.map((r) => vis(r.querySelector(".ntc-body"))),
+           headVisible: box ? vis(box.querySelector(".ntc-head")) : null, rowsVisible: rows.map((r) => vis(r)), bodiesVisible: rows.map((r) => vis((r.querySelector(".ntc-secs > .fask-distill") || r.querySelector(".ntc-body")))),
            theme: document.body.classList.contains("theme-light") ? "light" : "dark",
-           rows: rows.map((r) => ({ id: r.getAttribute("data-item"), title: (r.querySelector(".ntc-title") || {}).textContent, body: (r.querySelector(".ntc-body") || {}).textContent,
+           rows: rows.map((r) => ({ id: r.getAttribute("data-item"), title: (r.querySelector(".ntc-title") || {}).textContent, body: ((r.querySelector(".ntc-secs > .fask-distill") || r.querySelector(".ntc-body")) || {}).textContent,
                                    buttons: Array.from(r.querySelectorAll(".ntc-actions button")).map((b) => b.textContent), disabled: Array.from(r.querySelectorAll(".ntc-actions button")).map((b) => b.disabled) })),
            tabClasses: tab ? tab.className : null, tabs };
 });
@@ -160,7 +164,8 @@ out.floor.after = await readBox();
 fs.unlinkSync(cfg.judgeAuth); fs.utimesSync(cfg.order, new Date(), new Date());
 out.floor.released = await page.waitForSelector('#notices .ntc-row button[data-act="ntc-fix"]', { state: "detached", timeout: 60000 }).then(() => true).catch(() => false);
 out.floor.afterRelease = await readBox();
-out.floor.reusedRow = await page.evaluate(() => { const r = document.querySelector("#notices .ntc-row"); const b = r && r.querySelector(".ntc-body"); return r ? { fault: r.classList.contains("ntc-fault"), bodyLaid: !!b && b.getBoundingClientRect().height > 0, hasBody: !!b && (b.textContent || "").trim().length > 0 } : null; });   // the same row, reused: the fault class gone and its body hidden again at the items
+out.floor.reusedRow = await page.evaluate(() => { const r = document.querySelector("#notices .ntc-row"); const b = r && r.querySelector(".ntc-body"); const d = r && r.querySelector(".ntc-secs > .fask-distill");
+  return r ? { fault: r.classList.contains("ntc-fault"), bodyLaid: !!b && b.getBoundingClientRect().height > 0, lineLaid: !!d && d.getBoundingClientRect().height > 0, hasBody: !!b && (b.textContent || "").trim().length > 0 } : null; });   // the row reused for the plain question: no fault class, the markdown body hidden again at the items, the card's line in its place (the box content round)
 out.floor.web = await switchTo(cfg.sid, 4);
 await foldTo(2);   // the rest of the scenes read the bodies and their disclosures: the full context open
 mark();
@@ -217,7 +222,7 @@ const builtRecord = async (id, floor, brief) => { const o = { id, floor, built: 
 const briefNow = () => Math.floor(Date.now() / 1000);
 const w1 = await writeStore((st) => { st.nodes[cfg.g1].blockSummary = cfg.brief; st.nodes[cfg.g1].briefedMt = briefNow(); });
 out.brief = await builtRecord(cfg.g1, w1, cfg.brief);
-out.brief.landed = await page.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && r.querySelector(".ntc-body"); return !!b && (b.textContent || "").trim() === a.brief; }, { sel: rowSel(cfg.g1), brief: cfg.brief }, { timeout: 30000 }).then(() => true).catch(() => false);   // the row follows the kernel's word by one chat build
+out.brief.landed = await page.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && (r.querySelector(".ntc-secs > .fask-distill") || r.querySelector(".ntc-body")); return !!b && (b.textContent || "").trim() === a.brief; }, { sel: rowSel(cfg.g1), brief: cfg.brief }, { timeout: 30000 }).then(() => true).catch(() => false);   // the row follows the kernel's word by one chat build
 if (!out.brief.landed) await onMiss(out.brief);
 mark();
 out.brief.box = await readBox();
@@ -227,17 +232,17 @@ const w2 = await writeStore((st) => { st.nodes[cfg.g1].blockSummary = cfg.longBr
 const moreSel = rowSel(cfg.g1) + " .ntc-more";
 // held on the kernel's build event, then the page's own events (the round-fifteen CI red read too early; the second red saw no frame for sixty
 // seconds with no word from the kernel): the feed rebuilt past the write with the brief, the body carries it, its layout clips it, then the button
-const landedAt = (sel, brief) => page.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && r.querySelector(".ntc-body"); return !!b && (b.textContent || "").trim() === a.brief; }, { sel, brief }, { timeout: 30000 }).then(() => true).catch(() => false);
-const clippedAt = (sel) => page.waitForFunction((s) => { const r = document.querySelector(s); const b = r && r.querySelector(".ntc-body"); return !!b && b.scrollHeight > b.clientHeight + 1; }, sel, { timeout: 15000 }).then(() => true).catch(() => false);
+const landedAt = (sel, brief) => page.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && (r.querySelector(".ntc-secs > .fask-distill") || r.querySelector(".ntc-body")); return !!b && (b.textContent || "").trim() === a.brief; }, { sel, brief }, { timeout: 30000 }).then(() => true).catch(() => false);
+const clippedAt = (sel) => page.waitForFunction((s) => { const r = document.querySelector(s); const b = r && (r.querySelector(".ntc-secs > .fask-distill") || r.querySelector(".ntc-body")); return !!b && b.scrollHeight > b.clientHeight + 1; }, sel, { timeout: 15000 }).then(() => true).catch(() => false);
 out.more = await builtRecord(cfg.g1, w2, cfg.longBrief);
 out.more.landed = await landedAt(rowSel(cfg.g1), cfg.longBrief); if (!out.more.landed) await onMiss(out.more);
 out.more.clipped = await clippedAt(rowSel(cfg.g1));
 out.more.shown = await page.waitForSelector(moreSel, { timeout: 15000 }).then(() => true).catch(() => false);
-out.more.before = await page.evaluate((s) => { const r = document.querySelector(s); const b = r && r.querySelector(".ntc-body"); const m = r && r.querySelector(".ntc-more");
+out.more.before = await page.evaluate((s) => { const r = document.querySelector(s); const b = r && (r.querySelector(".ntc-secs > .fask-distill") || r.querySelector(".ntc-body")); const m = r && r.querySelector(".ntc-more");
   return b ? { open: r.classList.contains("ntc-open"), clamp: getComputedStyle(b).webkitLineClamp, clipped: b.scrollHeight > b.clientHeight + 1, label: m ? m.textContent : null, chars: (b.textContent || "").length, width: b.clientWidth } : null; }, rowSel(cfg.g1));
 await page.click(moreSel).catch(() => {});
 out.more.open = await page.waitForFunction((s) => { const r = document.querySelector(s); return !!r && r.classList.contains("ntc-open"); }, rowSel(cfg.g1), { timeout: 10000 }).then(() => true).catch(() => false);
-out.more.after = await page.evaluate((s) => { const r = document.querySelector(s); const b = r && r.querySelector(".ntc-body"); const m = r && r.querySelector(".ntc-more");
+out.more.after = await page.evaluate((s) => { const r = document.querySelector(s); const b = r && (r.querySelector(".ntc-secs > .fask-distill") || r.querySelector(".ntc-body")); const m = r && r.querySelector(".ntc-more");
   return b ? { clamp: getComputedStyle(b).webkitLineClamp, clipped: b.scrollHeight > b.clientHeight + 1, label: m ? m.textContent : null, text: (b.textContent || "").trim() } : null; }, rowSel(cfg.g1));
 await page.click(moreSel).catch(() => {});
 out.more.closed = await page.waitForFunction((s) => { const r = document.querySelector(s); return !!r && !r.classList.contains("ntc-open"); }, rowSel(cfg.g1), { timeout: 10000 }).then(() => true).catch(() => false);
@@ -253,10 +258,6 @@ out.refused.rowErr = await page.evaluate((s) => { const r = document.querySelect
 await page.evaluate(() => { const b = Array.from(document.querySelectorAll("#confirm button")).find((x) => /Dismiss/.test(x.textContent || "")); if (b) b.click(); });
 await page.waitForSelector("#confirm", { state: "detached", timeout: 10000 }).catch(() => {});
 fs.chmodSync(cfg.ledger, 0o644);
-// 2a'. THE SIGNATURE WITHOUT THE CONTINUE FLAG, executed (the box arc's round three: the flag's absence from the row signature had a source pin
-// alone): the session's liveness flips (its sdk record's alive bit), so the kernel's next frame changes the rows' Continue flag and nothing the
-// rows show; the composer's placeholder is the frame's visible mark. The refused row's line and its re-armed buttons must survive that frame
-// (with the flag in the signature the row was rebuilt: the line wiped, a latched Clear re-enabled)
 // 2a'. THE SIGNATURE WITHOUT THE CONTINUE FLAG, executed (the box arc's round three): the session's latest kernel status frame, with every
 // row's Continue flag flipped and nothing else, is posted to the page the way the kernel's socket frames arrive (a window message; the
 // background lab drives its box the same way); no liveness changes and nothing is read in the composer; the wait is on the page HANDLING the
@@ -315,7 +316,7 @@ out.fresh.row = await page.waitForSelector(rowSel(cfg.g5), { timeout: 30000 }).t
 out.fresh.landed = await landedAt(rowSel(cfg.g5), cfg.longBrief); if (!out.fresh.landed) await onMiss(out.fresh); out.fresh.clipped = await clippedAt(rowSel(cfg.g5));   // the same holds: the brief on the row, its layout clipping it
 out.fresh.more = await page.waitForSelector(rowSel(cfg.g5) + " .ntc-more", { timeout: 15000 }).then(() => true).catch(() => false);
 out.fresh.box = await readBox();
-await foldTo(1);   // below level 2 the disclosure's button stands attached and hidden (the second contributor's post-merge review of PR 2093: pinned by source alone before)
+await foldTo(1);   // at the items level the line is clamped too and its button SHOWS (the box content round); below the full context the body and its button hid before it (the second contributor's post-merge review of PR 2093: pinned by source alone before)
 out.fresh.moreAtItems = await page.evaluate((s) => { const m = document.querySelector(s + " .ntc-more"); return m ? getComputedStyle(m).display : "absent"; }, rowSel(cfg.g5));
 await foldTo(2);
 mark();
@@ -362,7 +363,7 @@ if (fr) {
   // 6b. THE KEYBOARD ORDER WHERE THE GEAR IS DRAWN (the round-one verifier of PR 2105: the order pin ran only on the standalone page, and the gear
   // nested in the header's button was folded into its accessible name): Shift+Tab from the frame's composer enters the box on the gear, the last
   // control in the header; one more lands on the header, named by its label alone (aria-labelledby); Enter opens the items; Tab goes to the gear,
-  // then to the first row's Reply
+  // then to the first row's More (its long brief is clamped at the items since the box content round), then to its Reply
   await openNeedsBox(fr, 0);
   const frActive = () => fr.evaluate(() => { const a = document.activeElement; return a ? { inBox: !!a.closest("#notices"), head: a.classList.contains("ntc-head"), act: a.dataset ? a.dataset.act || null : null, text: (a.textContent || "").trim().slice(0, 40), labelledby: a.getAttribute("aria-labelledby"), labelText: (document.getElementById(a.getAttribute("aria-labelledby") || "") || {}).textContent || null } : null; });
   await fr.focus("#composer-input");
@@ -386,7 +387,8 @@ if (fr) {
     await shell.keyboard.press("Escape");
     await shell.waitForFunction(() => !document.body.classList.contains("settings-open"), null, { timeout: 10000 }).catch(() => {});
     await fr.focus("#notices .ntc-bar .ntc-gear", { timeout: 5000 }).catch((e) => { if (e.name !== "TimeoutError") throw e; });   // fail-soft on the wait alone: a page without the bar (the base) reads whatever it shows
-    await shell.keyboard.press("Tab"); out.shellKeys.afterTab2 = await frActive();
+    await shell.keyboard.press("Tab"); out.shellKeys.afterTab2 = await frActive();   // the first row's first control: its disclosure, since its line is clamped at the items too (the box content round)
+    await shell.keyboard.press("Tab"); out.shellKeys.afterTab3 = await frActive();   // then Reply
     out.shellKeys.headFocusable = await fr.evaluate(() => document.querySelector("#notices .ntc-head").querySelectorAll("button, [tabindex], a[href], input, select, textarea").length);   // no focusable descendant: the gear is a sibling (axe nested-interactive)
   }
   await openNeedsBox(fr, 2);
@@ -429,13 +431,63 @@ if (fr) {
     st.status[cfg.g6] = "blocked"; });
   Object.assign(out.hiddenPane, await builtRecord(cfg.g6, w4, cfg.longBrief));   // { id, floor, built }: the kernel's build event, read from the chat page's own fetch
   out.hiddenPane.row = await fr.waitForSelector(rowSel(cfg.g6), { state: "attached", timeout: 30000 }).then(() => true).catch(() => false);   // after the kernel's word
-  out.hiddenPane.landed = await fr.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && r.querySelector(".ntc-body"); return !!b && (b.textContent || "").trim() === a.brief; }, { sel: rowSel(cfg.g6), brief: cfg.longBrief }, { timeout: 30000 }).then(() => true).catch(() => false);
+  out.hiddenPane.landed = await fr.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && (r.querySelector(".ntc-secs > .fask-distill") || r.querySelector(".ntc-body")); return !!b && (b.textContent || "").trim() === a.brief; }, { sel: rowSel(cfg.g6), brief: cfg.longBrief }, { timeout: 30000 }).then(() => true).catch(() => false);
   if (!out.hiddenPane.landed) await onMiss(out.hiddenPane);
-  out.hiddenPane.whileHidden = await fr.evaluate((a) => { const r = document.querySelector(a.g6); const b = r && r.querySelector(".ntc-body"); const g5 = document.querySelector(a.g5);
+  out.hiddenPane.whileHidden = await fr.evaluate((a) => { const r = document.querySelector(a.g6); const b = r && (r.querySelector(".ntc-secs > .fask-distill") || r.querySelector(".ntc-body")); const g5 = document.querySelector(a.g5);
     return b ? { h: b.clientHeight, sh: b.scrollHeight, more: !!r.querySelector(".ntc-more"), g5More: !!(g5 && g5.querySelector(".ntc-more")) } : null; }, { g6: rowSel(cfg.g6), g5: rowSel(cfg.g5) });   // g5's button must stand: a zero measure removes nothing (the second contributor's post-merge note on PR 2018)
   await shell.evaluate(() => { window.__rompPaneToggle("chat", true); });                                                     // shown again
   out.hiddenPane.moreAfterShow = await fr.waitForSelector(rowSel(cfg.g6) + " .ntc-more", { timeout: 15000 }).then(() => true).catch(() => false);
-  out.hiddenPane.clipped = await fr.evaluate((s) => { const r = document.querySelector(s); const b = r && r.querySelector(".ntc-body"); return !!b && b.scrollHeight > b.clientHeight + 1; }, rowSel(cfg.g6));
+  out.hiddenPane.clipped = await fr.evaluate((s) => { const r = document.querySelector(s); const b = r && (r.querySelector(".ntc-secs > .fask-distill") || r.querySelector(".ntc-body")); return !!b && b.scrollHeight > b.clientHeight + 1; }, rowSel(cfg.g6));
+}
+// 6c. THE ROW CARRIES WHAT THE CARD CARRIES (the user 2026-09-23, from a screenshot: a row at the items level showed its title and two buttons alone;
+// plans/needs-you.md): the feed pane shown beside the chat pane, the fresh question's card and its row read at each level and compared. The store gives
+// the card its other faces first: a background paragraph (the distiller's, its family stamped) and a sub-goal for two more toggles, a delegation's
+// origin for a badge on its name row. At the items level the row shows the title, the card's default-open section (the distill line, clamped) and the
+// card's badges, then Reply and Clear, and no session name, age or toggle; at the full context the card's toggles in the card's order with the card's
+// labels and pressed states, and the same bodies. A press on the row's Background reaches the card and a press on the card's Summary reaches the row:
+// the choice crosses the two documents (card-sections.ts, one builder for both).
+out.content = { frame: !!fr };
+if (fr) {
+  await shell.evaluate(() => { window.__rompPaneToggle("feed", true); });
+  let ff = null; for (let i = 0; i < 150 && !ff; i++) { ff = shell.frames().find((f) => /\/feed(\?|$)/.test(f.url())) || null; if (!ff) await shell.waitForTimeout(200); }   // loop-ok: bounded
+  out.content.feedFrame = !!ff;
+  if (ff) {
+    const cardSel = '.fitem.ask[data-key="a:' + cfg.g6 + '"]';
+    const w5 = await writeStore((st) => { st.nodes[cfg.g6].background = cfg.background; st.nodes[cfg.g6].distilledMt = briefNow() + 3;
+      st.nodes[cfg.g6].origin = { peer: cfg.api, peerName: "api", goalId: cfg.api + ":g1" };
+      st.nodes[cfg.g6c] = { id: cfg.g6c, text: cfg.g6cText, parentId: cfg.g6, nodeComplete: false, blocked: false, cleared: false, trail: [], t: Math.floor(Date.now() / 1000), log: [] }; st.status[cfg.g6c] = "working"; });
+    Object.assign(out.content, await builtRecord(cfg.g6, w5, cfg.longBrief));   // { id, floor, built }: the kernel's build past the write
+    const vis = "const vis = (x) => !!x && getComputedStyle(x).display !== 'none' && x.getBoundingClientRect().height > 0;";
+    out.content.cardReady = await ff.waitForFunction((s) => { const c = document.querySelector(s); if (!c) return false; const vis = (x) => !!x && getComputedStyle(x).display !== "none" && x.getBoundingClientRect().height > 0;
+      const b = Array.from(c.querySelectorAll(".fask-row3 > .fask-secbtn")).find((x) => (x.textContent || "").trim() === "Background"); return vis(b) && vis(c.querySelector(".fask-row2 .fask-origin")); }, cardSel, { timeout: 60000 }).then(() => true).catch(() => false);   // the card wears the Background toggle and the origin badge once the build reaches the feed page
+    const readCard = () => ff.evaluate((s) => { const c = document.querySelector(s); if (!c) return null; const vis = (x) => !!x && getComputedStyle(x).display !== "none" && x.getBoundingClientRect().height > 0;
+      const t = c.querySelector(".fcard-title"); const d = c.querySelector(".fask-secs > .fask-distill");
+      return { title: t ? (t.textContent || "").trim() : null, distill: d ? (d.textContent || "").trim() : null,
+               badges: Array.from(c.querySelectorAll(".fask-row2 .fask-followedup, .fask-row2 .fask-nudgefailed, .fask-row2 .fask-interrupting, .fask-row2 .fask-interrupted, .fask-row2 .fask-waiton, .fask-row2 .fask-origin")).filter(vis).map((x) => (x.textContent || "").trim()),
+               toggles: Array.from(c.querySelectorAll(".fask-row3 > .fask-secbtn")).filter(vis).map((x) => ({ label: (x.textContent || "").trim(), pressed: x.getAttribute("aria-pressed") })),
+               bodies: { bg: vis(c.querySelector(".fask-bg-body")), distill: vis(d), stall: vis(c.querySelector(".fask-stall-body")), tree: vis(c.querySelector(".fask-checklist")) } }; }, cardSel);
+    const readRow = () => fr.evaluate((s) => { const r = document.querySelector(s); if (!r) return null; const vis = (x) => !!x && getComputedStyle(x).display !== "none" && x.getBoundingClientRect().height > 0;
+      const t = r.querySelector(".ntc-title"); const d = r.querySelector(".ntc-secs > .fask-distill"); const secsRow = r.querySelector(".ntc-secs-row");
+      return { title: t ? (t.textContent || "").trim() : null, distill: d ? (d.textContent || "").trim() : null, clamp: d ? getComputedStyle(d).webkitLineClamp : null,
+               badges: Array.from(r.querySelectorAll(".ntc-badges > *")).filter(vis).map((x) => (x.textContent || "").trim()),
+               togglesShown: vis(secsRow), toggles: secsRow ? Array.from(secsRow.querySelectorAll(".fask-secbtn")).filter(vis).map((x) => ({ label: (x.textContent || "").trim(), pressed: x.getAttribute("aria-pressed") })) : null,
+               bodies: { bg: vis(r.querySelector(".fask-bg-body")), distill: vis(d), stall: vis(r.querySelector(".fask-stall-body")), tree: vis(r.querySelector(".fask-checklist")) },
+               nameOrAge: !!r.querySelector(".fname, .ftime, .fask-row2"), buttons: Array.from(r.querySelectorAll(".ntc-actions button")).map((b) => (b.textContent || "").trim()) }; }, rowSel(cfg.g6));
+    await openNeedsBox(fr, 1);
+    out.content.rowLanded = await fr.waitForFunction((s) => { const r = document.querySelector(s); const b = r && r.querySelector(".ntc-badges .fask-origin"); return !!b && getComputedStyle(b).display !== "none"; }, rowSel(cfg.g6), { timeout: 30000 }).then(() => true).catch(() => false);   // the row's repaint with the badge: the frame's key carries the whole row
+    out.content.cardL1 = await readCard(); out.content.rowL1 = await readRow();
+    await openNeedsBox(fr, 2);
+    out.content.cardL2 = await readCard(); out.content.rowL2 = await readRow();
+    const pressRow = (label) => fr.evaluate((a) => { const r = document.querySelector(a.sel); const b = r && Array.from(r.querySelectorAll(".ntc-secs-row .fask-secbtn")).find((x) => (x.textContent || "").trim() === a.label); if (b) b.click(); return !!b; }, { sel: rowSel(cfg.g6), label });
+    const pressCard = (label) => ff.evaluate((a) => { const c = document.querySelector(a.sel); const b = c && Array.from(c.querySelectorAll(".fask-row3 > .fask-secbtn")).find((x) => (x.textContent || "").trim() === a.label); if (b) b.click(); return !!b; }, { sel: cardSel, label });
+    const cardPressed = (label) => ff.waitForFunction((a) => { const c = document.querySelector(a.sel); const b = c && Array.from(c.querySelectorAll(".fask-row3 > .fask-secbtn")).find((x) => (x.textContent || "").trim() === a.label); return !!b && b.getAttribute("aria-pressed") === "true"; }, { sel: cardSel, label }, { timeout: 10000 }).then(() => true).catch(() => false);
+    const rowPressed = (label) => fr.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && Array.from(r.querySelectorAll(".ntc-secs-row .fask-secbtn")).find((x) => (x.textContent || "").trim() === a.label); return !!b && b.getAttribute("aria-pressed") === "true"; }, { sel: rowSel(cfg.g6), label }, { timeout: 10000 }).then(() => true).catch(() => false);
+    out.content.rowPressBg = await pressRow("Background"); out.content.cardFollowed = await cardPressed("Background");
+    out.content.cardAfterRowPress = await readCard(); out.content.rowAfterRowPress = await readRow();
+    out.content.cardPressSummary = await pressCard("Summary"); out.content.rowFollowed = await rowPressed("Summary");
+    out.content.cardAfterCardPress = await readCard(); out.content.rowAfterCardPress = await readRow();
+  }
+  mark();
 }
 // 7. A FRESH PAGE STARTS COLLAPSED (the second contributor's post-merge review of PR 2093: the earlier read used a new context, which a level kept
 // in localStorage would have passed): the SAME chat page reloaded, its rows waited for as attached, reads level 0 with every row hidden
@@ -448,7 +500,7 @@ await browser.close();
 """
 
 
-# the driver's budget. Its bounded waits sum to about 1840 s serially (every helper counted PER CALL, the round-one verifier of PR 2105: the
+# the driver's budget. Its bounded waits sum to about 2200 s serially (every helper counted PER CALL, the round-one verifier of PR 2105: the
 # kernel's four 90 s deadlines, the 60 s row, card and credential-row waits, the 30 s and 15 s waits of the brief helpers per call, the fold
 # helper's three 5 s waits per call, the shorter button, dialog, level, settings-card and frame waits, the frame loops), more than any per-test ceiling the runner gives (CI's served-page step runs pytest with --timeout=600, thread method), so
 # the cap cannot be the sum: it is the ceiling less the SETUP the same per-test timer wraps (pytest-timeout's thread method times the first
@@ -592,7 +644,7 @@ class NeedsYouBoxChatServed(unittest.TestCase):
             base = "http://127.0.0.1:%d" % self.port
             with open(cfg, "w") as f:
                 json.dump({"chat": base + "/chat?token=" + self.token, "feed": base + "/feed?token=" + self.token, "feedJson": base + "/feed.json?token=" + self.token, "perf": base + "/perf?token=" + self.token, "sid": SID, "api": API, "g1": self.g[0], "g2": self.g[1], "g3": self.g[2], "g4": self.g[3],
-                           "reply": "Postgres, the same as production", "store": self.store, "brief": BRIEF, "longBrief": LONG_BRIEF, "g5": SID + ":g5", "g5q": "should the fixtures use the production database name or a scratch one?", "g6": SID + ":g6", "g6q": "which of the two fixture loaders should the CI job run first?", "landing": base + "/?token=" + self.token, "ledger": self.ledger, "order": self.order, "judgeAuth": os.path.join(os.path.dirname(os.path.dirname(self.store)), "judge-auth.json")}, f)
+                           "reply": "Postgres, the same as production", "store": self.store, "brief": BRIEF, "longBrief": LONG_BRIEF, "g5": SID + ":g5", "g5q": "should the fixtures use the production database name or a scratch one?", "g6": SID + ":g6", "g6q": "which of the two fixture loaders should the CI job run first?", "g6c": SID + ":g6c", "g6cText": "run the second loader under the first's fixtures", "background": BACKGROUND, "landing": base + "/?token=" + self.token, "ledger": self.ledger, "order": self.order, "judgeAuth": os.path.join(os.path.dirname(os.path.dirname(self.store)), "judge-auth.json")}, f)
             driver = os.path.join(self.lab, "needsbox.mjs")
             Path(driver).write_text(_lab.NEEDS_BOX_OPEN_JS + DRIVER)   # the fold helper the held-mail lab shares
             try:
@@ -659,7 +711,7 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self._built(r["brief"], "the short brief")
         self.assertTrue(r["brief"]["landed"], "the row's body follows the brief written to the store within the next frames: %r (kernel: %s)" % (r["brief"], self._kernel_tail()))
         row = next((x for x in r["brief"]["box"]["rows"] if x["id"] == self.g[0]), None)
-        self.assertEqual(row and row["body"].strip(), BRIEF, "the brief is the row's body (the face renders it as markdown, with its trailing newline)")
+        self.assertEqual(row and row["body"].strip(), BRIEF, "the brief is the row's line (the card's distill line since the box content round; before it the face rendered it as markdown, with its trailing newline)")
         self.assertEqual(r["brief"]["box"]["head"], "Needs you · 4", "and nothing else moved")
 
     def test_a_long_brief_gets_a_disclosure_on_its_row_that_lifts_the_clamp_and_folds_back(self):
@@ -690,7 +742,7 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertTrue(r["fresh"]["row"], "the new card's row arrives: %r (kernel: %s)" % ({k: v for k, v in r["fresh"].items() if k != "box"}, self._kernel_tail()))
         self.assertTrue(r["fresh"]["landed"] and r["fresh"]["clipped"], "with its long brief, clipped: %r" % r["fresh"])
         self.assertTrue(r["fresh"]["more"], "and wears the More button with no gesture (before: measured detached, 0 by 0, no button): %r" % r["fresh"]["box"])
-        self.assertEqual(r["fresh"]["moreAtItems"], "none", "below the full context the button stands attached and hidden (the second contributor's post-merge review of PR 2093: source-pinned alone before; no fixture seeds an attachment, so that half stays a source pin): %r" % r["fresh"]["moreAtItems"])
+        self.assertNotIn(r["fresh"]["moreAtItems"], ("none", "absent"), "at the items level the button shows too: the line is clamped there and More opens it (the box content round; before it the body and its button hid below the full context): %r" % r["fresh"]["moreAtItems"])
         self.assertTrue(r["on"]["shown"]); self.assertTrue(r["on"]["moreAfterRebuild"], "the rebuilt row wears it too (before: none after the switch's off-then-on)")
 
     def test_a_pane_hidden_while_a_long_brief_row_arrives_gets_its_disclosure_when_shown(self):
@@ -844,7 +896,7 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertTrue(f["up"] and f["down"], "premise: the two clicks at the floor ran")
         self.assertTrue(f["released"], "the seed removed, the credential row leaves: %r (kernel: %s)" % ({k: v for k, v in f.items() if k in ("row", "up", "down", "released")}, self._kernel_tail()))
         self.assertEqual((f["afterRelease"]["level"], f["afterRelease"]["head"]), (1, "Needs you · 1"), "the box keeps the items when the row leaves (before: 0 stored, the box dropped to its header line): %r" % f["afterRelease"])
-        self.assertEqual(f["reusedRow"], {"fault": False, "bodyLaid": False, "hasBody": True}, "the reused row lost the fault class and its brief is hidden again at the items (a class never removed would keep the body showing): %r" % f["reusedRow"])
+        self.assertEqual(f["reusedRow"], {"fault": False, "bodyLaid": False, "lineLaid": True, "hasBody": True}, "the reused row lost the fault class and its markdown body is hidden again at the items, the card's line showing in its place (a class never removed would keep the body showing; the box content round): %r" % f["reusedRow"])
 
     def test_where_the_gear_is_drawn_the_keyboard_meets_it_then_the_header_named_by_its_label(self):
         """The round-one verifier of PR 2105: the order pin ran only on the standalone page, where no gear is drawn, and the gear nested in the
@@ -864,7 +916,8 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertTrue(k.get("gearEnterOpened"), "Enter on the focused gear opens the settings card (the box arc's round three: a key on the gear is the gear's own): %r" % k)
         self.assertEqual((k.get("levelBeforeGearEnter"), k.get("levelAfterGearEnter")), (1, 1), "and leaves the level alone")
         self.assertEqual(k.get("headFocusable"), 0, "the header has no focusable descendant: the gear is its sibling in the bar (axe nested-interactive)")
-        self.assertEqual((k["afterTab2"]["inBox"], k["afterTab2"]["text"], k["afterTab2"]["act"]), (True, "Reply", "ntc-reply"), "then the first row's Reply: %r" % k["afterTab2"])
+        self.assertEqual((k["afterTab2"]["inBox"], k["afterTab2"]["text"], k["afterTab2"]["act"]), (True, "More", "ntc-more"), "then the first row's More: its long brief is clamped at the items too since the box content round, and the disclosure comes before the buttons (before the round: no line and no button below the full context, so Tab reached Reply): %r" % k["afterTab2"])
+        self.assertEqual((k["afterTab3"]["inBox"], k["afterTab3"]["text"], k["afterTab3"]["act"]), (True, "Reply", "ntc-reply"), "then the first row's Reply: %r" % k["afterTab3"])
 
     def test_the_headers_gear_opens_the_settings_at_the_boxes_section_in_the_shell(self):
         """The second contributor's post-merge review of PR 2093: the strip's gear, the only section-targeted opener, lands on Tab strip
@@ -886,6 +939,58 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertTrue(r["rowStaysOnReply"], "Reply alone leaves the row: the reply is not written yet")
         self.assertTrue(r["afterReply"]["left"], "the typed reply is a follow-up on the card and its row left: %r (kernel: %s)" % (r["afterReply"]["box"], self._kernel_tail()))
         self.assertEqual(r["afterReply"]["box"]["head"], "Needs you · 1", "the held message alone remains")
+
+    def _content(self):
+        r = self._result(); c = r["content"]
+        flat = {k: v for k, v in c.items() if not isinstance(v, dict)}
+        self.assertTrue(c.get("frame") and c.get("feedFrame"), "the shell's chat pane and its feed pane, shown for the scene: %r" % flat)
+        self._built(c, "the card's other faces")
+        self.assertTrue(c.get("cardReady"), "the card wears the Background toggle and the origin badge once the build reaches the feed page: %r (kernel: %s)" % (c.get("cardL1"), self._kernel_tail()))
+        return c   # the row's own repaint is each test's pin, not a premise here: a page before the round reds each test on its own line
+
+    def test_the_row_at_the_items_level_shows_the_card_at_a_glance(self):
+        """The user 2026-09-23, from a screenshot: a row at the items level showed its title and two buttons alone, while the feed card carried a
+        brief, sections and badges. The row carries what the card carries (plans/needs-you.md): at the items level the title, the card's default-open
+        section (the distill line, clamped to four lines), the badges the card's name row wears, then Reply and Clear; the session name, the age and
+        the section toggles stay off it. Read on the shell against the same item's card in the feed pane."""
+        c = self._content(); card, row = c["cardL1"], c["rowL1"]
+        self.assertIsNotNone(row, "the row stands in the shell's chat pane: %r" % c.get("rowL1"))
+        self.assertEqual(row["title"], card["title"], "the same title as the card: %r vs %r" % (row, card))
+        self.assertTrue(c.get("rowLanded"), "the row repaints with the badge (the frame's key carries the whole row; before: no badge element on the row): %r" % row)
+        self.assertEqual(row["distill"], card["distill"], "the card's default-open section under the title, the distill line (before: the row had no such element): %r vs %r" % (row, card))
+        self.assertEqual(row["distill"], LONG_BRIEF); self.assertTrue(row["bodies"]["distill"], "shown at the items level: %r" % row)
+        self.assertEqual(row["clamp"], "4", "clamped there like the brief was, More past it: %r" % row)
+        self.assertEqual(row["badges"], card["badges"], "the card's badges on the row (before: none): %r vs %r" % (row, card))
+        self.assertEqual(row["badges"], ["\u21aa from api"], "the delegation's origin, as the card words it: %r" % row["badges"])
+        self.assertFalse(row["togglesShown"], "the section toggles wait for the full context: %r" % row)
+        self.assertFalse(row["nameOrAge"], "no session name and no age on the row (the box is the session's own): %r" % row)
+        self.assertEqual(row["buttons"], ["Reply", "Clear"])
+
+    def test_the_row_at_the_full_context_shows_the_cards_toggles_in_the_cards_order_and_the_same_bodies(self):
+        """The full context shows the card's section toggles in the card's order (Background, Summary, the sub-goals here), with the card's labels
+        and pressed states, driving the same bodies with the same one-open rule and default (plans/needs-you.md)."""
+        c = self._content(); card, row = c["cardL2"], c["rowL2"]
+        self.assertTrue(row["togglesShown"], "the toggles show at the full context: %r" % row)
+        self.assertEqual(row["toggles"], card["toggles"], "the card's toggles, labels and pressed states in the card's order (before: the row had none): %r vs %r" % (row, card))
+        self.assertEqual([t["label"] for t in row["toggles"]][:2], ["Background", "Summary"], "the card's order: %r" % row["toggles"])
+        self.assertEqual(len(row["toggles"]), 3, "and the sub-goals toggle for the child seeded: %r" % row["toggles"])
+        self.assertEqual([t["pressed"] for t in row["toggles"]], ["false", "true", "false"], "the default: the summary open, one section at a time: %r" % row["toggles"])
+        self.assertEqual(row["bodies"], card["bodies"]); self.assertEqual(row["bodies"], {"bg": False, "distill": True, "stall": False, "tree": False})
+
+    def test_a_press_on_the_rows_toggle_reaches_the_card_and_a_press_on_the_card_reaches_the_row(self):
+        """The disclosure is the item's, not the element's (the card's twin rule): the row and the card are two documents in the shell, and a
+        pick on either reaches the other (card-sections.ts, the channel). Background pressed on the row opens it on the card; Summary pressed on the
+        card reopens it on the row."""
+        c = self._content()
+        self.assertTrue(c["rowPressBg"], "the row's Background toggle was there to press")
+        self.assertTrue(c["cardFollowed"], "the card follows the row's press (before: the row had no toggle, and a card's pick stayed in its document): %r" % c["cardAfterRowPress"])
+        self.assertEqual(c["rowAfterRowPress"]["toggles"], c["cardAfterRowPress"]["toggles"])
+        self.assertEqual([t["pressed"] for t in c["rowAfterRowPress"]["toggles"]], ["true", "false", "false"], "Background open on both, the summary closed: %r" % c["rowAfterRowPress"])
+        self.assertEqual(c["rowAfterRowPress"]["bodies"], {"bg": True, "distill": False, "stall": False, "tree": False}); self.assertEqual(c["cardAfterRowPress"]["bodies"], c["rowAfterRowPress"]["bodies"])
+        self.assertTrue(c["cardPressSummary"] and c["rowFollowed"], "the row follows the card's press: %r" % c["rowAfterCardPress"])
+        self.assertEqual(c["rowAfterCardPress"]["toggles"], c["cardAfterCardPress"]["toggles"])
+        self.assertEqual([t["pressed"] for t in c["rowAfterCardPress"]["toggles"]], ["false", "true", "false"])
+        self.assertEqual(c["rowAfterCardPress"]["bodies"], {"bg": False, "distill": True, "stall": False, "tree": False}); self.assertEqual(c["cardAfterCardPress"]["bodies"], c["rowAfterCardPress"]["bodies"])
 
     def test_the_switch_hides_the_box_and_leaves_the_ring_and_back_on_the_box_returns(self):
         """The user 2026-09-23, who looked for the switch and did not find it: the settings card's own row, under a head named for where the

@@ -8,10 +8,10 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
 
 test("the card routes the distiller line through distillInputs(distillState, column), not column directly", () => {
-  assert.match(FEED, /import \{ distillText, distillInputs, applyDistillLine, distillPending, distillStaleNote \}/);
+  assert.match(FEED, /import \{ distillText, distillInputs, applyDistillLine, distillPending, distillStaleNote, distillParas \}/);   // distillParas since the box content round: the paragraph split is the module's, shared with the Needs you row
   // the card computes (completed, blocked) from the genuine state via the shared helper
   assert.match(FEED, /const \{ completed: dCompleted, blocked: dBlocked \} = distillInputs\(it\.distillState, it\.column\);/);
   // both the shown line AND the pending swirl read those, so the two can never disagree about the state

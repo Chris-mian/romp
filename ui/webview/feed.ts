@@ -9,7 +9,7 @@
 // its inputs changed (feed-card-gate.ts): the kernel re-sent it, a board-level input
 // it reads moved, a gesture touched it, or the 15 s live pass aged it. Its column and
 // order are re-applied on every render regardless.
-import { distillText, distillInputs, applyDistillLine, distillPending, distillStaleNote } from "./distiller-line";
+import { distillText, distillInputs, applyDistillLine, distillPending, distillStaleNote, distillParas } from "./distiller-line";
 import { openContextMenu, CtxItem } from "./ctx-menu";   // the one menu builder (the v0.16.0 tidy): the card menu's card, dismissal and keys
 import { flipNeeded } from "./feed-flip";
 import { delegate } from "./actions";
@@ -37,6 +37,8 @@ import { hostsGear, openGear } from "./gear-host";
 import { canPreview } from "./preview";
 import { sanitizeMd } from "./md-sanitize";
 import { noticeBodyNodes, noticeAttachmentNodes } from "./notice-face";   // the one face the feed card, its modal and the chat box share
+import { applySections, resolveSec, stallText, secChoice, cardTreeExpanded, clearedTag, parkedTag, nodeStatusClass, TREE_INDENT_EM, CLEARED_TIP,
+         registerSectionHost, BADGE_WORDS, type AskTreeNode, type NodeLogRow, type SectionEnv } from "./card-sections";   // the card's sections, one builder with the chat box's row (plans/needs-you.md)
 import { initFileView, setFileViewIdentity, hostStub } from "./file-view";
 import { initFileBrowse, openFileBrowse } from "./file-browse";
 import { VIEW_STATE_KEY, parseViewState, serializeViewState, pruneViewState, capViewState, type FeedViewState, threadKey, threadKeys } from "./feed-view-state";
@@ -59,38 +61,8 @@ interface DecisionBrief { context: string; question: string; options: string[] |
 interface AskQuestion { reply_id: string; sid: string; name: string; t: number; brief: DecisionBrief | null; qtype?: "decision" | "action" | "idea"; nodeId?: string }
 // One node of the ask's request DAG (flat list, root first; nest via children ids;
 // a node under two parents appears in both → render twice, dim the repeat).
-interface AskTreeNode {
-  born?: { kind: string; via: string; why: string; healed?: boolean } | null;   // T319: a step the session started on its own
-                                                                                //   (via: workflow | agent | work); why it sits under this goal
-  id: string; kind: "ask" | "handoff"; text: string; who: string;
-  whoSid: string; whoColor: { bg: string; fg: string } | null;   // agent → colored session link
-  whoWorking?: boolean;                                          // that agent is currently WORKING → yellow dot before its name
-  status: "done" | "question" | "open"; t: number; last: number;
-  mt?: number;                                                   // last-modified (done/block segment) → blocked/done nodes deep-link to where they RESOLVED, not where they were minted
-  anchorUuid?: string | null;                                    // EXACT turn uuid for this node's WORK target (where it resolved — an assistant turn); mark/time zones jump here. null when unresolvable
-  promptAnchorUuid?: string | null;                              // EXACT turn uuid for this node's PROMPT target = the user's minting message (a user turn) → prompt-intent jumps (title, text) resolve BY ID (kernel 92e23ff)
-  derived?: boolean;                                             // done by roll-up/roll-down (kernel), not explicit → DIMMED ✓ disc
-  qderived?: boolean;                                            // "question" by roll-UP (the block lives in a descendant) → tooltip says so; the actual ask carries its own ⏸ below (kernel flatten, the user 2026-07-11)
-  auth?: "open" | "done";                                        // AUTHORITATIVE tier: mirrors an item on the agent's OWN to-do list → solidity=authority disc (open = bold accent ring; done = heaviest check). Absent = plain judge-inferred node.
-  followupPending?: boolean;                                     // this sub was optimistically reopened by a per-sub follow-up → "↻ Followed up" chip (kernel flatten, judges 047264f)
-  summary?: string | null;                                       // the DISTILLER's key takeaway for a completed goal (artifact or 1-3 sentences) → the modal's auto-line for a DONE node (kernel flatten 78fc97b)
-  blockSummary?: string | null;                                  // the BLOCK-distiller's decision brief for a blocked goal → the modal's auto-line for a BLOCKED node (kernel 466393c); null until produced
-  summaryAnchorUuid?: string | null;                            // the brief/summary line's own landing (kernel T388): the text atom that carries it
-  summaryAnchorQuote?: string | null;                           // …and its located span, sent as the click's quote
-  relayNote?: string | null;   // a far host still holds a relayed question after its wait ended (kernel relayCarried) → its own dim line under the brief, never a brief paragraph
-  trgb?: [number, number, number];                               // last-activity recency tint (timestamp)
-  cleared?: boolean;                                             // user-cleared sub (nodeOverride op:clear) → struck-through faded row + "cleared" chip; the mark stays tied to status (box = done, the user 2026-07-26)
-  reviewedEarlier?: boolean;                                     // this done sub predates the top's review boundary (kernel flatten ↔ jd.review_boundary, the distiller's own scoping) → collapsed behind one "N reviewed earlier" row (the user 2026-08-19)
-  parked?: { n: number } | null;                                 // LEAPFROGGED open row (kernel _parked_rows, the user 2026-08-24): nothing filed under it while n younger siblings were dispatched past it → quiet "parked" tag + the card's dim sub-goals suffix; retires on its own delegation edge or any verdict
-  log?: NodeLogRow[] | null;                                     // the node's newest verdict rows (kernel _node_log_rows, non-done only) → the modal's per-item story (the user 2026-07-20)
-  children: string[];
-}
 // One verdict-log row (kernel _node_log_rows): who did what to this node, when, and — when the
 // parse resolves it — the exact chat turn to jump to (evT time-nav fallback otherwise).
-interface NodeLogRow {
-  kind: string; src: string; why?: string | null;
-  at?: number | null; evT?: number | null; anchorUuid?: string | null;
-}
 interface AskItem {
   sessionStarted?: { why: string; parent: string | null } | null;   // T319: the root is work the SESSION started (a workflow, an
                                                                     //   agent, its own thread) with no request of the user's to nest
@@ -1369,7 +1341,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // Now serves ONLY the "↩ re-judging" recheck state — the plain "↻ Followed up" (reopened-to-Working) badge
   // was removed (the user 2026-07-01: click-to-cite makes follow-up routine, so the ack is noise). updateAskCard
   // sets the text/title when it shows for recheck.
-  const fupBadge = el("span", "fask-followedup"); fupBadge.textContent = "↩ re-judging"; fupBadge.title = "you followed up — no longer waiting on you; the judge will resolve it or re-block it on the next pass"; fupBadge.style.display = "none";
+  const fupBadge = el("span", "fask-followedup"); fupBadge.textContent = BADGE_WORDS.rejudging.text; fupBadge.title = BADGE_WORDS.rejudging.title;   // the words are card-sections.ts's: the chat box's row wears the same badges fupBadge.style.display = "none";
   // "done, confirming" (the user 2026-07-24): the done verdict is in; the card holds its Working spot
   // until the settle event (the session's attention moving on) files it under Completed — moving the
   // COLUMN at the verdict would flicker it back on any trailing touch, which is the exact flicker the
@@ -1382,21 +1354,21 @@ function makeAskCard(it: AskItem): HTMLElement {
   // RENAMED off "stalled" (the user 2026-07-23, superseding their 2026-07-02 label): that word now belongs
   // exclusively to the yellow Stalled section — romp holding a WORKING card — and this chip means the
   // opposite (romp already asked; the thread waits on YOU). One word per meaning, user-visible strings only.
-  const nfBadge = el("span", "fask-nudgefailed"); nfBadge.textContent = "follow-up failed";
-  nfBadge.title = "romp followed up once; the response didn't resolve it and it won't be re-asked — it's waiting on you";
+  const nfBadge = el("span", "fask-nudgefailed"); nfBadge.textContent = BADGE_WORDS.nudgeFailed.text;
+  nfBadge.title = BADGE_WORDS.nudgeFailed.title;
   nfBadge.style.display = "none";
   // "interrupted" (the user 2026-07-05): the user stopped this session mid-turn and hasn't messaged it
   // since — its quiet is user-chosen, not a stall. Auto-nudge holds off until their next message, and
   // the card says why it's sitting still instead of reading like an orphaned working goal.
-  const intBadge = el("span", "fask-interrupted"); intBadge.textContent = "interrupted";
-  intBadge.title = "you stopped this session mid-turn; romp won't follow up on its own until you message it again";
+  const intBadge = el("span", "fask-interrupted"); intBadge.textContent = BADGE_WORDS.interrupted.text;
+  intBadge.title = BADGE_WORDS.interrupted.title;
   intBadge.style.display = "none";
   // "interrupting…" (the user 2026-07-07): a stop is IN FLIGHT — the CLI hasn't reached a stream boundary
   // yet — so the card holds this steady from the click until the interrupt settles, then swaps to the
   // past-tense "interrupted" badge. Working-yellow + faded (matches the chat chip's chip-interrupting), so
   // it reads as "still winding down" rather than a done state.
-  const intingBadge = el("span", "fask-interrupting"); intingBadge.textContent = "interrupting…";
-  setTip(intingBadge, "stop sent — waiting for this session to reach a stopping point");   // styled tip (tip.ts), not a native title
+  const intingBadge = el("span", "fask-interrupting"); intingBadge.textContent = BADGE_WORDS.interrupting.text;
+  setTip(intingBadge, BADGE_WORDS.interrupting.title);   // styled tip (tip.ts), not a native title
   intingBadge.style.display = "none";
   // yellow "warning" chip (the user 2026-07-02): a judge stamped an anomaly on this goal (kernel `warns`,
   // judge _node_warn — e.g. a distiller cite-miss). Click → the warn-detail overlay: what happened and why
@@ -1742,27 +1714,6 @@ function makeAskCard(it: AskItem): HTMLElement {
 // which the footer "Collapsed" toggle sets: OFF → "summary" open (a completed card's takeaway shows); ON →
 // "none" (collapsed), so NEW cards arrive collapsed too. Clicking a toggle sets an explicit per-card override
 // (click the open one → off; click another → switch) that survives the mode.
-const secChoice = new Map<string, "bg" | "summary" | "subgoals" | "tasks" | "stall" | "none">();
-function resolveSec(id: string, hasAwaitTasks = false): "bg" | "summary" | "subgoals" | "tasks" | "stall" | "none" {
-  // an awaiting-on-tasks card OPENS its task list by default (the user 2026-08-23: the wait is the
-  // one thing to read on that card); an explicit user pick and collapsed mode still win
-  return secChoice.get(id) ?? (feedPrefs().collapsed ? "none" : hasAwaitTasks ? "tasks" : "summary");
-}
-// The Stalled body's text: the staller's plain-language note when the judge has written one, else the
-// kernel's own mechanical reason. Never a waiting-on-the-judge placeholder — a stalled card always has
-// something true to say about why it is stuck, because the kernel knew the reason before the judge was
-// ever asked. That is the whole point of grounding this surface in the mechanical why.
-function stallText(st: { why: string; note?: string | null } | null | undefined): string {
-  if (!st) return "";
-  const note = (st.note || "").trim();
-  return note || ("Nothing is moving this: romp is waiting on " + st.why + ".");
-}
-// Per-node EXPAND state for a CARD's inline sub-goal tree, keyed "itemId:nodeId" (the user 2026-07-08, who referred to the
-// little triangle-y icons from the outline view). A node is COLLAPSED by default; membership here means the
-// user clicked its triangle open. So the tree opens showing only the top level and expands on demand — like
-// the modal's one-level view. Empty default = everything collapsed. (Its OWN state, not the modal's
-// `collapsedNodes`, which uses the inverse sense + its own seeding.)
-const cardTreeExpanded = new Set<string>();
 
 // ── disclosure state across a reload (the user 2026-07-24) ────────────────────────────────────────────
 // A kernel restart reloads this page, which used to wipe every section you had opened. The five collections
@@ -1967,299 +1918,6 @@ function pruneViewStateTo(live: Set<string>): void {
   keep(collapsedThreads, kept.threads);   // pass-through: a thread stays collapsed with no cards on the board
 }
 
-// Fill + wire the card's THREE mutually-exclusive sections — Background, Summary, Sub-goals (the user
-// 2026-07-08). At most ONE open at a time (or none): clicking the open one closes it, clicking another
-// switches. Each button shows only when it has content to reveal — bg present / a produced takeaway/brief /
-// the goal has sub-goals — so an unavailable choice falls back to "none". The bg/summary BODIES live in
-// `_secs`; the sub-goal TREE lives in `_checklist` below. stopPropagation on every toggle — the card-body
-// click opens the modal.
-function applySections(a: any, it: AskItem, distillShown: boolean): void {
-  const id = it.itemId;
-  const bg = distillShown && it.background ? it.background : null;
-  // does the card have a sub-goal tree to show? (the root has a non-handoff child — handoffs live in the
-  // delegations section). byId/root are reused by the tree builder below.
-  const tree = it.tree || [];
-  const byId = new Map(tree.map((n) => [n.id, n] as const));
-  const root = tree.find((n) => n.id === it.itemId) || tree[0];
-  // DIRECT sub-goals only — one level below (the user 2026-07-15): the button reads "3 sub-goals" for the
-  // goal's immediate children, matching what the tree first shows when opened; deeper levels aren't folded
-  // into this headline number — the user drills into them by expanding a child's ▶ triangle. Distinct
-  // non-handoff direct children, deduped once. (Was the whole-subtree count, every depth.)
-  let subCount = 0;
-  if (root) {
-    const seenC = new Set<string>([root.id]);
-    for (const cid of (root.children || [])) {
-      if (seenC.has(cid)) continue;
-      seenC.add(cid);
-      const n = byId.get(cid);
-      if (!n || n.kind === "handoff") continue;
-      subCount++;
-    }
-  }
-  const hasSubs = subCount > 0;
-  // live background tasks (the user 2026-07-13): when the card is AWAITING on tasks, the compact
-  // "Awaiting task" pill joins the section toggles and expands this list (the old boxed caption is gone)
-  const taskList = ((it.awaiting && it.awaiting.tasks) || []).filter(Boolean);
-  // …and since slice 2 (2026-09-05) the awaited ROWS, grouped by kind — agents, commands, watches,
-  // peers — so the pill shows for ANY wait the kernel can enumerate, not only a bg-task one (a wait on
-  // live subagents had no clickable affordance on the card). An older kernel ships descriptions only;
-  // they read as rows of the legacy kind's group, so the list never goes blank on a mixed deployment.
-  const awKind = (it.awaiting && it.awaiting.kind) || "";
-  const awItems: AwaitRow[] = ((it.awaiting && it.awaiting.items) || []).filter((r) => r && r.kind);
-  const taskRows: AwaitRow[] = awItems.length ? awItems
-    : taskList.map((d) => ({ kind: ROW_KIND_OF_LEGACY[awKind] || "commands", label: d }));
-  const hasTasks = taskRows.length > 0;
-  // resolve the selection (default = summary open), falling back to "none" if the chosen section is empty
-  // the stall note (the user 2026-07-23) — shown whenever the kernel says romp is holding this card, with
-  // or without a judge-written note, since `why` alone already answers "why is nothing happening"
-  const stall = it.stalled && it.stalled.why ? it.stalled : null;
-  let choice = resolveSec(id, hasTasks);
-  if (choice === "bg" && !bg) choice = "none";
-  if (choice === "summary" && !distillShown) choice = "none";
-  if (choice === "subgoals" && !hasSubs) choice = "none";
-  if (choice === "tasks" && !hasTasks) choice = "none";
-  if (choice === "stall" && !stall) choice = "none";
-  const pick = (want: "bg" | "summary" | "subgoals" | "tasks" | "stall") => (ev: Event) => {
-    ev.stopPropagation();
-    secChoice.set(id, choice === want ? "none" : want);   // click the showing one → off; else switch to it
-    // both elements of the card (T347): the disclosure is the CARD's, so the board's element and the focused
-    // section's copy show the same section after a pick on either
-    const twins = cardTwins(id);
-    if (twins.length) { for (const c of twins) applySections(c as any, (c as any)._it ?? it, distillShown); }
-    else applySections(a, it, distillShown);
-  };
-  // Background toggle — visible only when there IS background; pressed (.on) when its body is showing
-  a._bgBtn.style.display = bg ? "" : "none";
-  a._bgBtn.classList.toggle("on", choice === "bg");
-  a._bgBtn.setAttribute("aria-pressed", choice === "bg" ? "true" : "false");
-  a._bgBtn.title = choice === "bg" ? "hide the background" : "show the background";
-  a._bgBody.style.display = choice === "bg" ? "" : "none";
-  if (choice === "bg") a._bgBody.textContent = bg as string;
-  a._bgBtn.onclick = pick("bg");
-  // Summary toggle
-  a._takeBtn.style.display = distillShown ? "" : "none";
-  a._takeBtn.classList.toggle("on", choice === "summary");
-  a._takeBtn.setAttribute("aria-pressed", choice === "summary" ? "true" : "false");
-  a._takeBtn.title = choice === "summary" ? "hide the summary" : "show the summary";
-  (a._distill as HTMLElement).style.display = choice === "summary" ? "" : "none";
-  a._takeBtn.onclick = pick("summary");
-  // Stalled toggle — same press-toggle as the others; its colour is the difference (see .fask-stallbtn)
-  a._stallBtn.style.display = stall ? "" : "none";
-  a._stallBtn.classList.toggle("on", choice === "stall");
-  a._stallBtn.setAttribute("aria-pressed", choice === "stall" ? "true" : "false");
-  a._stallBtn.title = stall
-    ? (choice === "stall" ? "hide why this is stalled" : "romp is holding this — show why")
-    : "";
-  a._stallBody.style.display = choice === "stall" ? "" : "none";
-  if (choice === "stall") a._stallBody.textContent = stallText(stall);
-  a._stallBtn.onclick = pick("stall");
-  // Sub-goals toggle — visible only when the goal HAS sub-goals; pressed when the tree is showing
-  const subBtn = a._subBtn as HTMLElement;
-  subBtn.style.display = hasSubs ? "" : "none";
-  subBtn.textContent = subCount === 1 ? "1 sub-goal" : subCount + " sub-goals";
-  // dim " · N parked" suffix (the user 2026-08-24): the card-level gist of the row tags. Counts ONLY
-  // rows the checklist this button toggles can actually reach — the same walk, stopping at handoff
-  // nodes (delegations render in their own section) and at the root (the card head, not a row) — so
-  // the suffix never advertises rows no expansion reveals (review 2026-08-24; a parked ask under a
-  // LIVE delegation is the modal tree's to show).
-  let parkedCount = 0;
-  if (root) {
-    const pseen = new Set<string>([root.id]);
-    const pwalk = (nid: string) => {
-      const n = byId.get(nid);
-      if (!n || n.kind === "handoff" || pseen.has(n.id)) return;
-      pseen.add(n.id);
-      if (n.parked && n.parked.n) parkedCount++;
-      for (const c of n.children || []) pwalk(c);
-    };
-    for (const c of (root.children || [])) pwalk(c);
-  }
-  if (hasSubs && parkedCount) {
-    const pk = el("span", "fask-subparked");
-    pk.textContent = " · " + parkedCount + " parked";
-    subBtn.appendChild(pk);
-  }
-  subBtn.classList.toggle("on", choice === "subgoals");
-  subBtn.setAttribute("aria-pressed", choice === "subgoals" ? "true" : "false");
-  subBtn.title = choice === "subgoals" ? "hide the sub-goals" : "show the sub-goals";
-  subBtn.onclick = pick("subgoals");
-  // "Awaiting task" pill (the user 2026-07-13) — visible only while live bg tasks exist; the mini swirl
-  // inside keeps the "in flight" cue; pressed when the task list is showing. No preachy tooltip.
-  // "Awaiting", not "Waiting on": the chat chip and timeline badge already label this exact state
-  // Awaiting, and two words for one state read as two states (the user 2026-08-13).
-  const taskBtn = a._taskBtn as HTMLElement;
-  taskBtn.style.display = hasTasks ? "" : "none";
-  // the KIND words the pill (the user 2026-08-15): "Awaiting watch", "Awaiting 3 agents" — the wait's
-  // class in the visible label (tooltips are dead on the touch PWA). ONE rule with the chat chip and
-  // the awaiting box (awaitWord, slice 2): one row → its word, several of a kind → count + word, mixed
-  // kinds → the number alone ("Awaiting 4"); a single named peer → its name in identity colour.
-  const pillPeers = (it.awaiting && it.awaiting.peers) || [];
-  const pillWord = awaitWord(awKind, (it.awaiting && it.awaiting.count) ?? taskRows.length, taskRows);
-  const pillLbl = a._taskLbl as HTMLElement;
-  pillLbl.replaceChildren("Awaiting ");
-  if (pillPeers.length === 1 && taskRows.every((r) => r.kind === "peer")) {
-    const nm = el("span", "fask-waiton-name");
-    nm.replaceChildren(...hostPartsNodes(pillPeers[0].host, pillPeers[0].name));
-    if (pillPeers[0].color && pillPeers[0].color.bg) nm.style.color = pillPeers[0].color.bg;
-    pillLbl.appendChild(nm);
-  } else pillLbl.append(pillWord);
-  // the wait's elapsed time rides the pill exactly as it rides the awaiting box and the working
-  // narration — a stuck wait must be glanceable everywhere the state shows (the user 2026-08-23) —
-  // as a stamped duration the 15 s live pass keeps moving (durNodes, the live twin of waitedSuffix)
-  pillLbl.append(...durNodes(it.awaiting && it.awaiting.since));   // the waited time, live (durSpan)
-  taskBtn.classList.toggle("on", choice === "tasks");
-  taskBtn.setAttribute("aria-pressed", choice === "tasks" ? "true" : "false");
-  taskBtn.title = choice === "tasks" ? "hide the tasks" : "show the tasks";
-  taskBtn.onclick = pick("tasks");
-  // the bg/summary/stall BODIES container shows only when one of those is open (the tree is a separate
-  // element). "stall" MUST be here: stallBody lives inside _secs, so without it the Stalled toggle pressed
-  // .on while its body stayed inside a display:none parent — the button "selected but nothing happened"
-  // (the user 2026-07-23, the very first click on the day-old section).
-  a._secs.style.display = (choice === "bg" || choice === "summary" || choice === "stall") ? "" : "none";
-  // the inline sub-goal TREE (in _checklist), shown only when choice === "subgoals". Whole subtree, indented
-  // by depth, with the outline's ▶/▼ disclosure triangles to fold branches (the user 2026-07-08). Same
-  // inclusion rules as the modal's renderTreeNode: skip handoffs, a node reached under two parents renders
-  // ONCE (dim ".repeat", not re-descended). renderTree() re-runs itself on a triangle toggle (collapse state
-  // changed) without touching the buttons.
-  const cl = a._checklist as HTMLElement;
-  const renderTree = () => {
-    cl.innerHTML = "";
-    // the TASK list (the user 2026-07-13): same view/spot as the sub-goal checklist — one row per live
-    // background task, a small spinning swirl as its mark (in flight), the task's own description as text
-    if (choice === "tasks") {
-      // …grouped by KIND since slice 2 (2026-09-05): a small dim header per group when more than one
-      // shows (agents / commands / watches / peers), labels only — the chat's box carries the controls
-      const groups = groupRows(taskRows);
-      const peerByName = new Map(pillPeers.map((p) => [p.name, p]));
-      // one row; `sub` = a NESTED row (what the agent above it is itself waiting on, kernel `waits`,
-      // 2026-09-10): indented, the first under its agent led by a small dim "waiting on", the rest by its
-      // blank twin so the marks align; a nested row with waits of its own says their count in its label —
-      // one level drawn, like the chat's box. Labels only here; the chat box carries the controls.
-      const taskRow = (r: AwaitRow, sub: "first" | "rest" | null): HTMLElement => {
-        const row = el("div", "fcheck ftask" + (sub ? " ftask-sub" : ""));
-        if (sub) { const on = el("span", "ftask-waits-on" + (sub === "first" ? "" : " ftask-waits-blank")); on.textContent = sub === "first" ? "waiting on" : ""; row.appendChild(on); }
-        const tri = el("span", "fcheck-tri empty");
-        const mark = el("span", "fcheck-mark");
-        mark.appendChild(el("span", "fask-awaiting-swirl ftask-swirl"));
-        const txt = el("span", "fcheck-text");
-        const p = r.kind === "peer" ? peerByName.get(r.label || "") : undefined;
-        if (p) {
-          // a peer row names the session the way the awaiting box does: identity colour, quiet host prefix,
-          // click opens the session (the standard session-chip gesture)
-          txt.replaceChildren(...hostPartsNodes(p.host, p.name));
-          if (p.color && p.color.bg) txt.style.color = p.color.bg;
-          if (p.sid) {
-            const sid = p.sid;
-            txt.title = "waiting on " + p.name + " — click opens the session";
-            txt.style.cursor = "pointer";
-            txt.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: sid }); };
-          }
-        } else txt.textContent = r.label || r.kind;
-        const deeper = sub ? waitsNote(r) : "";
-        if (deeper) { const dp = el("span", "ftask-deeper"); dp.textContent = " · waiting on " + deeper; txt.appendChild(dp); }
-        row.append(tri, mark, txt);
-        return row;
-      };
-      for (const g of groups) {
-        if (groups.length > 1) { const gh = el("div", "ftask-group"); gh.textContent = GROUP_TITLE[g.kind] || "Other"; cl.appendChild(gh); }
-        for (const r of g.rows) {
-          cl.appendChild(taskRow(r, null));
-          ((r.waits || []).filter((w) => w && w.kind)).forEach((w, i) => cl.appendChild(taskRow(w, i === 0 ? "first" : "rest")));
-        }
-      }
-      cl.style.display = cl.children.length ? "" : "none";
-      return;
-    }
-    if (choice !== "subgoals" || !root) { cl.style.display = "none"; return; }
-    const rows: { node: AskTreeNode; depth: number; repeat: boolean; expandable: boolean; collapsed: boolean }[] = [];
-    const seen = new Set<string>([root.id]);   // a child linking back to the root counts as a repeat (as the modal)
-    const walk = (nid: string, depth: number) => {
-      const n = byId.get(nid);
-      if (!n || n.kind === "handoff") return;   // delegations render in their own section, not the checklist
-      const repeat = seen.has(n.id);
-      const expandable = !repeat && (n.children || []).some((c) => { const cn = byId.get(c); return !!cn && cn.kind !== "handoff"; });
-      // DEFAULT COLLAPSED (the user 2026-07-08): the tree opens showing only the top level; a branch is
-      // expanded only once its triangle was clicked (in cardTreeExpanded), just like the modal's one-level view.
-      const collapsed = expandable && !cardTreeExpanded.has(id + ":" + n.id);
-      rows.push({ node: n, depth, repeat, expandable, collapsed });
-      if (repeat || collapsed) return;           // a repeat is dim + NOT re-descended; a collapsed branch is hidden
-      seen.add(n.id);
-      for (const c of n.children || []) walk(c, depth + 1);
-    };
-    // REVIEWED-EARLIER fold (the user 2026-08-19): direct children whose outcomes the user already
-    // reviewed (kernel reviewedEarlier, from the SAME boundary the distiller scopes the takeaway with)
-    // collapse behind one row, so a re-completed card presents only the new work — the old material is
-    // one click away, never gone. Fresh rows first; the fold row sits below them.
-    // …counting what the walk RENDERS: a handoff child is skipped by walk (delegations live in their own section), so a
-    // reviewed handoff counted in the label made "3 reviewed earlier" open to two rows (the 2026-09-18 read)
-    const shown = (c: string) => { const n = byId.get(c); return !!n && n.kind !== "handoff"; };
-    const revKids = (root.children || []).filter((c) => shown(c) && !!byId.get(c)?.reviewedEarlier);
-    const freshKids = (root.children || []).filter((c) => shown(c) && !byId.get(c)?.reviewedEarlier);
-    const revOpen = cardTreeExpanded.has(id + ":reviewed");
-    for (const c of freshKids) walk(c, 0);
-    const freshEnd = rows.length;
-    // the fold's kids sit ONE level under the fold row, their visual parent (depth 1, the modal outline's indent), never
-    // flush with the fresh rows above it (the user's 2026-09-18 screenshot: the reviewed rows read as a second batch of
-    // fresh ones); their own children indent from there
-    if (revOpen) for (const c of revKids) walk(c, 1);
-    const paintRow = ({ node: s, depth, repeat, expandable, collapsed }: typeof rows[number]) => {
-      const row = el("div", "fcheck " + nodeStatusClass(s) + (s.auth ? " auth-" + s.auth : "") + (repeat ? " repeat" : ""));
-      if (depth) row.style.paddingLeft = (depth * TREE_INDENT_EM) + "em";   // same per-level indent as the modal outline
-      // disclosure triangle: ▶ collapsed / ▼ expanded; a non-expandable node gets a blank same-width spacer so
-      // marks stay aligned. Only the triangle toggles (stopPropagation so the row click still opens the modal).
-      const tri = el("span", "fcheck-tri" + (expandable ? " nav" : " empty"));
-      tri.textContent = expandable ? (collapsed ? "▶" : "▼") : "";
-      if (expandable) tri.onclick = (ev: Event) => {
-        ev.stopPropagation();
-        const k = id + ":" + s.id;
-        if (cardTreeExpanded.has(k)) cardTreeExpanded.delete(k); else cardTreeExpanded.add(k);
-        renderTree();
-      };
-      const mark = el("span", "fcheck-mark");
-      // ✓ blue disc (done) / ⏸ red pause (question = blocked) / empty ring (not done) — the SAME notation as the
-      // ledger checklist + Fleet (the user 2026-06-24). The OPEN mark is an empty element the CSS draws as a
-      // 13px hollow circle matching the done disc's size (the user 2026-07-08: the ○ glyph read too small);
-      // AUTHORITATIVE keeps the glyph, .auth-* only rings it. Blocked ROLLS UP (kernel flatten, the user
-      // 2026-07-11): an ancestor of a blocked sub wears the ⏸ too, so the block is visible even while the
-      // branch is collapsed — its tooltip points DOWN to the real ask.
-      mark.textContent = s.status === "done" ? "✓" : s.status === "question" ? "⏸" : "";
-      if (s.status === "question") mark.title = s.qderived ? "a sub-goal inside it needs you: expand to find it" : "needs you";
-      const txt = el("span", "fcheck-text"); txt.textContent = s.text; linkifyPrRefs(txt, prRepoOf(it.sid));
-      row.append(tri, mark, txt);
-      if (s.cleared) row.appendChild(clearedTag());   // the strike alone doesn't say WHY — see CLEARED_TIP
-      if (s.parked && s.parked.n && !s.cleared) row.appendChild(parkedTag(s.parked.n));   // leapfrogged — see parkedTag
-      // clicks match the modal tree node exactly (text → the message, checkbox → where it resolved) via the
-      // SAME wireNodeZones; a dim repeat is display-only (wire=false).
-      wireNodeZones(it, s, mark, txt, null, !repeat);
-      cl.appendChild(row);
-    };
-    rows.slice(0, freshEnd).forEach(paintRow);
-    if (revKids.length) {
-      // the fold row: same gesture grammar as a branch triangle — click toggles, state survives
-      // re-renders via cardTreeExpanded (keyed per card), and the label carries the count. Its expanded state
-      // is "expanded", NEVER "open": "open" is the not-done STATUS class (.fcheck.open .fcheck-mark draws the
-      // hollow 13px ring), so the open fold wore the ring and its ✓ glyph sat low inside it, a checkmark that
-      // moved down in its box the moment the fold was opened (the user's 2026-09-18 screenshot)
-      const row = el("div", "fcheck freviewed" + (revOpen ? " expanded" : ""));
-      const tri = el("span", "fcheck-tri nav"); tri.textContent = revOpen ? "▼" : "▶";
-      const mark = el("span", "fcheck-mark"); mark.textContent = "✓";
-      const txt = el("span", "fcheck-text");
-      txt.textContent = revKids.length + " reviewed earlier";
-      row.title = "sub-goals you reviewed before your follow-up — the update above doesn't re-present them";
-      row.onclick = (ev: Event) => {
-        ev.stopPropagation();
-        const k = id + ":reviewed";
-        if (cardTreeExpanded.has(k)) cardTreeExpanded.delete(k); else cardTreeExpanded.add(k);
-        renderTree();
-      };
-      row.append(tri, mark, txt);
-      cl.appendChild(row);
-    }
-    rows.slice(freshEnd).forEach(paintRow);
-    cl.style.display = cl.children.length ? "" : "none";
-  };
-  renderTree();
-}
 
 // Paints a card's face from its payload copy. Whether to call it at all is reconcileCol's decision (the
 // per-card update gate, feed-card-gate.ts): a card is repainted when its object is a new one or a
@@ -2330,6 +1988,15 @@ function rearmNoticeButtons(card: any): void {
   for (const b of Array.from(acts.querySelectorAll("button")) as HTMLButtonElement[]) { b.disabled = false; b.textContent = (b as any)._idle || b.textContent; }
 }
 
+// what THIS page hands the shared section builder (card-sections.ts): the collapsed-by-default preference, the node click zones (the
+// modal's and the card's, wireNodeZones), the PR repo a row's links use, the live duration nodes, and how a peer's session is opened
+const sectionEnv: SectionEnv = {
+  collapsed: () => feedPrefs().collapsed,
+  wireNode: (it, node, mark, txt, wire) => { wireNodeZones(it as AskItem, node, mark, txt, null, wire); },
+  repoOf: (sid) => prRepoOf(sid),
+  durNodes: (since) => durNodes(since),
+  openSession: (sid) => { vscodeApi?.postMessage({ type: "openSession", id: sid }); },
+};
 function updateAskCard(card: HTMLElement, it: AskItem) {
   const a = card as any;
   a._it = it;   // the freshest payload copy — the right-click bell menu reads this, never a stale closure; and the gate's identity
@@ -2475,7 +2142,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   if (it.recheck) {
     a._followedup.style.display = "";
     a._followedup.textContent = "↩ re-judging";
-    a._followedup.title = "you followed up — no longer waiting on you; the judge will resolve it or re-block it on the next pass";
+    a._followedup.title = BADGE_WORDS.rejudging.title;
   } else {
     a._followedup.style.display = "none";
   }
@@ -2501,7 +2168,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // when (the user 2026-07-02: the bare label read like a state romp observed, not a nudge outcome)
   a._nudgeFailed.title = it.nudged && it.nudged.times.length
     ? `romp followed up ${it.nudged.count}× (${it.nudged.times.map(clockHM).join(", ")}); the response didn't resolve it and it won't be re-asked — it's waiting on you`
-    : "romp followed up once; the response didn't resolve it and it won't be re-asked — it's waiting on you";
+    : BADGE_WORDS.nudgeFailed.title;
   // "warning" chip: a judge stamped an anomaly on this goal — show the latest msg on hover, detail on click.
   // Data rides the card element so the click handler (wired once in build) always reads the current push.
   // When the warns are all GIVEN-UP summarizer lines, the chip SAYS so — "distill failed" (the user
@@ -2676,8 +2343,9 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // mapping; a paragraph with neither keeps the whole-summary landing via the card-level link.
   const pAnchors = (distillShown && it.summaryAnchorsPara) || null;
   if (distillShown && ((bp && bp.length > 1) || (pAnchors && pAnchors.some(Boolean)))) {
-    const paras = distillShown.split(/\n\s*\n/).map((s) => s.trim()).filter(Boolean);
-    const stampOk = !!(bp && bp.length > 1 && (paras.length === bp.length || paras.length === bp.length + 1));
+    const split = distillParas(distillShown, bp);   // the shared split and stamp gate (distiller-line.ts): the chat box's row splits the same way
+    const paras = split.paras;
+    const stampOk = split.stamps !== null;
     const anchOk = !!(pAnchors && paras.length === pAnchors.length);   // count drift → drop, never mis-map
     if (stampOk || anchOk) {
       const dle = a._distill as HTMLElement;
@@ -2760,7 +2428,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   }
   // TWO collapsible distiller sections (the user 2026-07-02): BACKGROUND (re-orientation for a reader who
   // forgot the thread, collapsed by default) above the takeaway (expanded by default), each with a +/−.
-  applySections(a, it, !!distillShown);   // bg/summary/sub-goals (mutually exclusive) — applyDistillLine returns the line's TEXT (string), coerce to "has content"
+  applySections(a, it, !!distillShown, sectionEnv);   // bg/summary/sub-goals (mutually exclusive): applyDistillLine returns the line's TEXT (string), coerce to "has content"
   // A SESSION-STARTED root (T319): work the session began on its own (a Workflow run, an agent, a thread of
   // its own) that stands as a card only because its parent is gone, no request could host it, or it is
   // blocked (needs-you breaks through). The face says what it is and why in one line, so it never reads as
@@ -3260,32 +2928,8 @@ function nodeMark(n: AskTreeNode): string {   // AUTHORITATIVE nodes keep the sa
 // unexplained machinery, and nothing on screen said the strike means YOU cleared it). One word on the
 // row, the sentence on hover, in both the card checklist and the modal. Named "cleared", not
 // "dropped" — the same word the Clear button and the undo already use (the user 2026-07-26).
-const CLEARED_TIP = "you cleared this off the board — no longer needed; the box still shows whether it was done";
-function clearedTag(): HTMLElement {
-  const tag = el("span", "fcleared-tag");
-  tag.textContent = "cleared";
-  tag.title = CLEARED_TIP;
-  return tag;
-}
 
-// The parked row's plain-language story (the user 2026-08-24: a queued ask silently sat 40 minutes
-// while the same card's younger items were dispatched one after another, and nothing said so). One
-// quiet word on the row, the explanation on hover — a hint, never a needs-you alarm; the kernel
-// retires it the instant the row gets its own delegation or any verdict (_parked_rows).
-function parkedTag(n: number): HTMLElement {
-  const tag = el("span", "fparked-tag");
-  tag.textContent = "parked";
-  tag.title = "nothing has happened here yet — " + n + " newer ask" + (n === 1 ? " was" : "s were")
-    + " dispatched past this one; this tag clears on its own dispatch or any ruling";
-  return tag;
-}
 
-function nodeStatusClass(n: AskTreeNode): string {
-  if (n.cleared) return "cleared";
-  if (n.status === "done") return "done";
-  if (n.status === "question") return "question";
-  return "open";
-}
 
 // One human phrase per verdict-log row — the modal's per-item story speaks in outcomes
 // ("asked you", "you answered"), never judge internals (the user 2026-07-20).
@@ -3457,7 +3101,6 @@ function applyModalWarnings(host: HTMLElement, it: AskItem): void {
 // Hierarchy is shown by INDENTATION alone (no ASCII tree connectors — the
 // disclosure triangles + indent levels already carry the structure; the user's
 // de-clutter ruling 2026-06-10).
-const TREE_INDENT_EM = 1.4;
 
 // Wire a goal node's mark / text / (optional time) into click+hover ZONES — shared by the modal tree AND
 // the card's inline sub-goal checklist so they navigate IDENTICALLY (the user 2026-06-17): the TEXT jumps
@@ -5237,6 +4880,7 @@ function reconcileCol(listEl: HTMLElement, entries: Entry[], globalDesired: Set<
       key = "a:" + e.ask.itemId;
       card = askEls.get(e.ask.itemId) || makeAskCard(e.ask);
       askEls.set(e.ask.itemId, card);
+      registerSectionHost(e.ask.itemId, card);   // the item's twin set for its sections (card-sections.ts): a press here reaches every host
       // THE UPDATE GATE (feed-card-gate.ts): repaint only a card the kernel re-sent (a new object — the pane
       // shim's delta reassembly and federation's merge keep an unchanged card's object by reference) or whose
       // board-level inputs changed (the key). Everything below — placement, the insertBefore order walk, the
@@ -5438,6 +5082,7 @@ function reconcileFocusCol(listEl: HTMLElement, entries: Entry[], gate: GateEnv,
       card = fsAskEls.get(e.ask.itemId) || makeAskCard(e.ask);
       card.dataset.key = key;   // the builder stamps the bare key; the copy wears the section's
       fsAskEls.set(e.ask.itemId, card);
+      registerSectionHost(e.ask.itemId, card);   // the focused section's copy is a twin too
       // THE UPDATE GATE (feed-card-gate.ts), as the board applies it: repaint a copy only when the kernel
       // re-sent the card or a board-level input it reads changed
       const ik = cardInputsKey(e.ask, gate);

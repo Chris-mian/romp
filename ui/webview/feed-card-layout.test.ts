@@ -9,8 +9,8 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
-const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
+const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.css"), "utf8");   // the card's sections moved to a sheet both pages import (plans/needs-you.md)
 
 test("COMPACTNESS (the user 2026-07-07; action corner 2026-08-08): time trails the title; Continue+Clear in row1's corner; toggles grouped on row3", () => {
   // the TIME now trails the title on row1 (both cards); row3 holds the Background/Summary/Sub-goals toggles
@@ -75,7 +75,8 @@ test("courier handoff: the '↪ from <sender>' origin marker is wired and styled
 });
 
 test("the follow-up badge serves ONLY '↩ re-judging' now — the '↻ Followed up' chip was removed (the user 2026-07-01)", () => {
-  assert.match(FEED, /el\("span", "fask-followedup"\); fupBadge\.textContent = "↩ re-judging"/);
+  assert.match(FEED, /el\("span", "fask-followedup"\); fupBadge\.textContent = BADGE_WORDS\.rejudging\.text;/);   // the card's sections, tree and badges moved to card-sections.ts (plans/needs-you.md, one builder with the Needs you row)
+  assert.match(FEED, /rejudging: \{ text: "↩ re-judging", title: /, "the words themselves, in card-sections.ts, worn by the Needs you row too");
   // the badge rides the SESSION-NAME row (right-justified), NOT the bottom action row
   assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge\)/);
   // the CARD badge block is now recheck-only: recheck → "↩ re-judging", else hidden. No followupPending branch.

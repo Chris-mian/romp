@@ -806,7 +806,7 @@ test("targets that are not a pr-link, or whose href is not a GitHub URL, are lef
 
 const read = (f: string) => fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", f), "utf8");
 const RENDER = read("render.ts");
-const FEED = read("feed.ts");
+const FEED = read("feed.ts") + read("card-sections.ts");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
 const FED = read("federation.ts");
 const OUTLINE = read("fleet.ts");
 
@@ -874,7 +874,7 @@ test("the feed links card titles (keyed), distiller lines, held-mail gists (by s
   assert.match(FEED, /if \(distillShown\) linkifyPrRefs\(a\._distill as HTMLElement, prRepoOf\(it\.sid\)\);/);
   // (the held message's gist and its sender-repo helper left 2026-09-19: a held message is a notice card, its body markdown)
   assert.match(FEED, /txt\.textContent = m\.text; linkifyPrRefs\(txt, prRepoOf\(m\.sid \|\| g\.sid\)\);/);
-  assert.match(FEED, /el\("span", "fcheck-text"\); txt\.textContent = s\.text; linkifyPrRefs\(txt, prRepoOf\(it\.sid\)\);/);
+  assert.match(FEED, /el\("span", "fcheck-text"\); txt\.textContent = s\.text; linkifyPrRefs\(txt, env\.repoOf\(it\.sid\)\);/); assert.match(FEED, /repoOf: \(sid\) => prRepoOf\(sid\),/, "the feed hands the shared builder its repo lookup (card-sections.ts; the chat page hands null)");
   assert.match(FEED, /el\("span", "ftree-text"\); txt\.textContent = node\.text \|\| "\(node\)"; linkifyPrRefs\(txt, prRepoOf\(it\.sid\)\);/);
   assert.match(FEED, /bb\.textContent = modalBg; linkifyPrRefs\(bb, prRepoOf\(it\.sid\)\);/);
   assert.match(FEED, /sum\.textContent = nodeDistill;\s*\n\s*linkifyPrRefs\(sum, prRepoOf\(it\.sid\)\);/);

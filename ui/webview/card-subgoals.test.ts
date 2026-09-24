@@ -7,13 +7,13 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
-const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
+const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.css"), "utf8");   // the card's sections moved to a sheet both pages import (plans/needs-you.md)
 
 test("ask cards render the goal's WHOLE sub-goal tree (the 'subgoals' section), not just level 1", () => {
   assert.match(FEED, /a\._checklist/);                       // the card carries a checklist element
   assert.match(FEED, /el\("div", "fask-checklist"\)/);
-  assert.match(FEED, /function applySections\(a: any, it: AskItem, distillShown: boolean\): void/);
+  assert.match(FEED, /export function applySections\(a: any, it: SectionItem, distillShown: boolean, env: SectionEnv\): void/);   // the card's sections, tree and badges moved to card-sections.ts (plans/needs-you.md, one builder with the Needs you row)
   // the tree renders only when the 'subgoals' section is selected
   assert.match(FEED, /if \(choice !== "subgoals" \|\| !root\) \{ cl\.style\.display = "none"; return; \}/);
   // a RECURSIVE walk from the root's children, descending every level (was root.children only)
@@ -33,7 +33,8 @@ test("the inline tree follows the SAME rules as the modal outline: handoffs, rep
   assert.match(FEED, /const repeat = seen\.has\(n\.id\)/);   // a node reached under two parents...
   assert.match(FEED, /if \(repeat \|\| collapsed\) return;/); // ...renders once; a collapsed branch is not descended
   assert.match(FEED, /row\.style\.paddingLeft = \(depth \* TREE_INDENT_EM\) \+ "em"/);  // same per-level indent as the modal
-  assert.match(FEED, /wireNodeZones\(it, s, mark, txt, null, !repeat\)/);   // a dim repeat is display-only
+  assert.match(FEED, /env\.wireNode\(it, s, mark, txt, !repeat\);/);   // a dim repeat is display-only
+  assert.match(FEED, /wireNode: \(it, node, mark, txt, wire\) => \{ wireNodeZones\(it as AskItem, node, mark, txt, null, wire\); \},/, "the feed hands the shared builder its own click zones (card-sections.ts calls the environment; the chat page hands a no-op)");
   assert.match(CSS, /\.fcheck\.repeat \{[^}]*opacity: 0\.5/);   // dim, mirroring .ftree-node.repeat
 });
 

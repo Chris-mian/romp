@@ -8,9 +8,9 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
 const SPIN = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "spin-caption.ts"), "utf8");
-const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
+const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.css"), "utf8");   // the card's sections moved to a sheet both pages import (plans/needs-you.md)
 
 test("the swirl element is built in the body, right after the distiller line, and registered", () => {
   assert.match(FEED, /const awaitSpin = el\("div", "fask-awaiting"\); awaitSpin\.style\.display = "none";/);
@@ -25,7 +25,7 @@ test("the swirl is driven by spinFor's caption — shown when there is one, else
   assert.match(FEED, /import \{ spinFor, awaitWord, groupRows, waitsNote, GROUP_TITLE, ROW_KIND_OF_LEGACY, type AwaitRow \} from "\.\/spin-caption";/);   // the rows' vocabulary too (slice 2)
   assert.match(FEED, /const spin = spinFor\(it, !it\.notice && distillPending\(dCompleted, dBlocked, it\.summary, it\.blockSummary, !!it\.blocked\),/);
   assert.match(FEED, /const spinCaption = spin\.caption, spinTip = spin\.tip, awaitingBg = spin\.awaitingBg;/);
-  assert.match(FEED, /import \{ distillText, distillInputs, applyDistillLine, distillPending, distillStaleNote \} from "\.\/distiller-line";/);
+  assert.match(FEED, /import \{ distillText, distillInputs, applyDistillLine, distillPending, distillStaleNote, distillParas \} from "\.\/distiller-line";/);   // distillParas since the box content round
   assert.match(FEED, /a\._awaitSpin\.style\.display = spinCaption \? "" : "none";/);
   // a caption that ends in a running duration renders the duration as its own stamped element (feed-age.ts
   // fmt "dur") so the live pass keeps it moving on a card the per-card update gate does not repaint
@@ -46,7 +46,7 @@ test("a bg-task wait wears the compact 'Awaiting task' pill that expands the tas
   assert.doesNotMatch(FEED, /"Waiting on task"/);
   // the pill carries the wait's elapsed time, same readout as the awaiting box (the user 2026-08-23) —
   // as a stamped duration element, so the 15 s live pass moves it (durNodes mirrors waitedSuffix's rule)
-  assert.match(FEED, /pillLbl\.append\(\.\.\.durNodes\(it\.awaiting && it\.awaiting\.since\)\);\s*\/\/ the waited time, live/);   // appended after the (possibly coloured) word since slice 2
+  assert.match(FEED, /pillLbl\.append\(\.\.\.env\.durNodes\(it\.awaiting && it\.awaiting\.since\)\);\s*\/\/ the waited time, live/);   // appended after the (possibly coloured) word since slice 2; the ages come from the page's environment (card-sections.ts)
   assert.match(FEED, /taskBtn\.onclick = pick\("tasks"\);/);
   // expanded rows render in the checklist spot, same view as Sub-goals, the swirl as each row's mark
   assert.match(FEED, /if \(choice === "tasks"\) \{[\s\S]*?el\("div", "fcheck ftask" \+ \(sub \? " ftask-sub" : ""\)\)[\s\S]*?ftask-swirl/);   // + the nested-row marker (2026-09-10)

@@ -1091,7 +1091,9 @@ class Differential(_World):
         rows = km._needs_you_rows(feed).get(SID) or []
         self.assertEqual([r["itemId"] for r in rows], [SID + ":g1", SID + ":g2"], "the plain row and the credential row: %r" % rows)
         fields = set().union(*(set(r) for r in rows))
-        self.assertEqual(fields - km._NEEDS_ROW_UNKEYED, {"itemId", "kind", "title", "body", "cont", "fix"}, "every field a built row carries is keyed or declared unkeyed")
+        CARD_FIELDS = ("summary", "blockSummary", "briefParts", "summaryParts", "distillState", "summaryStale", "relayNote", "background",
+               "stalled", "tree", "awaiting", "recheck", "rejudging", "nudgeFailed", "nudged", "interrupting", "interrupted", "waitingOn", "origin", "handoffTo")   # written out, so a kernel whose rows lack them reds here on the rows (test_chat_notices holds the kernel's list to this one)
+        self.assertEqual(fields - km._NEEDS_ROW_UNKEYED, {"itemId", "kind", "title", "body", "cont", "fix"} | set(CARD_FIELDS), "every field a built row carries is keyed or declared unkeyed (the card's fields since the row carries what the card carries)")
         # and the row literals' keys from the AST (the third review) read the same set: a second reading of the same rows
         tree = ast.parse(inspect.getsource(km._needs_you_rows).lstrip())
         lit = set()
