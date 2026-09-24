@@ -15,7 +15,7 @@ import * as path from "node:path";
 
 const ui = (...p: string[]) => fs.readFileSync(path.resolve(process.cwd(), "..", "ui", ...p), "utf8");
 const CHAT = ui("webview", "styles.css");
-const FEED = ui("webview", "feed.css");
+const FEED = ui("webview", "feed.css") + ui("webview", "card-sections.css");   // the badge rules moved to the sheet both pages import
 const GEAR = ui("webview", "gear.js");
 const MENU = ui("webview", "tag-menu.ts");
 const TIMELINE = ui("romp-timeline-view.js");

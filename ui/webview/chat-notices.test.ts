@@ -21,11 +21,11 @@ const fn = (name: string) => { const i = RENDER.indexOf("function " + name + "("
 
 test("the status carries the rows and the box renders on every status change beside the background box", () => {
   assert.match(RENDER, /interface Status \{ state: ChipState; sinceEpoch: number \| null; modelFallback\?: ModelFallback \| null; notices\?: ChatNotice\[\] \| null;/, "the slice on the status, after main's model-fallback field");
-  assert.match(RENDER, /interface ChatNotice \{ itemId: string; key: string; rev: number; title: string; body: string; producer: string; attachment\?: NoticeAttachment \| null;\s*\n\s*actions: \{ label: string; kind\?: string; route\?: string; body: Record<string, unknown> \}\[\];\s*\n\s*kind\?: "goal" \| "notice";[^\n]*\n\s*cont\?: boolean;[^\n]*\n\s*fix\?: "credential" \}/, "the row carries the feed card's attachment too (low e), and since phase three its kind, its Continue offer and its fix");
+  assert.match(RENDER, /interface ChatNotice \{ itemId: string; key: string; rev: number; title: string; body: string; producer: string; attachment\?: NoticeAttachment \| null;\s*\n\s*actions: \{ label: string; kind\?: string; route\?: string; body: Record<string, unknown> \}\[\];\s*\n\s*kind\?: "goal" \| "notice";[^\n]*\n\s*cont\?: boolean;[^\n]*\n\s*fix\?: "credential";[^\n]*\n(?:\s*\/\/[^\n]*\n)+\s*summary\?: string \| null; blockSummary\?: string \| null;[^]*?handoffTo\?: BadgeItem\["handoffTo"\];[^]*?sessState\?: string \| null \}/, "the row carries the feed card's attachment too (low e), and since phase three its kind, its Continue offer and its fix");
   // awaitKey is the status key every status-carrying frame compares (the T225 pins): the rows are part of it, so a hold or a
   // decision repaints the box through the same awaitChanged road as the background box
   // by id AND face (the second review of PR 1967): a brief landing, a Continue offered, a retitle or the credential fix repaints the box
-  assert.match(fn("awaitKey"), /\(st\.notices \|\| \[\]\)\.map\(\(n\) => JSON\.stringify\(\[n\.itemId, n\.kind \|\| "notice", n\.title \|\| "", n\.body \|\| "", !!n\.cont, n\.fix \|\| "", \(n\.actions \|\| \[\]\)\.length\]\)\)\]\);/);
+  assert.match(fn("awaitKey"), /\(st\.notices \|\| \[\]\)\.map\(\(n\) => JSON\.stringify\(n\)\)\]\);/, "the row's WHOLE face (the box content round: a section field or a badge moving repaints the box, as the kernel's signature keys the same fields)");
   assert.match(fn("awaitChanged"), /if \(sid === activeId\) renderBgTasks\(\);\s*\n\s*if \(sid === activeId\) renderNotices\(\);/);
   assert.match(RENDER, /renderBgTasks\(\); \/\/ swap in the active session's background-task box \(or hide if none\)\s*\n\s*renderNotices\(\); \/\/ swap in the active session's approval box/, "the tab switch");
   assert.match(RENDER, /    renderBgTasks\(\);\s*\n\s*renderNotices\(\);\s*\n\s*\} else if \(!activeId\) \{/, "the session frame");
@@ -130,7 +130,11 @@ test("the box is collapsed by default and opens in steps (the user 2026-09-23): 
   assert.match(d, /"ntc-fold": \(\) => \{ if \(!activeId\) return; const s = liveSession\(activeId\); setNoticeBoxLevel\(activeId, noticeBoxNextLevel\(activeId, \(s && s\.status && s\.status\.notices\) \|\| \[\]\)\); renderNotices\(\); \},/, "the header's click stores the next level: the items, then the full context, then folded back, never below the floor");
   assert.match(fn("noticeBoxNextLevel"), /return Math\.max\(\(noticeBoxShownLevel\(sid, rows\) \+ 1\) % 3, noticeBoxFloor\(rows\)\);/, "one helper for the click and the title (the box arc's round three: two clicks at the floor stored 0 and the box dropped to its header line when the row left)");
   assert.match(CSS, /#notices\.ntc-l0 \.ntc-row \{ display: none; \}/, "level 0: the rows hidden");
-  assert.match(CSS, /#notices:not\(\.ntc-l2\) \.ntc-body, #notices:not\(\.ntc-l2\) \.ntc-attach, #notices:not\(\.ntc-l2\) \.ntc-more \{ display: none; \}/, "below level 2: the background paragraph, its disclosure and the attachment hidden");
+  assert.match(CSS, /#notices:not\(\.ntc-l2\) \.ntc-body, #notices:not\(\.ntc-l2\) \.ntc-attach \{ display: none; \}/, "below level 2: the markdown body and the attachment hidden");
+  assert.match(CSS, /#notices\.ntc-l0 \.ntc-more \{ display: none; \}/, "the disclosure hides with the rows at level 0 only: at the items level it opens the clamped distill line (the box content round)");
+  assert.match(CSS, /#notices:not\(\.ntc-l2\) \.ntc-row \.ntc-secs-row \{ display: none; \}/, "the section toggles at the full context only");
+  assert.match(CSS, /\.ntc-row \.ntc-distill \{[^}]*display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; \}/, "the distill line clamped to four lines in the box, at the items and at the full context");
+  assert.match(CSS, /\.ntc-row\.ntc-open \.ntc-distill \{ display: block; -webkit-line-clamp: unset; overflow: visible; \}/, "and the disclosure lifts the clamp");
   assert.match(CSS, /\.ntc-head \.ntc-caret \{[^}]*font-size: 0\.72em; width: 10px;/, "the awaiting box's caret");
 });
 
@@ -139,7 +143,7 @@ test("phase three: a goal row's Reply and Clear on the card's own wires (Continu
   const sigLine = (RENDER.match(/function noticeActionsSig\(n: ChatNotice\): string \{ return [^\n]*/) || [""])[0];
   assert.match(sigLine, /JSON\.stringify\(\[n\.kind \|\| "notice", n\.fix \|\| "", \(n\.actions \|\| \[\]\)\.map/, "the face signature carries the kind, the fix and the actions");
   assert.doesNotMatch(sigLine, /n\.cont/, "and NOT the Continue offer while no button reads it (the second contributor's post-merge review of PR 2093: a backend going up or down flipped it and rebuilt the row, wiping a refusal line and re-enabling a latched Clear)");
-  assert.match(fn("awaitKey"), /!!n\.cont/, "the frame's key still carries the offer: the row repaints when it returns with the button");
+  assert.match(fn("awaitKey"), /JSON\.stringify\(n\)/, "the frame's key still carries the offer (the whole row since the box content round): the row repaints when it returns with the button");
   const plain = fn("noticeRowPlain");
   assert.match(plain, /if \(n\.kind === "goal"\) \{[^]*?acts\.appendChild\(noticeButton\("Reply", "ntc-ok", "ntc-reply", 0\)\);[^\n]*\n\s*acts\.appendChild\(noticeButton\("Clear", "ntc-clear", "ntc-clear", 1\)\);[^\n]*\n\s*return;/, "a goal row: Reply, then Clear at the next index; no Continue button (the user 2026-09-23: Reply and Clear only for now, the stored offer and its wire kept)");
   assert.doesNotMatch(plain, /noticeButton\("Continue"/, "the Continue button is gone from every row");
@@ -149,7 +153,7 @@ test("phase three: a goal row's Reply and Clear on the card's own wires (Continu
   assert.match(d, /"ntc-reply": \(el\) => \{ const p = item\(el\); if \(p && activeId\) setCitation\(activeId, \{ itemId: p\[1\]\.itemId, title: p\[1\]\.title \}\); \},/, "Reply points the composer at the card, as a feed card click that lands in the chat does; the row stays until the reply is judged");
   assert.match(d, /"ntc-cont": \(el\) => \{[^\n]*vscodeApi\?\.postMessage\(\{ type: "askFollowUp", itemId: p\[1\]\.itemId, sid: activeId, cont: true \}\); latch\(p\[0\], el as HTMLButtonElement\); \},/, "Continue is the card's Continue wire, and the row latches");
   assert.match(d, /"ntc-clear": \(el\) => \{[^\n]*vscodeApi\?\.postMessage\(\{ type: "askClear", itemId: p\[1\]\.itemId, sid: activeId \}\); latch\(p\[0\], el as HTMLButtonElement\); \},/, "Clear is the card's Clear wire, and the row latches");
-  assert.match(RENDER, /fix\?: "credential" \}/, "the row says when its one action is the credential fix");
+  assert.match(RENDER, /fix\?: "credential";/, "the row says when its one action is the credential fix");
   assert.match(plain, /if \(n\.kind === "goal" && n\.fix === "credential"\) \{[^]*?noticeButton\("Fix credential…", "ntc-ok", "ntc-fix", 0\)\);\s*\n\s*return;/, "the credential row: the fix alone, no Reply, no Continue, no Clear (a Clear would hide the fault while the refusals go on)");
   assert.match(d, /"ntc-fix": \(\) => openSettingsOn\("general"\),/, "the fix opens the settings' General tab, where the Billing block sits");
   assert.match(fn("buildNoticeBar"), /bar\.className = "ntc-bar";[^]*?head\.className = "ntc-head";[^]*?head\.dataset\.act = "ntc-fold";[^]*?el\("span", "ntc-caret"\)[^]*?el\("span", "ntc-dot"\)[^]*?el\("span", "ntc-label"\)[^]*?bar\.appendChild\(head\);/, "the bar, then the header inside it: the fold control, the caret, the dot and the label");
@@ -194,7 +198,7 @@ test("a judges' credential row floors the box at the items while it shows (the s
   assert.match(CSS, /#notices:not\(\.ntc-l2\) \.ntc-row\.ntc-fault \.ntc-body \{ display: -webkit-box; \}/, "and its body, the refusal's explanation, shows at the items where every other body waits for the full context (the box arc's round three)");
 });
 
-test("the box's own gear (the second contributor's post-merge review of PR 2093: the strip's gear lands on Tab strip with the box's section out of view): the shell's glyph at the header's right end, opening the settings' Chat tab at the Boxes section, drawn only where a settings card can open", () => {
+test("the box's own gear (the second contributor's post-merge review of PR 2093: the strip's gear lands on Tab strip with the box's section out of view): the shell's glyph at the bar's right end, beside the header, opening the settings' Chat tab at the Boxes section, drawn only where a settings card can open", () => {
   const h = fn("buildNoticeBar");
   assert.match(h, /if \(\(window as any\)\.__rompShowStrip \|\| inRompShell\(\)\) \{\s*\n\s*const gear = el\("button", "ntc-gear"\) as HTMLButtonElement; gear\.type = "button"; gear\.dataset\.act = "ntc-gear";/, "the same reachability gate as the strip's gear");
   assert.match(h, /bar\.appendChild\(gear\);/, "the gear is the bar's child, beside the header, never inside the role=button header (axe nested-interactive; the box arc's round three)");
@@ -214,7 +218,13 @@ test("the box's chrome: the background box's frame, its one thin edge in the Nee
   assert.match(CSS, /\.ntc-body \{[^}]*-webkit-line-clamp: 4;/, "the message text clamped");
   assert.match(CSS, /\.ntc-row\.ntc-open \.ntc-body \{ display: block; -webkit-line-clamp: unset; overflow: visible; \}/, "the brief's disclosure lifts the clamp (the second contributor's review)");
   assert.match(RENDER, /"ntc-more": \(el\) => \{[^\n]*const key = "notice:" \+ \(row\.dataset\.item \|\| ""\) \+ ":brief"; if \(openFolds\.has\(key\)\) openFolds\.delete\(key\); else openFolds\.add\(key\); row\.classList\.toggle\("ntc-open", openFolds\.has\(key\)\);/, "the disclosure toggles on the delegate, keyed by the item id in the one fold store, both ways, no latch");
-  assert.match(RENDER, /row\.classList\.toggle\("ntc-open", openFolds\.has\("notice:" \+ n\.itemId \+ ":brief"\)\);[^\n]*\n  noticeMoreButton\(row, body\);/, "re-applied on every row update, both ways");
+  assert.match(RENDER, /row\.classList\.toggle\("ntc-open", openFolds\.has\("notice:" \+ n\.itemId \+ ":brief"\)\);[^\n]*\n  noticeMoreButton\(row, noticeLineOf\(row\)\);/, "re-applied on every row update, both ways; the disclosure rides the row's line (the box content round)");
+  assert.match(fn("noticeLineOf"), /return \(\(row as any\)\._distill as HTMLElement \| undefined\) \?\? row\.querySelector<HTMLElement>\("\.ntc-body"\);/, "the line: the distill line on a row wearing the card's sections, else the markdown body");
+  assert.match(fn("renderNoticeDisclosures"), /noticeMoreButton\(r, noticeLineOf\(r\)\);/, "the pass over the rows measures the same line (the head run of the box content round: it read the hidden body and removed the button the update had made)");
+  assert.match(RENDER, /"ntc-more": \(el\) => \{[^\n]*noticeMoreButton\(row, noticeLineOf\(row\)\); \},/, "and so does the toggle");
+  assert.match(fn("noticeSectionsFor"), /const want = n\.kind === "goal" && !n\.fix;\n  if \(want && !rowAny\._distill\) \{/, "the card's sections join a goal row without a fix when a frame first calls for them");
+  assert.match(fn("noticeSectionsFor"), /\} else if \(!want && rowAny\._distill\) \{/, "and leave it when one stops (the credential row keeps its fault's explanation in the body; rows are reused by item)");
+  assert.match(fn("updateNoticeRow"), /const sections = noticeSectionsFor\(row, n\);/, "decided on every frame, never at build");
   assert.match(RENDER, /const overflows = !!body && body\.style\.display !== "none" && body\.scrollHeight > body\.clientHeight \+ 1;/, "the button shows only when the body overflows");
   assert.match(RENDER, /if \(body && body\.style\.display !== "none" && body\.clientHeight === 0 && body\.scrollHeight === 0\) return;/, "a zero measure (a display:none pane) is no information: the row stands as it is (the post-merge review of PR 1967)");
   assert.match(RENDER, /watchChatVisibility\(document\.body, \{ \.\.\.browserChatVisibilityDeps\(\), onShown: renderNoticeDisclosures \}\);/, "the pane's return re-runs the disclosure pass");

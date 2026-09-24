@@ -9,8 +9,8 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
-const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
+const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.css"), "utf8");   // the card's sections moved to a sheet both pages import (plans/needs-you.md)
 
 test("(A) a non-done sub's 'Done' button crosses it off — posts nodeOverride op:resolve (immediate-apply, no draft)", () => {
   // gated on a REAL open/blocked sub (widened from blocked-only 2026-07-20): not a dim repeat, not a
@@ -86,7 +86,8 @@ test("(A) MODAL-ONLY: the buttons are added AROUND wireNodeZones; the MARK stays
   const after = FEED.indexOf("const goWork = wireNodeZones(it, node, mark, txt, meta, !repeat);");
   const acts = FEED.indexOf('el("span", "ftree-node-acts")');
   assert.ok(after > 0 && acts > after, "the action buttons are built after wireNodeZones returns");
-  assert.match(FEED, /wireNodeZones\(it, s, mark, txt, null, !repeat\);/);   // card sub-goal row (wire=false for a dim repeat)
+  assert.match(FEED, /env\.wireNode\(it, s, mark, txt, !repeat\);/);   // card sub-goal row (wire=false for a dim repeat)
+  assert.match(FEED, /wireNode: \(it, node, mark, txt, wire\) => \{ wireNodeZones\(it as AskItem, node, mark, txt, null, wire\); \},/, "the feed hands the shared builder its own click zones (card-sections.ts calls the environment; the chat page hands a no-op)");
   // the mark is never re-bound to an override (no .ftree-mark-resolve anywhere)
   assert.doesNotMatch(FEED, /ftree-mark-resolve/);
   assert.doesNotMatch(CSS, /ftree-mark-resolve/);

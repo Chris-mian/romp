@@ -1,0 +1,134 @@
+/* THE CARD'S SECTIONS AND THEIR BODIES, one sheet for the feed card and the Needs you box's row (plans/needs-you.md, "the row carries what
+   the card carries", the user 2026-09-23): the press toggles, the section bodies, the distill line, the sub-goal checklist and the awaited-task
+   rows. Moved here from feed.css (2026-09-24) and @imported by feed.css and styles.css, so the two pages draw them from one copy; the tokens
+   they read (--dim, --fg, --accent, --btn-pad-sm, ...) are defined by each page's own sheet. */
+
+.fask-row3 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; row-gap: 6px; margin-top: 6px; }
+.fask-row3 .fask-actions { margin-left: auto; }
+.fask-distill { font-size: 0.86em; line-height: 1.4; margin: 1px 0 2px; color: var(--fg); opacity: 0.82; white-space: pre-wrap; overflow-wrap: anywhere; }
+.fask-distill-link { cursor: pointer; margin-left: -4px; margin-right: -4px; padding-left: 4px; padding-right: 4px; }
+.fask-distill-link:hover { opacity: 1; text-decoration: underline; text-underline-offset: 2px; }
+.fask-secs { margin-top: 4px; }
+.fask-secbtn { flex: none; padding: var(--btn-pad-sm); color: var(--dim); background: transparent;
+  border: 1px solid var(--card-border); border-radius: 6px; font: inherit; font-size: var(--btn-fs-sm);
+  cursor: pointer; white-space: nowrap; transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease, transform 0.08s ease; }
+.fask-secbtn:active { transform: scale(0.96); }
+.fask-secbtn:hover { color: var(--fg); border-color: var(--fg); }
+.fask-secbtn.on:hover { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.fask-secbtn.on { color: var(--accent); border-color: var(--accent);
+  background: var(--accent-wash); font-weight: 600; }
+.fask-stallbtn { color: #ffd166; background: transparent; border-color: rgba(255, 209, 102, 0.6); }
+.fask-stallbtn:hover { color: #ffd166; border-color: #ffd166; background: rgba(255, 209, 102, 0.14); }
+.fask-stallbtn.on, .fask-stallbtn.on:hover { color: #ffd166; border-color: #ffd166;
+  background: rgba(255, 209, 102, 0.18); font-weight: 600; }
+.fask-secs .fask-distill { min-width: 0; margin: 0; }
+.fask-bg-body, .fask-stall-body { flex: 1 1 100%; min-width: 0; font-size: 0.86em; line-height: 1.4; color: var(--fg);
+  opacity: 0.82; white-space: pre-wrap; overflow-wrap: anywhere; }
+.fask-awaiting-swirl {
+  width: 14px; height: 14px; flex: 0 0 auto;
+  background: url(../media/romp-swirl-glyph.svg) center / contain no-repeat;
+  animation: fask-swirl-spin 2.4s linear infinite;   /* a calm, unhurried spin (the user 2026-06-29) */
+}
+.fask-taskbtn { display: inline-flex; align-items: center; gap: 5px; }
+.fask-taskbtn .fask-awaiting-swirl { width: 10px; height: 10px; }
+.ftask-swirl.fask-awaiting-swirl { display: inline-block; width: 11px; height: 11px; vertical-align: -1px; }
+.ftask-group { font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); margin: 4px 0 1px; }
+.ftask-group:first-child { margin-top: 1px; }
+.fcheck.ftask-sub { padding-left: 1.2em; }
+.ftask-waits-on { flex: 0 0 auto; width: 5.4em; text-align: right; font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); white-space: nowrap; align-self: center; }
+.ftask-deeper { color: var(--dim); }
+.fask-subparked { opacity: 0.6; font-weight: 400; }
+.fcleared-tag { flex: 0 0 auto; font-size: 0.92em; color: var(--dim);
+  border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 4px; padding: 0 5px; line-height: 1.5; }
+.fparked-tag { flex: 0 0 auto; font-size: 0.92em; color: var(--dim);
+  border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 4px; padding: 0 5px; line-height: 1.5; }
+.fcheck.cleared { opacity: 0.55; }
+.fcheck.cleared .fcheck-text { text-decoration: line-through; text-decoration-color: var(--dim); }
+.fask-checklist { display: flex; flex-direction: column; row-gap: 1px; margin: 4px 0 1px; padding-left: 2px; }
+.fcheck { display: flex; align-items: baseline; column-gap: 7px; line-height: 1.4; font-size: 0.92em; }
+.fcheck-tri { flex: 0 0 auto; width: 1em; text-align: center; color: var(--dim); font-size: 0.72em; }
+.fcheck-tri.nav { cursor: pointer; }
+.fcheck-tri.nav:hover { color: var(--fg); }
+.fcheck-mark { flex: 0 0 auto; width: 1em; text-align: center; color: var(--dim); font-size: 0.92em; }
+.fcheck-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; color: var(--fg); }
+.fcheck.repeat { opacity: 0.5; }
+.fcheck.done .fcheck-mark {
+  background: var(--check-bg); color: #fff; border-radius: 50%;
+  width: 13px; height: 13px; min-width: 13px; font-size: 9px; font-weight: 700;   /* match the chat to-do ✓ weight */
+  display: inline-flex; align-items: center; justify-content: center; align-self: center; line-height: 1;
+}
+.fcheck.done .fcheck-text { color: var(--dim); }
+.fcheck.question .fcheck-mark {
+  width: 13px; height: 13px; min-width: 13px; box-sizing: border-box;
+  border-radius: 50%; border: 1.5px solid var(--st-needs-bg); background: transparent;
+  color: var(--st-needs-bg); font-size: 9px; font-weight: 700; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center; align-self: center;
+}
+.fcheck.open .fcheck-mark {
+  width: 13px; height: 13px; min-width: 13px; box-sizing: border-box; align-self: center;
+  border-radius: 50%; border: 1.5px solid var(--dim); background: transparent;
+}
+.fcheck.auth-open .fcheck-mark {
+  width: 13px; height: 13px; min-width: 13px; box-sizing: border-box; align-self: center;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: 2px solid #fff; background: transparent; color: transparent; font-size: 0;
+}
+.fcheck.auth-open .fcheck-text { color: var(--fg); }   /* a live agent-owed item stays full-weight, never dimmed */
+.fcheck.auth-done .fcheck-mark, .ftree-node.auth-done .ftree-mark { box-shadow: 0 0 0 1px #fff; }   /* tight white halo */
+.fcheck .lz-nav { cursor: pointer; }
+.fcheck.freviewed { opacity: 0.6; cursor: pointer; }
+.fcheck.freviewed:hover { opacity: 0.85; }
+.fcheck-text.lz-hl { background: rgba(255, 255, 255, 0.12); border-radius: 3px; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12); }
+.fcheck-mark.lz-hl { box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.16); }
+.fask-para { margin: 0 0 6px; }
+.fask-para:last-child { margin-bottom: 0; }
+.fask-para-age { color: var(--dim); white-space: nowrap; }
+.fask-para-link { cursor: pointer; border-radius: 5px; margin-left: -4px; padding-left: 4px; margin-right: -4px; padding-right: 4px; }
+.fask-para-link:hover { background: rgba(255, 255, 255, 0.07); text-decoration: underline; text-decoration-color: var(--dim); }
+
+/* the state badges of the card's name row, worn by the Needs you row too */
+.fask-origin { flex: 0 0 auto; font-size: 0.82em; cursor: pointer; white-space: nowrap; }
+.fask-origin-pre { color: var(--dim); }
+.fask-origin-peer { font-weight: 600; }
+.fask-origin-absorbed { opacity: 0.55; }   /* provenance of a finished handoff — history, not an active link */
+.fask-origin:hover { text-decoration: underline; text-underline-offset: 2px; }
+.fask-followedup { flex: 0 0 auto; font-size: 0.66em; font-weight: 700; letter-spacing: 0.04em;
+  padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4;
+  color: #5aa2ff; border: 1px solid rgba(90, 162, 255, 0.6); }
+.fask-nudgefailed { flex: 0 0 auto; font-size: 0.66em; font-weight: 700; letter-spacing: 0.04em;
+  padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4;
+  color: #ff6a6a; border: 1px solid rgba(255, 106, 106, 0.6); }
+.fask-interrupted { flex: 0 0 auto; font-size: 0.66em; font-weight: 700; letter-spacing: 0.04em;
+  padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4;
+  color: #ffd166; border: 1px solid rgba(255, 209, 102, 0.6); }
+.fask-interrupting { flex: 0 0 auto; font-size: 0.66em; font-weight: 700; letter-spacing: 0.04em;
+  padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4;
+  background: var(--st-working-bg); color: var(--st-working-fg); opacity: 0.75; }
+.fask-waiton { flex: 0 0 auto; font-size: 0.66em; font-weight: 700; letter-spacing: 0.04em;
+  padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4;
+  color: #4ec9b0; border: 1px solid rgba(78, 201, 176, 0.6); }
+.fask-waiton-cycle { color: #ff6a6a; border-color: rgba(255, 106, 106, 0.7); }
+.fask-waiton-dur { opacity: 0.6; font-weight: 400; }
+
+/* the awaiting swirl box, the warning chip, done confirming and the stale-takeaway note: drawn by the shared builder on the card and on the Needs you row */
+.fask-badges { display: contents; }   /* the name row's badge slot: its children stay the row's own flex items */
+.fask-awaiting { display: flex; align-items: center; gap: 7px; margin: 2px 0 3px; font-size: 0.86em; color: var(--dim); }
+.fask-awaiting-why { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2; line-clamp: 2; }
+.fask-awaiting.await-still .fask-awaiting-swirl { animation-play-state: paused; opacity: 0.5; }
+.fask-awaiting.await-still .fask-awaiting-why { opacity: 0.75; }
+.fask-awaiting.await-paused {
+  align-self: flex-start; max-width: 100%; margin: 3px 0 4px; align-items: flex-start;
+  border: 1px solid var(--box-border); border-radius: 8px; padding: 3px 9px;
+}
+.fask-doneconfirming { flex: 0 0 auto; font-size: 0.66em; font-weight: 700; letter-spacing: 0.04em;
+  padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4;
+  color: var(--check-bg); border: 1px solid var(--check-ring); }   /* the ring follows the themed ✓ (T226 review) */
+.fask-warnchip { flex: 0 0 auto; font-size: 0.66em; font-weight: 700; letter-spacing: 0.04em;
+  padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4; font-family: inherit;
+  color: #ffd166; border: 1px solid rgba(255, 209, 102, 0.6); background: transparent; cursor: pointer; }
+.fask-warnchip:hover { background: rgba(255, 209, 102, 0.14); }
+.fsum-stale { font-style: italic; opacity: 0.62; font-size: 0.92em; margin-bottom: 3px; }
+/* the swirl's spin, defined in the sheet both pages import so the row's glyph and caption spin on the chat page too (round three of the box content PR) */
+@keyframes fask-swirl-spin { to { transform: rotate(-360deg); } }
+@media (prefers-reduced-motion: reduce) { .fask-awaiting-swirl { animation: none; } }

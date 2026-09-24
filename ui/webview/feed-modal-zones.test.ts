@@ -8,8 +8,8 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
-const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
+const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.css"), "utf8");   // the card's sections moved to a sheet both pages import (plans/needs-you.md)
 
 test("the modal shows the DISTILLER's per-node line (summary/blockSummary) but NO why/generating (restored 2026-06-29)", () => {
   // a done node's takeaway / a blocked node's decision brief, via the SAME executable rule as the card
@@ -66,7 +66,8 @@ test("card sub-goals click EXACTLY like the modal — same wireNodeZones, separa
   // the modal tree node and the card's inline sub-goal checklist BOTH call wireNodeZones, so they navigate
   // identically; the card has no time cell so it passes null for meta.
   assert.match(FEED, /const goWork = wireNodeZones\(it, node, mark, txt, meta, !repeat\);/);   // modal
-  assert.match(FEED, /wireNodeZones\(it, s, mark, txt, null, !repeat\);/);                     // card sub-goal row
+  assert.match(FEED, /env\.wireNode\(it, s, mark, txt, !repeat\);/);                     // card sub-goal row
+  assert.match(FEED, /wireNode: \(it, node, mark, txt, wire\) => \{ wireNodeZones\(it as AskItem, node, mark, txt, null, wire\); \},/, "the feed hands the shared builder its own click zones (card-sections.ts calls the environment; the chat page hands a no-op)");
   assert.match(CSS, /\.fcheck \.lz-nav \{[^}]*cursor: pointer/);
   assert.match(CSS, /\.fcheck-mark\.lz-hl \{[^}]*box-shadow/);                                 // checkbox = halo
   assert.match(CSS, /\.fcheck-text\.lz-hl \{[^}]*background/);                                  // text = fill

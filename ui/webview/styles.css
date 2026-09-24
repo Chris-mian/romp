@@ -8,6 +8,7 @@
    engine takes woff2 first, so the .woff/.ttf fallback urls are deliberately left external
    and never fetched). */
 @import "katex/dist/katex.min.css";
+@import "./card-sections.css";   /* the card's sections, shared with the chat page's Needs you row (plans/needs-you.md) */
 
 /* A wide display formula scrolls inside its own box instead of stretching the bubble. */
 .katex-display { overflow-x: auto; overflow-y: hidden; }
@@ -1158,7 +1159,13 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 .ntc-head .ntc-caret { flex: 0 0 auto; color: var(--dim); font-size: 0.72em; width: 10px; opacity: 0.7; }   /* the awaiting box's caret (.bg-caret): closed points right, the last level down */
 #notices.ntc-l0 .ntc-bar { border-bottom-color: transparent; }   /* collapsed: the header line alone, no rule under it */
 #notices.ntc-l0 .ntc-row { display: none; }   /* level 0: the items hidden */
-#notices:not(.ntc-l2) .ntc-body, #notices:not(.ntc-l2) .ntc-attach, #notices:not(.ntc-l2) .ntc-more { display: none; }   /* below level 2: the background paragraph, its disclosure and the attachment hidden; the title and the buttons stand */
+#notices:not(.ntc-l2) .ntc-body, #notices:not(.ntc-l2) .ntc-attach { display: none; }
+#notices.ntc-l0 .ntc-more { display: none; }   /* the disclosure shows wherever its line does: at the items level the distill line is clamped and More opens it (plans/needs-you.md, the row carries what the card carries) */
+#notices:not(.ntc-l2) .ntc-row .ntc-secs-row { display: none; }   /* the card's section toggles at the full context only; at the items level the open section's body shows under the title */
+.ntc-row .ntc-secs-row { margin-top: 2px; }
+.ntc-row .ntc-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 0.86em; }
+.ntc-row .ntc-distill { font-size: 0.86em; opacity: 0.85; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }   /* the card's line, clamped in the box like the brief was (the box is a strip; the card has the pane), More past it at either level */
+.ntc-row.ntc-open .ntc-distill { display: block; -webkit-line-clamp: unset; overflow: visible; }   /* the disclosure open: the clamp lifted */
 #notices:not(.ntc-l2) .ntc-row.ntc-fault .ntc-body { display: -webkit-box; }   /* the credential row's body, the fault's explanation, shows at the items too (the box arc's round three: it hid with every body) */
 .ntc-head .ntc-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--st-needs-bg); }
 .ntc-head .ntc-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }

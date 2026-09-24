@@ -10,8 +10,8 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
-const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
+const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.css"), "utf8");   // the badge and paragraph rules moved to the sheet both pages import (plans/needs-you.md)
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
 const JUDGE = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "judge.py"), "utf8");
 // Prompts are WRAPPED string literals, so any phrase in them spans source lines. Join adjacent literals
@@ -47,10 +47,13 @@ test("the renderer gates on state-matched parts + multi-item + the paragraph-cou
     "parts must belong to the state being shown: briefParts <-> blocked brief, summaryParts <-> takeaway");
   assert.ok(FEED.includes("if (distillShown && ((bp && bp.length > 1) || (pAnchors && pAnchors.some(Boolean))))"),
     "multi-item stamps or per-paragraph citations (T220) — a single unstamped, uncited ask keeps the header age");
-  assert.ok(FEED.includes("const stampOk = !!(bp && bp.length > 1 && (paras.length === bp.length || paras.length === bp.length + 1));"),
+  // the split and the gate are distiller-line.ts's distillParas since the box content round (plans/needs-you.md): the Needs you row stamps its paragraphs by the same rule
+  const DL = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "distiller-line.ts"), "utf8");
+  assert.match(FEED, /const split = distillParas\(distillShown, bp\);[^\n]*\n\s*const paras = split\.paras;\n\s*const stampOk = split\.stamps !== null;/, "the card takes the paragraphs and the stamp verdict from the module");
+  assert.ok(DL.includes("const ok = !!(parts && parts.length > 1 && (paras.length === parts.length || paras.length === parts.length + 1));"),
     "the model may merge paragraphs — a missing stamp beats a wrong one — but ONE extra trailing "
     + "paragraph is the still-open line, which is expected, not a mismatch");
-  assert.match(FEED, /split\(\/\\n\\s\*\\n\/\)/, "paragraphs split on blank lines, the brief's own separator");
+  assert.match(DL, /split\(\/\\n\\s\*\\n\/\)/, "paragraphs split on blank lines, the brief's own separator");
 });
 
 // The still-open paragraph (the user 2026-07-29): all three judge prompts now end a summary with whatever
@@ -60,7 +63,7 @@ test("the renderer gates on state-matched parts + multi-item + the paragraph-cou
 test("the trailing still-open paragraph renders unstamped, and only the item paragraphs get ages", () => {
   assert.ok(FEED.includes("if (stampOk && i < bp!.length) {"),
     "the chip is appended only for paragraphs that HAVE a part; the extra one gets none");
-  const block = FEED.slice(FEED.indexOf("// PER-PARAGRAPH ages"), FEED.indexOf("// The distiller line is a LINK"));
+  const block = FEED.slice(FEED.indexOf("export function applyDistillLanding("), FEED.indexOf("// The distiller line is a LINK"));   // the block is card-sections.ts's since round two of the box content PR
   assert.ok(/paras\.forEach\(\(p, i\) => \{[\s\S]*?if \(stampOk && i < bp!\.length\) \{[\s\S]*?if \(bp!\[i\]\.since\) stampAge\(age, bp!\[i\]\.since/.test(block),
     "the guard wraps the stamp's since lookup itself, so bp[i] is never read past the end");
   assert.ok(block.includes("ONE EXTRA TRAILING PARAGRAPH"), "the why is recorded where the gate lives");
@@ -72,9 +75,9 @@ test("the trailing still-open paragraph renders unstamped, and only the item par
 
 test("each paragraph wears its own live age chip", () => {
   assert.ok(FEED.includes('el("span", "fask-para-age")'));
-  assert.ok(FEED.includes('if (bp![i].since) stampAge(age, bp![i].since, "plain", false, nowS, relAge, ageColorReadable);'),
+  assert.ok(FEED.includes('if (bp![i].since) stampAge(age, bp![i].since, "plain", false, nowS, env.relAge, env.ageTint);'),   // the page's clock and words (card-sections.ts applyDistillLanding, round two of the box content PR)
     "the ask's OWN block-event age, via the shared relAge vocabulary — stamped, so the 15 s live pass moves it on a card the update gate does not repaint");
-  assert.ok(FEED.includes('else age.textContent = relAge(0);'), "no event time → the static chip it always showed, unstamped (nothing to count from)");
+  assert.ok(FEED.includes('else age.textContent = env.relAge(0);'), "no event time → the static chip it always showed, unstamped (nothing to count from); the Needs you row reads the same words through its environment");
 });
 
 test("the chip inherits the brief's font size — dimness is the only differentiation", () => {

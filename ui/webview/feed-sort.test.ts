@@ -29,7 +29,7 @@ test("the Collapsed default lives in the settings modal now; flipping it still d
   // The gear writes romp:settings.collapsed; the feed's settings watcher drops the per-card section
   // overrides whenever the pref CHANGES — whichever surface changed it — so every card re-flows.
   assert.doesNotMatch(FEED, /ensureFeedToggle\("feed-collapsed"/, "no footer Collapsed button survives");
-  assert.match(FEED, /if \(p\.collapsed !== lastCollapsedPref\) \{ lastCollapsedPref = p\.collapsed; secChoice\.clear\(\); \}/);
+  assert.match(FEED, /if \(p\.collapsed !== lastCollapsedPref\) \{ lastCollapsedPref = p\.collapsed; replaceSectionChoices\(\[\]\); \}/);
   const GEAR = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "gear.js"), "utf8");
   assert.match(GEAR, /rs-feedcollapsed/);
   assert.match(GEAR, /s\.collapsed = fc\.checked; save\(s\);/);
