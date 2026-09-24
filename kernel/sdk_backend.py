@@ -5820,6 +5820,13 @@ class SdkSession:
             if isinstance(_own, str) and _own:
                 self._own_turn_clear_qid = _own
                 self._clearing = True
+        elif reg.get("clearingTaken") or reg.get("clearingOwnTurn"):
+            # the restart did NOT keep this CLI, so that /clear never runs and its echo is a genuine loss
+            # (_reseed_echoes / _mark_dropped_echoes). DROP the stale mirror keys so a LATER restart over a
+            # different, host-kept CLI cannot relight the bracket from them (a Clearing row with nothing
+            # clearing). Written here rather than via _persist_echoes: the session is not yet registered, so
+            # _persist_echoes would skip these keys, and the drop is the only way to clear them now.
+            self.backend._update_reg_dropping(self.sid, drop=("clearingTaken", "clearingOwnTurn"))
         self._input_wake: asyncio.Event | None = None
         self._cur_ask_fut: asyncio.Future | None = None
         self._ask_serial = asyncio.Lock()            # ONE live ask per session: the SDK dispatches every control
@@ -6428,6 +6435,15 @@ class SdkSession:
         self._intr_level = 0
         self._compacting = False   # an abandoned /compact turn can't emit its boundary/result on the dead client
         self._clearing = False     # same: an abandoned /clear turn can't emit its init/result either
+        # A /clear this abandoned client had TAKEN can never flip now, so drop its take-tracking too, not just
+        # the bracket: leaving _taken_clear_qids / _own_turn_clear_qid would let the next unrelated turn's
+        # settle drain retire its echo (hiding the loss), and their persisted mirror would relight the bracket
+        # on a later restart over a host-kept CLI. Re-persist so the reg mirror drops them as well.
+        _had_take = bool(self._taken_clear_qids or self._own_turn_clear_qid)
+        self._taken_clear_qids = []
+        self._own_turn_clear_qid = None
+        if _had_take:
+            self.backend._persist_echoes(self.sid)
         self._mark("waiting")
         self.backend.retire_live_work(self.sid)    # the abandoned turn's stream is gone with its client
         if stranded and not self.resume_sid:
@@ -8661,6 +8677,7 @@ class SdkSession:
                     if taken_clear == getattr(self, "_own_turn_clear_qid", None):
                         self._own_turn_clear_qid = None    # the flip retired it: the settle backstop has nothing to do
                     self.backend.retire_clear_echoes(self.sid, taken_clear)
+                    self.backend._persist_echoes(self.sid)   # mirror the POP even if the retire removed no echo, else reg['clearingTaken'] keeps the spent qid
                 if clearing:
                     # The CLI zeroed total_cost_usd and modelUsage at this instant (a /clear resets both,
                     # same lifecycle); reset the spend watermarks on the EVENT rather than waiting for the
@@ -9173,7 +9190,7 @@ class SdkSession:
                                  ("the 'waiting' state write", lambda: self._mark("waiting"))]
                 if own_clear:   # the no-flip /clear echo retire (guarded like the other file/lock steps; still ahead of the woken feeder)
                     _settle_steps.append(("the /clear echo retire", lambda: self.backend.retire_clear_echoes(self.sid, own_clear)))
-                elif _had_taken:   # a swallowed /clear was drained without a retire: mirror the emptied take list so a restart restores nothing stale
+                if own_clear or _had_taken:   # mirror the emptied take list even if the retire above removed no echo (a no-op retire skips its own persist), so a restart restores nothing stale
                     _settle_steps.append(("the /clear take mirror", lambda: self.backend._persist_echoes(self.sid)))
                 for what, step in _settle_steps:
                     try:

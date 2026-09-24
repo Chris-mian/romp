@@ -17434,8 +17434,9 @@ function routeUserMessage(sid: string, text: string, cites: Citation[] | undefin
   // during a socket outage, and a refused Codex /clear needs the entry for the warn handler to restore. A
   // transcript-resetting /clear writes NO user record for itself, so it never LANDS and, in a same-second
   // batch, is never OVERTAKEN either, so its bubble ends on the CLEAR BOUNDARY instead (the fresh episode it
-  // forks), which reconcileOptimistic pairs to it (the `clear` flag, gated OFF for Codex: a Codex /clear is
-  // refused, reaches no boundary, and its bubble ends the ordinary way on that refusal). The kernel retires
+  // forks), which reconcileOptimistic pairs to it (the `clear` flag, gated OFF for Codex: a Codex /clear runs
+  // the native clear instead, so it reaches no clear boundary and its bubble ends the ordinary way, on the
+  // acknowledging chip when the clear runs and on the refusal when it fails). The kernel retires
   // its OWN /clear echo at the same boundary, by the taken copy's id (sdk_backend.retire_clear_echoes).
   else { vscodeApi.postMessage({ type: "sendMessage", id: sid, text, qid, ...att }); registerOptimistic(sid, text, imgPaths, qid, paths, isClearCmd(text) && liveSession(sid)?.status?.backend !== "codex"); }
   // One breadcrumb per composer send (client-diag.jsonl): sid, when, how long, which route — never the
