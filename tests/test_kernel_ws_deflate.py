@@ -597,6 +597,24 @@ class RelayExecuted(unittest.TestCase):
             self.assertEqual(b0, want_b0)
             self.assertEqual((inflate(payload) if want_b0 == 0xC1 else payload).decode("utf-8"), text)
 
+    def test_an_offer_on_a_second_extension_line_reaches_the_remote(self):
+        # RFC 6455 §11.3.2 lets the list come as several header lines, which the direct handshake reads together
+        # (EndToEnd's repeated-lines test); the relay forwarded the first line only, so this offer upgraded plain through
+        # the hub where it negotiated direct (review of #2106, 2026-09-23)
+        wid = "w-relay-twolines"
+        status, headers, s, rest = upgrade(self.hub.server_address[1], ["x-webkit-deflate-frame", "permessage-deflate; client_max_window_bits"],
+                                           path="/remote/gpu1/ws?app=feed&wid=%s&token=%s" % (wid, km.TOKEN))
+        self.socks.append(s)
+        self.assertEqual(status, 101)
+        self.assertEqual(headers.get("sec-websocket-extensions"), ACCEPT)
+        remote_client = kernel_client(wid)
+        self.assertEqual(remote_client.get("deflate"), {"wbits": 15, "bounded": False})
+        text = big_text()
+        remote_client["send"](text)
+        b0, payload = _Reader(s, rest).frame()
+        self.assertEqual(b0, 0xC1)
+        self.assertEqual(inflate(payload).decode("utf-8"), text)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
