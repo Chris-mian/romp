@@ -19,10 +19,10 @@
 #      already says) and refuse it if that tag already exists
 #   2. if VERSION needs to change: branch, commit, push, open a PR, auto-merge it, and wait
 #      for it to land on main  (skipped entirely when VERSION is already correct)
-#   3. run the test suites: the webview suite and BUILD first, then the Python suite (the
-#      served labs serve the bundle the build just wrote, the order CI's extension job runs
-#      them in), with the live kernel's exports scrubbed and, when the extension deps are
-#      present, the served labs required rather than skippable
+#   3. run the test suites in CI's order: the webview typecheck, suite and BUILD, then the
+#      Python suite (the served labs serve the bundle the build just wrote) with the live
+#      kernel's exports scrubbed and, where playwright's chromium is installed, the served
+#      labs required rather than skippable (see the note on a box running a live romp below)
 #   4. the macOS gate (see below)
 #   5. tag, push the tag, and publish the GitHub release
 #
@@ -243,9 +243,15 @@ fi
 # ── 4. the tests ──────────────────────────────────────────────────────
 # The names a romp session's shell carries from the live kernel. The suite's conftest floors the
 # state root and the ports and every lab kernel is built from a list of names, but a run from such
-# a shell still hands these to the labs' node drivers and to every test that copies its environment
-# (the v0.17.0 cut, 2026-09-24: two served labs red in the local run on the shared box, CI green on
-# the same tip). Scrubbed for the Python run, so the suite sees the machine the way CI's runner does.
+# a shell still hands these to the labs' node drivers and to every test that copies its environment.
+# Scrubbed for the Python run, so the suite sees the machine the way CI's runner does: parity with
+# CI, so that what the local run says is comparable with CI's, not a diagnosis of anything.
+#
+# The served labs on a box that runs a live romp: at the v0.17.0 cut (2026-09-24) two federation labs
+# (the task-tracking federation lab and the send-bubble remote lab) were red in the local run on the
+# shared box and green in CI on the same tip, and they stay red there with the tip's bundle built and
+# these names removed; the cause is open. On such a box the gate for the tag is CI green on the tip,
+# through --skip-tests, the documented road.
 LIVE_KERNEL_EXPORTS="ROMP_MANAGER_PID ROMP_SUPERVISED ROMP_SID ROMP_SESSION_NAME ROMP_SERVE_HOST ROMP_STATE_DIR ROMP_KERNEL_PORT ROMP_SERVE_PORT ROMP_MANAGER_PORT ROMP_POSTAL_PORT"
 scrubbed() {
     local unset_args="" name
@@ -257,21 +263,34 @@ if [ "$skip_tests" -eq 1 ]; then
     echo "release: !! skipping the local suites at your explicit request (--skip-tests)."
     echo "release: !! the gate is then CI green on the tip being tagged ($(git rev-parse --short HEAD)): read it before this tags, and name the run in the notes."
 else
-    served_require=""
+    served_env=()
     if [ -d vscode-extension/node_modules ]; then
-        # CI's extension job order: the webview suite, the build, then the served labs against the dist
-        # the build just wrote. Most served labs rebuild the shared dist themselves in setUpClass; the
-        # ones that serve the checkout's dist as it stands get the tip's build from this step, and a
-        # build that fails stops the release HERE, before the suite, instead of as a skip inside a lab
-        # (a lab whose esbuild fails skips with the reason, and under the require flag below that skip
-        # is a failure an hour into the run).
+        # CI's extension job order: the typecheck, the webview suite, the build, then the served labs
+        # against the dist the build just wrote. Neither esbuild road checks types, so the typecheck is
+        # its own step. Most served labs rebuild the shared dist themselves in setUpClass; the ones that
+        # serve the checkout's dist as it stands get the tip's build from this step, and a build that
+        # fails stops the release HERE, before the suite, instead of as a skip inside a lab (a lab whose
+        # esbuild fails skips with the reason, and under the require flag below that skip is a failure an
+        # hour into the run).
+        say "typechecking the webview..."
+        step sh -c 'cd vscode-extension && npm run typecheck' || die "the webview typecheck failed: NOT releasing."
         say "running the webview suite..."
         step sh -c 'cd vscode-extension && npm test' || die "the webview suite failed: NOT releasing."
         say "building the webview (the served labs serve this build)..."
         step sh -c 'cd vscode-extension && npm run build' || die "the webview build failed: NOT releasing."
-        # With the extension deps here the served labs run as CI runs them: a skip in one (no browser, a
-        # kernel that never served) is a failure carrying its reason, never a silent pass of this gate.
-        served_require="ROMP_SERVED_TESTS_REQUIRE=1"
+        # The served labs run as CI runs them only where a browser can run them: playwright's pinned
+        # Chromium, asked for by path (the package answers with the path whether or not the download
+        # happened, so the file itself is checked). With it, a skip in a served lab (an absent dep, a
+        # kernel that never served) is a failure carrying its reason, never a silent pass of this gate,
+        # and the engines declared are the ones CI declares (chromium alone unless the shell says
+        # otherwise), so a leg for an engine this box does not carry stays an optional skip instead of
+        # turning into a failure. Without the browser the labs skip here and the line says so.
+        browser="$(cd vscode-extension && node -e "process.stdout.write(require('playwright').chromium.executablePath())" 2>/dev/null || true)"
+        if [ -n "$browser" ] && [ -x "$browser" ]; then
+            served_env=(ROMP_SERVED_TESTS_REQUIRE=1 "ROMP_SERVED_TESTS_ENGINES=${ROMP_SERVED_TESTS_ENGINES:-chromium}")
+        else
+            say "node deps present, no browser (npx playwright install chromium adds it): the served labs skip here; their gate is CI's extension job on the tip."
+        fi
     else
         say "vscode-extension/node_modules is absent: skipping the webview suite and build (npm ci to include them);"
         say "the served labs skip here too, so their gate for this tag is CI's extension job on the tip."
@@ -296,7 +315,7 @@ else
         fi
     fi
     # shellcheck disable=SC2086
-    step scrubbed $served_require $PYTEST tests/ -q || die "the Python suite failed: NOT releasing."
+    step scrubbed env ${served_env[@]+"${served_env[@]}"} $PYTEST tests/ -q || die "the Python suite failed: NOT releasing."
 fi
 
 # ── 5. the macOS gate ─────────────────────────────────────────────────
