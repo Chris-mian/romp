@@ -19,7 +19,10 @@
 #      already says) and refuse it if that tag already exists
 #   2. if VERSION needs to change: branch, commit, push, open a PR, auto-merge it, and wait
 #      for it to land on main  (skipped entirely when VERSION is already correct)
-#   3. run the test suites
+#   3. run the test suites: the webview suite and BUILD first, then the Python suite (the
+#      served labs serve the bundle the build just wrote, the order CI's extension job runs
+#      them in), with the live kernel's exports scrubbed and, when the extension deps are
+#      present, the served labs required rather than skippable
 #   4. the macOS gate (see below)
 #   5. tag, push the tag, and publish the GitHub release
 #
@@ -74,7 +77,9 @@ usage: scripts/release.sh [major|minor|patch|X.Y.Z] [flags]
 
 flags:
   --skip-macos    tag without waiting for the dispatch-only macOS run (loud, discouraged)
-  --skip-tests    do not run the local suites before releasing
+  --skip-tests    do not run the local suites before releasing; acceptable only when CI is
+                  green on the very tip being tagged (that run is then the gate: name it in
+                  the notes)
   --dry-run       print what would happen; change nothing
 USAGE
     exit 2
@@ -236,9 +241,41 @@ if [ "$dry_run" -eq 0 ]; then
 fi
 
 # ── 4. the tests ──────────────────────────────────────────────────────
+# The names a romp session's shell carries from the live kernel. The suite's conftest floors the
+# state root and the ports and every lab kernel is built from a list of names, but a run from such
+# a shell still hands these to the labs' node drivers and to every test that copies its environment
+# (the v0.17.0 cut, 2026-09-24: two served labs red in the local run on the shared box, CI green on
+# the same tip). Scrubbed for the Python run, so the suite sees the machine the way CI's runner does.
+LIVE_KERNEL_EXPORTS="ROMP_MANAGER_PID ROMP_SUPERVISED ROMP_SID ROMP_SESSION_NAME ROMP_SERVE_HOST ROMP_STATE_DIR ROMP_KERNEL_PORT ROMP_SERVE_PORT ROMP_MANAGER_PORT ROMP_POSTAL_PORT"
+scrubbed() {
+    local unset_args="" name
+    for name in $LIVE_KERNEL_EXPORTS; do unset_args="$unset_args -u $name"; done
+    # shellcheck disable=SC2086
+    env $unset_args "$@"
+}
 if [ "$skip_tests" -eq 1 ]; then
     echo "release: !! skipping the local suites at your explicit request (--skip-tests)."
+    echo "release: !! the gate is then CI green on the tip being tagged ($(git rev-parse --short HEAD)): read it before this tags, and name the run in the notes."
 else
+    served_require=""
+    if [ -d vscode-extension/node_modules ]; then
+        # CI's extension job order: the webview suite, the build, then the served labs against the dist
+        # the build just wrote. Most served labs rebuild the shared dist themselves in setUpClass; the
+        # ones that serve the checkout's dist as it stands get the tip's build from this step, and a
+        # build that fails stops the release HERE, before the suite, instead of as a skip inside a lab
+        # (a lab whose esbuild fails skips with the reason, and under the require flag below that skip
+        # is a failure an hour into the run).
+        say "running the webview suite..."
+        step sh -c 'cd vscode-extension && npm test' || die "the webview suite failed: NOT releasing."
+        say "building the webview (the served labs serve this build)..."
+        step sh -c 'cd vscode-extension && npm run build' || die "the webview build failed: NOT releasing."
+        # With the extension deps here the served labs run as CI runs them: a skip in one (no browser, a
+        # kernel that never served) is a failure carrying its reason, never a silent pass of this gate.
+        served_require="ROMP_SERVED_TESTS_REQUIRE=1"
+    else
+        say "vscode-extension/node_modules is absent: skipping the webview suite and build (npm ci to include them);"
+        say "the served labs skip here too, so their gate for this tag is CI's extension job on the tip."
+    fi
     say "running the Python suite..."
     # Resolve a suite environment instead of assuming a system-wide pytest (the v0.13.0 run died
     # on a bare ModuleNotFoundError mid-release on a box with only a repo venv). Prefer a WORKING
@@ -258,13 +295,8 @@ else
       or:  python3 -m pip install --upgrade pytest cryptography"
         fi
     fi
-    step $PYTEST tests/ -q || die "the Python suite failed — NOT releasing."
-    if [ -d vscode-extension/node_modules ]; then
-        say "running the webview suite..."
-        step sh -c 'cd vscode-extension && npm test' || die "the webview suite failed — NOT releasing."
-    else
-        say "vscode-extension/node_modules is absent — skipping the webview suite (npm install to include it)."
-    fi
+    # shellcheck disable=SC2086
+    step scrubbed $served_require $PYTEST tests/ -q || die "the Python suite failed: NOT releasing."
 fi
 
 # ── 5. the macOS gate ─────────────────────────────────────────────────

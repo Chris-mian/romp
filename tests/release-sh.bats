@@ -531,3 +531,88 @@ RSTUB
     [ "$status" -eq 0 ]
     grep -q "myrunner tests/ -q" "$TEST_DIR/my.log"
 }
+
+# ── the suites' order and environment (the v0.17.0 lesson, 2026-09-24) ─────────────────────
+# The cut's local run ran the Python suite before the webview suite, from a romp session's shell
+# whose environment carries the live kernel's exports, and two served labs were red on the shared
+# box where CI was green on the same tip. The script now orders the suites as CI's extension job
+# does (the webview suite, the build, then the Python suite against that build: the labs that
+# serve the checkout's dist as it stands get the tip's bundle, and a broken build stops the
+# release before the suite instead of inside a lab an hour in), scrubs those exports for the
+# Python run, and requires the served labs when the extension deps are present. Every call
+# below lands in one sequence log, so the ORDER is what these pin.
+
+_stub_npm() {                           # $1 = "ok" | "build-fails"
+    cat > "$TEST_DIR/npm" <<NPMSTUB
+#!/bin/sh
+echo "npm \$*" >> "$TEST_DIR/seq.log"
+if [ "\$1 \$2" = "run build" ] && [ "$1" = "build-fails" ]; then exit 1; fi
+exit 0
+NPMSTUB
+    chmod +x "$TEST_DIR/npm"
+}
+
+_stub_python3_recording() {            # a present pytest whose suite run records its argv and its environment's NAMES
+    cat > "$TEST_DIR/python3" <<PYSTUB
+#!/bin/sh
+echo "python3 \$*" >> "$TEST_DIR/seq.log"
+if [ "\$1" = "-m" ] && [ "\$2" = "pytest" ] && [ "\$3" = "tests/" ]; then env | cut -d= -f1 | sort > "$TEST_DIR/suite-env.txt"; fi
+exit 0
+PYSTUB
+    chmod +x "$TEST_DIR/python3"
+}
+
+_with_extension_deps() { mkdir -p "$REPO/vscode-extension/node_modules"; }
+
+@test "release: with the extension deps present, the webview suite and BUILD run before the Python suite" {
+    _stub_gh; _stub_npm ok; _stub_python3_recording; _with_extension_deps
+    run env PATH="$(_env_path)" "$REPO/scripts/release.sh"
+    [ "$status" -eq 0 ]
+    [ "$(grep -c '^npm run build$' "$TEST_DIR/seq.log")" -eq 1 ]
+    t="$(grep -n '^npm test$' "$TEST_DIR/seq.log" | cut -d: -f1)"
+    b="$(grep -n '^npm run build$' "$TEST_DIR/seq.log" | cut -d: -f1)"
+    p="$(grep -n '^python3 -m pytest tests/ -q$' "$TEST_DIR/seq.log" | cut -d: -f1)"
+    [ -n "$t" ]; [ -n "$b" ]; [ -n "$p" ]
+    [ "$t" -lt "$b" ]
+    [ "$b" -lt "$p" ]
+}
+
+@test "release: a failing webview build stops the release BEFORE the Python suite, and nothing is tagged" {
+    _stub_gh; _stub_npm build-fails; _stub_python3_recording; _with_extension_deps
+    run env PATH="$(_env_path)" "$REPO/scripts/release.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"webview build failed"* ]]
+    [ "$(grep -c '^python3 -m pytest tests/' "$TEST_DIR/seq.log")" -eq 0 ]
+    run git -C "$REPO" tag -l
+    [ -z "$output" ]
+}
+
+@test "release: the Python suite runs without the live kernel's exports, and with the served labs required when the extension deps are present" {
+    _stub_gh; _stub_npm ok; _stub_python3_recording; _with_extension_deps
+    run env PATH="$(_env_path)" ROMP_MANAGER_PID=4242 ROMP_SERVE_HOST=0.0.0.0 \
+        ROMP_SID=cccccccc-1111-2222-3333-444444444444 ROMP_SESSION_NAME=web ROMP_KERNEL_PORT=7433 ROMP_POSTAL_PORT=25302 \
+        "$REPO/scripts/release.sh"
+    [ "$status" -eq 0 ]
+    [ -s "$TEST_DIR/suite-env.txt" ]
+    [ "$(grep -c -E '^(ROMP_MANAGER_PID|ROMP_SERVE_HOST|ROMP_SID|ROMP_SESSION_NAME|ROMP_KERNEL_PORT|ROMP_POSTAL_PORT)$' "$TEST_DIR/suite-env.txt")" -eq 0 ]
+    [ "$(grep -c '^ROMP_SERVED_TESTS_REQUIRE$' "$TEST_DIR/suite-env.txt")" -eq 1 ]
+    grep -q '^python3 -m pytest tests/ -q$' "$TEST_DIR/seq.log"
+}
+
+@test "release: without the extension deps the script says the served labs are not proven here, and does not require them" {
+    _stub_gh; _stub_python3_recording
+    run env PATH="$(_env_path)" "$REPO/scripts/release.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"served labs skip here"* ]]
+    [[ "$output" == *"CI's extension job on the tip"* ]]
+    [ -s "$TEST_DIR/suite-env.txt" ]
+    [ "$(grep -c '^ROMP_SERVED_TESTS_REQUIRE$' "$TEST_DIR/suite-env.txt")" -eq 0 ]
+}
+
+@test "release: --skip-tests names CI green on the tip as the gate, with the tip's sha" {
+    _stub_gh
+    run "$REPO/scripts/release.sh" --skip-tests
+    [ "$status" -eq 0 ]
+    tip="$(git -C "$REPO" rev-parse --short HEAD)"
+    [[ "$output" == *"CI green on the tip being tagged ($tip)"* ]]
+}
