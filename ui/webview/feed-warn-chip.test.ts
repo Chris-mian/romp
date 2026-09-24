@@ -11,9 +11,9 @@ import * as path from "node:path";
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the badges moved to card-sections.ts (round two of the box content PR: one builder for the card and the Needs you row)
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.css"), "utf8");
 
-test("the warning chip is a button built once, riding the wrapping chip row", () => {
+test("the warning chip is a button where a click opens the detail and a span where nothing does, built once, riding the wrapping chip row", () => {
   assert.match(FEED, /const chip = el\(env\.openWarns \? "button" : "span", "fask-warnchip"\);/,
-    "a BUTTON (focusable), not a span — it has a click action");
+    "a BUTTON (focusable) on a page with a warn destination (the feed's overlay), a SPAN on one without (the chat page's row): no click is promised where none acts");
   assert.match(FEED, /const lbl = allDistill \? "distill failed" : "warning";/, "plain text label, no emoji/glyph");
   assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, badges\)/);
   assert.match(FEED, /a\._badges = badges;/);
@@ -91,7 +91,10 @@ test("the overlay lists each warn's kind/age and full detail", () => {
 
 test("the chip is a yellow pill and the overlay detail preserves its paragraphs", () => {
   assert.match(CSS, /\.fask-warnchip \{[^}]*color: #ffd166/);
-  assert.match(CSS, /\.fask-warnchip \{[^}]*cursor: pointer/);
+  assert.match(CSS, /button\.fask-warnchip \{ cursor: pointer; \}/, "the hand belongs to the button alone");
+  assert.match(CSS, /button\.fask-warnchip:hover \{ background:/, "and so does the hover tint");
+  assert.doesNotMatch(CSS, /\n\.fask-warnchip \{[^}]*cursor/, "the shared rule names no cursor: the chat page's span shows the default one");
+  assert.doesNotMatch(CSS, /\n\.fask-warnchip:hover/, "and no hover tint reaches the span (the contributor's note on the 0.17.1 fix: the span looked clickable)");
   assert.match(CSS, /\.fwarn-detail \{[^}]*white-space: pre-wrap/,
     "the what-happened/why-unexpected sections keep their blank-line structure");
 });

@@ -59481,11 +59481,6 @@ _NEEDS_ROW_CARD_FIELDS = ("summary", "blockSummary", "briefParts", "summaryParts
                           "warns", "failLog", "summaryAnchorUuid", "summaryAnchorQuote", "summaryAnchorsPara", "doneConfirming", "blocked",
                           "column", "judging", "working", "sessState", "delegTracked")
 
-# the structured members of the list above (dicts and lists): the row-field key serialises these, and the signature test moves one INNER
-# element of each (a key constant per structure passed a value-to-value move; a contributor's third note on PR 2124 named the six left out)
-_NEEDS_ROW_STRUCTURED = ("briefParts", "summaryParts", "stalled", "tree", "awaiting", "nudged", "waitingOn", "origin", "handoffTo",
-                         "warns", "failLog", "summaryAnchorsPara", "blocked", "working", "delegTracked")
-
 
 def _needs_input_sids(feed):
     """The sids with a card that needs the user: _card_needs_you, the one board-aware rule the badge reads too (the 1861

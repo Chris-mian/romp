@@ -15388,19 +15388,21 @@ function noticeSectionsFor(row: HTMLElement, n: ChatNotice): boolean {
 }
 // the row's LINE, the element the disclosure measures and clamps: the distill line on a row wearing the card's sections, else the markdown body
 function noticeLineOf(row: HTMLElement): HTMLElement | null { return ((row as any)._distill as HTMLElement | undefined) ?? row.querySelector<HTMLElement>(".ntc-body"); }
-// what the chat page hands the shared section builder (card-sections.ts SectionEnv): no collapsed-by-default preference here, a sub-goal
-// row's text jumps to the row's work anchor within this page (the modal's other zones are the feed's), no PR repo for a row's links, the
+// what the chat page hands the shared section builder (card-sections.ts SectionEnv): the feed's Collapsed default read from this page's copy
+// of the settings (below), a sub-goal row's text jumps to the row's work anchor within this page (the modal's other zones are the feed's), no PR repo for a row's links, the
 // page's clock with the card's age words (no recency tint; the live pass below repaints the stamps), the page's own way to open a peer's
 // session, and its landings: a click on the line or a paragraph scrolls this page to the turn where the text was written (the row is the
 // active session's, so the turn is in this page), a line without an anchor says so in the landing toast and files the miss with the shell,
 // and the warning chip opens nothing here (its hover carries the evidence; the feed has the detail overlay)
 const noticeNowSec = (): number => Math.floor(Date.now() / 1000);
-// the feed's Collapsed default (feedPrefs, "romp:settings" collapsed === true): the row's default section follows it where the settings are
-// this page's too (the browser shell and a standalone chat tab share the origin); a VS Code chat webview has no such key and keeps Summary
-// (a contributor's third note on PR 2124: the card opened nothing under Collapsed while the row opened Summary)
+// the feed's Collapsed default (feedPrefs, "romp:settings" collapsed === true): the row's default section follows it everywhere, through the
+// settings fan-out (the browser shell and a standalone chat tab share the origin's storage; a VS Code chat webview gets the gear's whole
+// settings object relayed by the extension host and writes its own copy, installSettingsSync); only the PICKS stay per page in VS Code, since
+// the section channel does not cross its webviews (a contributor's second note on PR 2124: the card opened nothing under Collapsed while the
+// row opened Summary; the contributor's note on the fix: the flag does reach a VS Code chat webview)
 function noticeCollapsedPref(): boolean { try { return JSON.parse(localStorage.getItem("romp:settings") || "{}").collapsed === true; } catch { return false; } }
 const noticeSectionEnv: SectionEnv = {
-  collapsed: () => noticeCollapsedPref(),   // the feed's Collapsed default, read from the same settings in the browser (one origin); a VS Code webview has none and keeps Summary
+  collapsed: () => noticeCollapsedPref(),   // the feed's Collapsed default, read from this page's copy of the settings (the origin's shared storage in the browser, the relayed copy in VS Code)
   wireNode: (_it, node, _mark, txt, wire) => {
     if (!wire || !node.anchorUuid) return;
     txt.classList.add("nav"); txt.title = "jump to where this was worked on";
@@ -15481,7 +15483,7 @@ function noticeMoreButton(row: HTMLElement, body: HTMLElement | null): void {
   const overflows = !!body && body.style.display !== "none" && body.scrollHeight > body.clientHeight + 1;
   const open = row.classList.contains("ntc-open");
   // no line, or a hidden one (a Background or sub-goal pick at the full context hides the distill line): no button, whatever the open state,
-  // which is kept so Summary picked back restores Less (a contributor's third note on PR 2124: Less stood over a hidden line)
+  // which is kept so Summary picked back restores Less (a contributor's second note on PR 2124: Less stood over a hidden line)
   if (!body || body.style.display === "none" || (!overflows && !open)) { if (b) b.remove(); return; }
   if (!b) { b = document.createElement("button"); b.className = "ntc-btn ntc-more"; b.dataset.act = "ntc-more"; (body?.closest(".ntc-secs") ?? body)?.after(b); }   // after the sections container when the line is the distill line (the box content round), so the button stands whichever section is open
   b.textContent = open ? "Less" : "More"; (b as any)._idle = b.textContent;

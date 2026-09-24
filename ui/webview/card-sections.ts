@@ -124,7 +124,7 @@ export function sectionHosts(itemId: string): HTMLElement[] {
 // it has for the item with the item and environment each host remembered. The channel is the WINDOW's: Node has a BroadcastChannel of its
 // own, and one that has posted keeps the process alive, so the node test run hung on the first module importing this (2026-09-24, twice);
 // a page without a window, or a test's stand-in window, gets no channel and keeps its own choice.
-// THE ACKNOWLEDGEMENT (a contributor's third note on PR 2124, the 0.17.1 fix): a follower's set is applied by the owner and answered with an
+// THE ACKNOWLEDGEMENT (a contributor's second note on PR 2124, the 0.17.1 fix): a follower's set is applied by the owner and answered with an
 // ack naming the choice applied; the follower drops its own pick only when the acknowledged choice still equals it (a stale ack spares a
 // newer pick). Without it a row pick outlived every feed map that lacked it (the Collapsed clear, the prune once the item left the live set):
 // the chat page re-imposed and re-posted, the feed persisted again, per payload, until a reload. A set carries the sender's role, so an owner

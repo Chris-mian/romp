@@ -236,8 +236,10 @@ spares a newer pick), so the maps that lack the pick afterwards, the Collapsed c
 documents (the 0.17.1 fix). A flip with no pick held leaves the map unchanged, so no map crosses: the feed's setter re-applies its
 cards anyway (a caller that is not quiet gets the re-apply, since the default the cards resolve against moved), and the chat page
 re-renders the box from its own listener on the settings key, so the default follows at once in both documents with no payload
-between. The row's default section follows the feed's Collapsed flag where the settings are the chat page's own (the
-browser shell and a standalone chat tab share the origin); a VS Code chat webview has no such flag and keeps Summary. On the feed, a
+between. The row's default section follows the feed's Collapsed flag everywhere, through the settings fan-out: the browser shell and
+a standalone chat tab read the origin's shared storage, and a VS Code chat webview gets the gear's whole settings object relayed by the
+extension host and writes its own copy, so its rows follow the flag as its cards do; only the picks stay per page in VS Code, since the
+section channel does not cross its webviews. On the feed, a
 sub-goal row's text and mark keep the modal's own click zones (wireNodeZones) rather than the delegated acts; on the chat page every
 rebuilt click is delegated.
 
