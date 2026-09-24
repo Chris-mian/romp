@@ -214,7 +214,7 @@ test("create adopts exactly the thread the kernel named — never a guess", () =
   assert.match(UI, /function adoptCommentThread\(sid: string, tid: string\)/);
   assert.match(KERNEL, /"type": "commentCreated", "id": sid, "tid": tid/);
   // the FRAME rides ahead of the ack, so adoption always finds the thread in the map
-  assert.match(KERNEL, /fr = _comments_frame\(sid\)\s*\n\s*if fr:\s*\n\s*client\["send"\]\(json\.dumps\(fr\)\)\s*\n\s*client\["send"\]\(json\.dumps\(\{"type": "commentCreated"/);
+  assert.match(KERNEL, /fr = _comments_frame\(sid\) if with_frame else None\s*\n\s*if fr:\s*\n\s*client\["send"\]\(json\.dumps\(fr\)\)\s*\n\s*client\["send"\]\(json\.dumps\(\{"type": "commentCreated"/);
 });
 
 test("a refused reply hands the words back instead of thinking forever", () => {

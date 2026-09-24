@@ -342,7 +342,11 @@ let editHooks: { reqId: number; saved: (mtimeNs: string) => void; failed: (err: 
 // `viaHost` marks a note that went to the kernel as a comment thread, which only the composer-less
 // feed pane does: a host-drop warn or a socket drop can fail THAT one, and must not touch a note
 // staged locally, which never needed the connection.
-let cmtHooks: { sid: string; viaHost: boolean; landed: () => void; failed: (err: string) => void } | null = null;
+let cmtHooks: { sid: string; viaHost: boolean; createId: string; box: HTMLElement; landed: () => void;
+  failed: (err: string) => void } | null = null;
+// Kernel creates that showed Sent, by createId: the thread's session can still fail to start after the
+// ack, and that failure takes the passage mark and the count back and reopens the words with the reason.
+const landedCreates = new Map<string, (why: string) => void>();
 // The open viewer's Submit button, fed by the host document's composerPending count. A pane with no
 // composer never sends one, so the button never appears there.
 let submitHooks: { sid: string; count: (n: number) => void } | null = null;
@@ -497,6 +501,11 @@ function composerWindow(): Window | null {
   return null;
 }
 
+/** The comment box and the context menu, mounted on body rather than in the viewer, leave with it. */
+function dropCommentOverlays(): void {
+  document.querySelectorAll?.(".fileview-cmt, .fileview-ctx").forEach((n) => n.remove());
+}
+
 export function closeFileView(): void {
   const wrap = document.getElementById("romp-fileview");
   if (!wrap) return;
@@ -504,12 +513,13 @@ export function closeFileView(): void {
   closeGuard = null;
   editHooks = null;
   cmtHooks = null;                                     // a verdict landing after the close paints nothing
+  landedCreates.clear();
   submitHooks = null;
   gitHooks = null;                                     // a reply landing after the close decorates nothing
   dropMediaUrl();                                      // an image/PDF view's bytes leave with the viewer
   dropUrlRead();                                       // …and a URL view's in-flight read is cancelled
   dropWidthWatch();                                    // …and the body's width watch (watchBodyWidth)
-  document.querySelectorAll(".fileview-cmt, .fileview-ctx").forEach((n) => n.remove());   // mounted on body, not in the viewer
+  dropCommentOverlays();
   if (zoomOpen) { zoomOpen.close(); zoomOpen = null; }   // the text-size flyout's reference leaves with the viewer (review: a keyboard close kept it, and the next viewer's first Escape was swallowed)
   wrap.remove();
   document.body.classList.remove("fileview-open");
@@ -556,6 +566,8 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
   closeGuard = null;
   editHooks = null;
   cmtHooks = null;
+  landedCreates.clear();
+  dropCommentOverlays();                               // the old file's box goes too
   submitHooks = null;
   gitHooks = null;                                     // the replace path skips closeFileView — same drop
   dropMediaUrl();                                      // …and the old viewer's image bytes (the Reload path)
@@ -628,11 +640,11 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
   let commentsLanded = 0;
   const cmtCount = el("div", "fileview-cmt-count");
   cmtCount.hidden = true;
-  const noteCommentLanded = (): void => {
-    commentsLanded += 1;
+  const noteCommentLanded = (delta = 1): void => {
+    commentsLanded = Math.max(0, commentsLanded + delta);
     cmtCount.textContent = commentsLanded === 1 ? "1 note" : commentsLanded + " notes";
     cmtCount.title = "Noted for this session while this file was open";
-    cmtCount.hidden = false;
+    cmtCount.hidden = commentsLanded === 0;
   };
 
   // Submit: sends what the composer is holding for this file's session without leaving the viewer —
@@ -1114,20 +1126,27 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
 
   /** Paint the commented passage, if the range can be wrapped: a selection crossing element boundaries
    *  (a sentence running into a list item) cannot be, and the count chip is the trace in that case. */
-  function markCommentedRange(range: Range | null): void {
-    if (!range) return;
+  function markCommentedRange(range: Range | null): HTMLElement | null {
+    if (!range) return null;
     try {
       const mark = el("span", "fileview-cmt-mark");
       mark.title = CMT_MARK_TITLE;
       range.surroundContents(mark);
-    } catch { /* partially-selected nodes: the count chip carries the trace */ }
+      return mark;
+    } catch { return null; /* partially-selected nodes: the count chip carries the trace */ }
+  }
+
+  /** Take a painted mark back out, leaving its text where it was. */
+  function unmark(mark: HTMLElement | null): void {
+    if (!mark?.parentNode) return;
+    mark.replaceWith(...Array.from(mark.childNodes));
   }
 
   /** The viewer's own note box, so commenting never depends on a composer being on screen. In a pane
    *  that HAS a composer the note stages there — instant, and it survives an unreachable host; the
    *  composer-less feed pane sends it to the kernel as a comment thread instead. Prints a refusal in
    *  place rather than on a toast the pane may not render. */
-  function openCommentBox(picked: string, x: number, y: number, marked: Range | null): void {
+  function openCommentBox(picked: string, x: number, y: number, marked: Range | null, draft = "", why = ""): void {
     const pop = el("div", "fileview-cmt");
     pop.style.left = Math.min(x, window.innerWidth - CMT_POP_WIDTH_PX) + "px";
     pop.style.top = Math.min(y, window.innerHeight - CMT_POP_HEIGHT_PX) + "px";
@@ -1141,8 +1160,10 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
     const cancel = el("button", "fileview-btn") as HTMLButtonElement;
     cancel.type = "button"; cancel.textContent = "Cancel";
     const err = el("div", "fileview-cmt-err");
-    err.hidden = true;
-    const close = () => { if (cmtHooks) cmtHooks = null; pop.remove(); };
+    err.hidden = !why;
+    err.textContent = why;
+    ta.value = draft;
+    const close = () => { if (cmtHooks?.box === pop) cmtHooks = null; pop.remove(); };
     cancel.addEventListener("click", close);
     send.addEventListener("click", () => {
       const body = ta.value.trim();
@@ -1153,14 +1174,24 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
       const hasComposer = !!document.getElementById(COMPOSER_STAGED_ID);
       send.disabled = true; send.textContent = hasComposer ? "Saving…" : "Sending…";
       err.hidden = true;
+      const createId = mintCreateId();
       cmtHooks = {
         sid,
         viaHost: !hasComposer,
+        createId,
+        box: pop,
         landed: () => {
           cmtHooks = null;
           send.textContent = hasComposer ? "Saved" : "Sent";
-          markCommentedRange(marked);
+          const mark = markCommentedRange(marked);
           noteCommentLanded();
+          if (!hasComposer) {
+            landedCreates.set(createId, (reason: string) => {
+              unmark(mark);
+              noteCommentLanded(-1);
+              openCommentBox(picked, x, y, marked, body, reason);
+            });
+          }
           setTimeout(close, CMT_SENT_CLOSE_MS);
         },
         // The draft is KEPT and Comment re-armed: the text is only in this box, so a refusal that
@@ -1178,8 +1209,8 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
         try { window.postMessage({ romp: "stageNote", sid, text: body, exact: picked, src }, "*"); }
         catch { /* messaging our own window cannot really fail */ }
       } else {
-        // An empty anchor asks the kernel to resolve it to the transcript leaf: a file passage has none.
-        post({ type: "commentCreate", id: sid, uuid: "", exact: picked, text: body, src, createId: mintCreateId() });
+        // An empty anchor asks the kernel to anchor the thread at the last chat event: a file passage has none.
+        post({ type: "commentCreate", id: sid, uuid: "", exact: picked, text: body, src, createId });
       }
     });
     ta.addEventListener("keydown", (e: KeyboardEvent) => {
@@ -1925,9 +1956,17 @@ export function initFileView(poster: (m: Record<string, unknown>) => void,
       submitHooks.count(Number(m.n) || 0);
     } else if (m.romp === "noteStaged" && cmtHooks && m.sid === cmtHooks.sid) {
       cmtHooks.landed();
-    } else if (m.type === "commentCreated" && cmtHooks && m.id === cmtHooks.sid && !m.uuid) {
+    } else if (m.type === "commentCreated" && cmtHooks && m.id === cmtHooks.sid && !m.uuid
+               && (!m.createId || m.createId === cmtHooks.createId)) {
       cmtHooks.landed();
-    } else if (m.type === "commentCreateFailed" && cmtHooks && m.id === cmtHooks.sid && !m.uuid) {
+    } else if (m.type === "commentCreateFailed" && !m.uuid && m.createId && landedCreates.has(String(m.createId))) {
+      const undo = landedCreates.get(String(m.createId))!;
+      landedCreates.delete(String(m.createId));
+      undo("the thread did not start, so it was removed: " + String(m.text || "no reason given"));
+    } else if (m.type === "unknownOp" && m.op === "commentCreate" && cmtHooks?.viaHost) {
+      cmtHooks.failed("this session's host runs an older romp that cannot take comments from the file viewer");
+    } else if (m.type === "commentCreateFailed" && cmtHooks && m.id === cmtHooks.sid && !m.uuid
+               && (!m.createId || m.createId === cmtHooks.createId)) {
       // A TRANSIENT refusal is anchor-parse lag, which retrying resolves — say so rather than
       // handing back the kernel's own wording for a state that is about to pass.
       cmtHooks.failed(m.transient

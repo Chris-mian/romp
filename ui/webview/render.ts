@@ -17013,7 +17013,9 @@ function notifyComposerPending(sid: string | null): void {
  *  so the viewer's dialog closes on the spot, an unreachable host costs nothing, and a tmux session
  *  can take notes at all. Answers with the new pending count so the viewer can paint both. */
 function stageViewerNote(sid: string, text: string, exact: string, src?: string): void {
-  stagedMsgs.push(sid, { text, cites: [mkQuoteCitation(exact, null, src)] });
+  const cite = mkQuoteCitation(exact, null, src);
+  stagedMsgs.push(sid, { text, cites: [cite] });
+  dropSeededQuote(sid, cite.quote);
   persistDrafts();
   if (sid === activeId) renderStagedStrip(sid);
   notifyComposerPending(sid);   // renderStagedStrip announces too, but only on the pane that HAS a strip
@@ -17607,6 +17609,17 @@ function focusComposer(): void {
 // uuid and no src, a goal chip has an itemId — both are left alone), and ONLY while the composer is
 // empty, so a reply already being typed against the code keeps its quote. Unlike removeCitation this
 // never focuses the composer — the user is in the editor, and yanking focus to the chat would be wrong.
+/** Drop the loose editor chip the selection seeded for `quote`, now staged with its note: left in
+ *  place, Submit would send the passage a second time with no words. Other passages' chips stay. */
+function dropSeededQuote(sid: string, quote: string): void {
+  const list = composerCitations.get(sid);
+  if (!list) return;
+  const kept = list.filter((c) => !(c.src && c.quote === quote));
+  if (kept.length === list.length) return;
+  if (kept.length) composerCitations.set(sid, kept); else composerCitations.delete(sid);
+  if (sid === activeId) renderComposerChips(sid);
+}
+
 function clearEditorCitation(id: string | null): void {
   if (!id) return;
   const list = composerCitations.get(id);

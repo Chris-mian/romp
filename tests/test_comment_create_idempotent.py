@@ -192,20 +192,60 @@ class CreateIsIdempotent(unittest.TestCase):
 
     def test_a_fork_that_dies_after_a_file_ack_is_rolled_back_and_recorded(self):
         """A file passage is acked on the durable row, ahead of the fork. A fork that then raises rolls
-        the row back, re-sends the thread list without it, and records the reason and the words."""
+        the row back, re-sends the thread list without it, answers the create by its id, and records the
+        file, the reason and the words; no bare warn goes out."""
         self._boom_fork()
-        before = len(km._SDK_BOOT_PROBLEMS)
+        before = km._SDK_PROBLEM_SEQ[0]
         self._file_create()
         kinds = [f.get("type") for f in self.sent]
-        self.assertEqual(kinds[kinds.index("commentCreated"):],
-                         ["commentCreated", "warn", "comments", "commentCreateFailed"])
+        self.assertEqual(kinds, ["commentCreated", "comments", "commentCreateFailed"])
         self.assertEqual(self._rows(), [], "the half-born row is rolled back")
-        last_frame = [f for f in self.sent if f.get("type") == "comments"][-1]
-        self.assertNotIn(self._acks()[0]["tid"], json.dumps(last_frame), "the fresh frame drops the thread")
-        problems = km._SDK_BOOT_PROBLEMS[before:]
-        self.assertEqual(len(problems), 1)
-        self.assertIn("spawn refused", problems[0]["text"])
-        self.assertIn("Which of these still matter?", problems[0]["text"], "the words survive")
+        self.assertNotIn(self._acks()[0]["tid"], json.dumps(self.sent[1]), "the fresh frame drops the thread")
+        self.assertEqual({f.get("createId") for f in self.sent if f["type"] != "comments"}, {"c-file-1"})
+        self.assertEqual(km._SDK_PROBLEM_SEQ[0], before + 1)
+        text = km._SDK_BOOT_PROBLEMS[-1]["text"]
+        self.assertTrue(text.startswith("A comment on ~/notes/decisions.md was not started ("), text)
+        self.assertIn("spawn refused", text)
+        self.assertTrue(text.endswith("Your words: Which of these still matter?"), text)
+
+    def test_a_failure_the_socket_cannot_take_is_still_recorded(self):
+        self._boom_fork()
+
+        def full(_s):
+            raise OSError("client queue over its byte cap")
+        self.client["send"] = full
+        before = km._SDK_PROBLEM_SEQ[0]
+        self._file_create()
+        self.assertEqual(km._SDK_PROBLEM_SEQ[0], before + 1)
+
+    def test_the_file_road_ack_carries_no_frame(self):
+        """The thread has no registry entry yet at the early ack, so a frame would read it as unreadable."""
+        self._file_create()
+        self.assertEqual(self.sent[0]["type"], "commentCreated")
+
+    def test_a_file_passage_with_no_chat_event_is_refused_before_the_row(self):
+        (self.proj / (PARENT + ".jsonl")).write_text(json.dumps(
+            {"type": "attachment", "timestamp": iso(self.now - 600), "uuid": "at1", "parentUuid": None,
+             "attachment": {"type": "total_tokens_reminder"}}) + "\n")
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
+        km._built_chat.pop(PARENT, None)
+        self._file_create()
+        self.assertEqual(self._rows(), [])
+        self.assertEqual(self._acks(), [])
+        self.assertIn(km.FILE_COMMENT_NO_ANCHOR, self._warns())
+
+    def test_the_anchor_is_read_from_the_pushers_last_build(self):
+        km._built_chat[PARENT] = ("sig", {"id": PARENT, "events": [{"uuid": "u1"}, {"uuid": "b7"}]}, "", None)
+        self.addCleanup(km._built_chat.pop, PARENT, None)
+        self._file_create()
+        self.assertEqual(self._rows()[0]["anchorUuid"], "b7")
+
+    def test_every_problem_gets_its_own_seq_past_the_ring(self):
+        seqs = []
+        for i in range(22):
+            km._sdk_problem("problem %d" % i)
+            seqs.append(km._SDK_BOOT_PROBLEMS[-1]["seq"])
+        self.assertEqual(len(set(seqs)), 22)
 
     def test_a_chat_comment_is_acked_only_after_its_fork(self):
         """The chat popover keeps its draft on a failure, so it must never see an ack the fork undoes."""
@@ -233,10 +273,10 @@ class CreateIsIdempotent(unittest.TestCase):
     def test_a_refusal_before_the_row_records_no_problem(self):
         """A refusal the user provoked is answered on the socket alone; nothing was acked, so nothing
         is recorded as a failed start."""
-        before = len(km._SDK_BOOT_PROBLEMS)
+        before = km._SDK_PROBLEM_SEQ[0]
         self._create(name="no spaces!")
         self.assertEqual(self._acks(), [])
-        self.assertEqual(len(km._SDK_BOOT_PROBLEMS), before)
+        self.assertEqual(km._SDK_PROBLEM_SEQ[0], before)
 
     def test_the_same_create_twice_yields_one_thread_and_two_acks_naming_it(self):
         self._create(); self._create()

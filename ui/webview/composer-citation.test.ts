@@ -303,7 +303,8 @@ test("the FILE VIEWER owns its own selection menu, so every pane that mounts it 
   assert.match(FILEVIEW, /window\.postMessage\(\{ romp: "stageNote", sid, text: body, exact: picked, src \}, "\*"\)/);
   assert.match(FILEVIEW, /const src = quoteSrcLabel\(path, text, picked\);/);
   // the composer-less pane keeps the kernel path: a thread is the only place a note can land there
-  assert.match(FILEVIEW, /post\(\{ type: "commentCreate", id: sid, uuid: "", exact: picked, text: body, src, createId: mintCreateId\(\) \}\);/);
+  assert.match(FILEVIEW, /post\(\{ type: "commentCreate", id: sid, uuid: "", exact: picked, text: body, src, createId \}\);/);
+  assert.match(FILEVIEW, /const createId = mintCreateId\(\);/, "one id per send, echoed back to settle this box");
   // the chat bundle keeps the TRANSCRIPT menu and nothing else — one owner per surface, no duplicate
   assert.doesNotMatch(RENDER, /fileViewSelection/);
   assert.match(RENDER, /if \(!content \|\| !sel \|\| !sel\.anchorNode \|\| !content\.contains\(sel\.anchorNode\) \|\| !text\.trim\(\)\) return;/);
@@ -320,11 +321,11 @@ test("a note on a file passage stages locally — no fork, so no wait and no SDK
   // refused outright on tmux ("nothing to fork") — for a passage that has no place in the conversation
   // to branch from anyway. The quote+note pair is one staged message instead, held client-side.
   assert.match(RENDER, /function stageViewerNote\(sid: string, text: string, exact: string, src\?: string\): void \{/);
-  assert.match(RENDER, /stagedMsgs\.push\(sid, \{ text, cites: \[mkQuoteCitation\(exact, null, src\)\] \}\);/);
+  assert.match(RENDER, /const cite = mkQuoteCitation\(exact, null, src\);\n  stagedMsgs\.push\(sid, \{ text, cites: \[cite\] \}\);\n  dropSeededQuote\(sid, cite\.quote\);/);
   assert.match(RENDER, /m\.romp === "stageNote" && typeof m\.sid === "string" && m\.sid/);
   assert.match(RENDER, /window\.postMessage\(\{ romp: "noteStaged", sid, n: composerPendingCount\(sid\) \}, "\*"\)/);
   // the box paints only on the answer, never on the post — the lie it used to tell
-  assert.match(FILEVIEW, /let cmtHooks: \{ sid: string; viaHost: boolean; landed: \(\) => void; failed: \(err: string\) => void \} \| null = null;/);
+  assert.match(FILEVIEW, /let cmtHooks: \{ sid: string; viaHost: boolean; createId: string; box: HTMLElement; landed: \(\) => void;\n  failed: \(err: string\) => void \} \| null = null;/);
   assert.match(FILEVIEW, /m\.romp === "noteStaged" && cmtHooks && m\.sid === cmtHooks\.sid/);
   assert.match(FILEVIEW, /m\.type === "commentCreated" && cmtHooks && m\.id === cmtHooks\.sid && !m\.uuid/,
     "an EMPTY anchor uuid is what marks the ack as the file viewer's, not the transcript popover's");
@@ -340,7 +341,7 @@ test("a note on a file passage stages locally — no fork, so no wait and no SDK
   assert.match(FILEVIEW, /cmtHooks = null;\s+\/\/ a verdict landing after the close paints nothing/);
   // a landed comment leaves a trace: the passage is marked, and the bar counts what the re-render drops
   assert.match(FILEVIEW, /range\.surroundContents\(mark\);/);
-  assert.match(FILEVIEW, /const noteCommentLanded = \(\): void => \{/);
+  assert.match(FILEVIEW, /const noteCommentLanded = \(delta = 1\): void => \{/);
   assert.match(CSS, /\.fileview-cmt-mark \{/);
   assert.match(FEEDCSS, /\.fileview-cmt-mark \{/);
 });

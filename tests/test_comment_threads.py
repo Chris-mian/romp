@@ -2006,3 +2006,21 @@ class ForkCommentRoutes(CommentBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FileCommentText(unittest.TestCase):
+    """The file head: capped quote, strip only a framed head, relay names the file."""
+
+    def test_the_opener_caps_the_quoted_passage(self):
+        opener = km._comment_first_message("x" * 5000, "why?", "~/notes/a.md")
+        self.assertLess(len(opener), km.COMMENT_OPENER_QUOTE_CAP + 100)
+
+    def test_only_a_framed_file_head_is_stripped(self):
+        framed = km._comment_first_message("Kept gates:", "still true?", "~/notes/a.md")
+        self.assertEqual(km._comment_strip_frame(framed), "still true?")
+        plain = "About this part of the plan: I think we should cut scope."
+        self.assertEqual(km._comment_strip_frame(plain), plain)
+
+    def test_a_relay_of_a_file_thread_names_the_file(self):
+        body = km._merge_body("Kept gates:", [{"who": "you", "text": "cut it"}], "~/notes/a.md")
+        self.assertIn("this passage of ~/notes/a.md:", body)
