@@ -103,7 +103,8 @@ test("(f) the four fold stores merged into openFolds: fuExpanded, expandedGroups
   }
   assert.match(RENDER, /const openFolds = new Set<string>\(\);/);
   // the merged keys, by prefix
-  for (const k of ['"notice:" + spec.key', '"fu:" + k', '"bgfold:" + sid', '"bgrow:" + t.id', 'return "tg:" +', 'return "ng:" +']) {
+  for (const k of ['"notice:" + spec.key', '"fu:" + k', '"bgfold:" + sid', '"bgrow:" + t.id', 'return "tg:" +', 'return "ng:" +',
+                   '"ntcbox:" + sid + ":items"', '"ntcbox:" + sid + ":context"']) {   // the Needs you box's level (2026-09-23; a Map of its own before the second contributor's post-merge review of PR 2093)
     assert.ok(RENDER.includes(k), "fold key " + k);
   }
 });

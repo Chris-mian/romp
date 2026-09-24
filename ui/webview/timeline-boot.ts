@@ -44,8 +44,14 @@ export function dispatchFrame(panel: any, m: any): boolean {
   // round trip back into the pane the user is already looking at. revealEvent pans + pulses only.
   if (m.type === "revealEvent" && panel.revealEvent) { panel.revealEvent(m.sid, m.t, m.id); return true; }
   // the kernel's pick memory moved (a pin, a Latest un-pin, a refused pin dropped — from any surface or
-  // dashboard) or its catalog grew: the lane picker re-reads /models so its family rows send the fresh default
-  if (m.type === "models" && panel.refreshModels) { panel.refreshModels(); return true; }
+  // dashboard) or its catalog grew: the lane picker re-reads /models so its family rows send the fresh default.
+  // The shim's wsup frame (the socket back up after a drop) re-reads too, as the chat's picker and the gear do: a
+  // kernel restart is the documented way to change the extra models the API gateway declares (ROMP_ROUTER_MODELS is
+  // read when the service starts), and a restarted kernel sends no models frame for a list that changed while it was
+  // down; the re-read is rev-checked, and a kernel seeds its rev from the clock at boot, so the restarted kernel's
+  // list reads newer than the one this page holds. (The VS Code webview sees no wsup, only the browser's shim fires
+  // it; the arm sits here so the two dispatchers stay one and the same.)
+  if ((m.type === "models" || m.type === "wsup") && panel.refreshModels) { panel.refreshModels(); return true; }
   // the kernel refused a gesture this page posted (a lane flag whose store could not be read): the panel
   // ends its optimistic state on this event and shows the reason in the gear
   if (m.type === "settingRefused" && panel.settingRefused) { panel.settingRefused(m); return true; }

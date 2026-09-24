@@ -179,6 +179,37 @@ interactive `/cd`), with Romp moving its own records alongside. It fires Claude
 Code's `CwdChanged` hook, not `SessionStart`; Romp registers no `CwdChanged`
 hook, so nothing on Romp's side re-runs.
 
+### Restarting a session in place
+
+A session runs the Claude Code it launched with and keeps it for as long as it
+lives. That matters when the CLI is upgraded: when a new model ships, a session
+started before the upgrade cannot reach it — the short name resolves to the old
+model and the new id comes back unrecognized — while a session started after it
+can. **Restart session** replaces the program without disturbing the session.
+
+Right-click the session's tab, or its row in the Sessions panel, and choose
+**Restart session**. The agent's process ends and a fresh one resumes the same
+conversation. The session id, name, folder, tags, colour, model and effort,
+mailbox, goals, cards and whole history are untouched, and the session is never
+marked closed on the way through: its tab stays where it is, still selected if
+it was, and the transcript keeps reading as it did. This is the same place End
+session followed by Revive arrives at, in one step that never presents the
+session as dead.
+
+If the session is idle, the restart happens with no dialog; the menu row reads
+**Restarting…** until the kernel answers, then goes back. If it is working — a
+turn in flight, a compaction, or background work it dispatched — Romp confirms
+first, naming its open cards and saying that the running turn is cut off. The
+turn is interrupted and the relaunch follows at that turn's end, so the program
+is never torn down from under a live turn. Work the old process was running,
+its subagents and its background tasks, ends with it; a message you had queued
+survives and is delivered by the new one.
+
+A session that is not running has nothing to restart: the row refuses and
+points at Revive, which is the same thing for a closed session. Every refusal
+(a session this kernel does not have, a backend with no relaunch of its own)
+is reported in the pane you asked from and changes nothing.
+
 ## The Romp Postal Service
 
 How sessions message each other, from either side. Inside a session it is an MCP
@@ -284,10 +315,14 @@ turn ends.
 
 ### What a session needs from you
 
-Above the composer, a box headed **Needs you** lists what the session you are reading needs from you,
-one line per item with a way to act: a question a judge filed (the card's title and its decision brief,
-with **Reply**, which points the composer at that card the way Follow up does, **Continue** while the
-session is live, and **Clear**), and a held message from another session with its own **Approve** and
+Above the composer, a box headed **Needs you** lists what the session you are reading needs from you.
+It opens in steps: collapsed to its header line (the label and the count) until you click it, a first
+click showing the items, a second the full context under each, a third folding it back to the header line;
+the header is a button, so Tab reaches it and Enter or Space opens it, and the header's own gear opens the
+setting below. While a row says romp's judges are refused their credential, the box stands open to the items,
+so the fault is not hidden under the header. Each item has a way to act: a question a
+judge filed (the card's title and its decision brief, with **Reply**, which points the composer at that
+card the way Follow up does, and **Clear**), and a held message from another session with its own **Approve** and
 **Deny**; and, when romp's judges cannot read the session because the credential they bill is
 refused, a row whose one action is **Fix credential…**, which opens the gear's Billing block (no
 Clear: clearing would hide the fault while the refusals go on). A stop the chat already shows
@@ -297,9 +332,9 @@ colour the way the background box wears the awaiting green while the session wai
 the session has nothing for you. An item leaves with the frame that resolves it: the reply once the
 judges file it, the decision, the clear. A clear is a row in the state directory's `cleared.jsonl`, the
 clears log; a card an undo could not finish bringing back is noted in `cleared-owed.jsonl` beside it, so
-the next Undo brings that card back first, across a restart. The gear's **Needs you box** setting under Chat, on by
-default, hides the box; the tab ring and the feed still say what needs you. It is per browser, like the
-other chat settings.
+the next Undo brings that card back first, across a restart. The gear's **Needs you box** setting, under Chat in the
+section **Boxes below the transcript**, on by default, hides the box; the tab (its count dot, or the outline ring with
+the badge off) and the feed still say what needs you. It is per browser, like the other chat settings.
 
 ### Fast mode, from the chat statusline
 
@@ -357,6 +392,50 @@ following to every connected machine's kernel):
   does within seconds of the swap; a fallback that predates the kernel is read off
   the transcript when the kernel attaches) and whether romp is
   retrying, with the cadence and the next attempt, or where to turn retries on.
+
+### Extra models from your API gateway
+
+An install whose sessions reach the API through a gateway of its own can offer the models that
+gateway serves, in every model picker beside the Claude families. The switch is **Settings**,
+**General**, **This machine**, **Extra models from your API gateway**, off by default; while it is
+off the pickers list Claude models only. It is a per-install setting, kept on the machine that
+holds it and never sent to another (its gateway is that machine's): `~/.local/state/romp/router-models.json`,
+`{"enabled": true, "gt": <gesture stamp>}`; an absent, unreadable or malformed file reads OFF.
+
+Which models the gateway serves is declared to the service, not picked in the gear:
+`ROMP_ROUTER_MODELS` in `service.env`, a comma-separated list of model ids, and optionally
+`ROMP_ROUTER_MODELS_URL`, a gateway endpoint that lists its models, whose answer joins the declared
+ids. Both are read when the service starts, so a change to them needs a service restart; the switch
+itself applies live. At boot the declared families install into the catalog when the switch is on.
+`ROMP_MODEL_CATALOG=off` (a hermetic lab's no-network rule) stops the listing fetch alone, on the
+boot road and the live one; the declared install reads no network and is never held by it. A
+picker row and the badge both read the model id itself, one name per model.
+
+The gear's click posts `setRouterModels` (`{"enabled", "gt"}`) with a gesture stamp, under the
+ordering and stale rules every stamped setting follows; there is no echo frame of its own, since an
+applied flip changes the catalog and the kernel sends its usual `models` frame, on which every
+picker and the gear redraw. Turning it on adds the families to the pickers; turning it off removes
+them, but does not touch a session already running one, which keeps its model until you pick
+another (a later pick of a removed model is refused). A gateway model whose id carries no Claude
+family word has no capability tint in the pickers, and a swap to or from it is never read as a
+capacity fallback: it is a cross-provider change on an explicit pick. An id that does carry a family
+word (`gw-opus-mini`) is matched by the colour, tone and rank helpers wherever the word appears, so
+it tints and ranks as that family, and a swap to it can read as one.
+
+The switch's status line in the gear comes from the authed `/models` payload's `router` section,
+`{"enabled", "declared", "gateway", "error"}`: the ids the kernel parsed out of the variable, whether
+a gateway is configured (`ANTHROPIC_BASE_URL` in the service's environment first, else in Claude
+Code's managed or user settings, pointing anywhere but Anthropic; `null` while the switch is off,
+when nothing is probed), and the standing advisory: while on, nothing declared, no gateway, or a
+settings file that could not be read (a fixed phrase; the detail goes to the kernel log), each read
+live at every request so the line clears as soon as the operator fixes it, and a listing that could
+not be fetched; after an off flip, the live sessions, the judge tiers and the default for new comment
+threads still on a removed model (the stores are left as they are; a new thread whose default is a
+removed model inherits its parent). A removed model is refused on every pick road, the comment
+thread dialog and the new-session seed included. A declared id the first-party grammar owns (a Claude version id or family alias) is
+skipped, said once in the log, and reported as not declared; a listing or an apply that lands after
+a later flip installs nothing and changes nothing. `/version` carries
+`routerModels`, the switch's value, for the gear's checkbox.
 
 ### Per-session billing (login vs API key)
 
@@ -2746,9 +2825,16 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   from a request handler and runs under that request's
   `http.<METHOD>.<route>` mark.
 - `goals`: `loads`, `saves`, `writes` on the goal stores through the writer's
-  loader (`load_goals`) and `save_goals`; the pusher's read-only loads go
-  through the shared store cache and show under `memos.shared`, not here. A
-  save that would rewrite identical bytes is a save without a write.
+  loader (`load_goals`) and `save_goals`, and `carryBase` and `carryNoBase`, a
+  save's rebase that had a field base for its carry (the bytes the holder read
+  or wrote, which a loaded store keeps its own reference to) or had none and
+  carried no plain field: a fresh store's rebase, with no parseable file at the
+  load and another writer's publish before the save, or a holder's without its
+  reference (a store rebuilt from JSON, a copy of the shared read-only view)
+  whose version left the raw-parse memo and its histories; the pusher's
+  read-only loads go through the shared store cache and show under
+  `memos.shared`, not here. A save that would rewrite identical bytes is a save
+  without a write.
 - `memos`: the identity memos on the goal-store path. `pass` is the
   judge pass's stat-keyed store memo (`hit`, `miss`, `compare_miss` for a
   store whose bytes moved under an unchanged stat, `fail`, `evict`, `punch`,
@@ -5106,7 +5192,16 @@ combination shows on the tab after its name; pressing it switches to that sessio
 **Update hot key…**: press a new combination to change it, or Backspace or its **Remove**
 button to take it away. **Focus the next chat column** and
 **Focus the previous chat column** in **Keyboard shortcuts** take a hot key too, and cycle the
-focus between the columns; **Toggle notifications for this session** flips the bell of the
+focus between the columns. **Go to the next session** and **Go to the previous session**
+cycle the tabs of the column you are in, from the composer as well, and come bound
+to Ctrl+Alt+→ and Ctrl+Alt+← (Control+Option on a Mac, where the browser keeps ⌘⌥ with the
+arrows for its own tabs; the VS Code view binds its own pair to Ctrl+Alt+arrows, ⌘⌥ on a Mac,
+while its panel is active). From another pane they step the chat column you last worked in,
+showing a hidden chat pane first. A desktop or an assistive tool that binds Ctrl+Alt+arrows
+itself (GNOME's workspace switch, VoiceOver on a Mac) takes the key first; rebind them in the
+same dialog, where a combination you had already saved for another command keeps it and the
+new default yields. The bare ← and → keys still switch sessions while nothing is being typed,
+and the dialog shows them on the pair's rows as their built-in keys, beside the chord. **Toggle notifications for this session** flips the bell of the
 session you are looking at (the tab menu's **Notify me**) and flashes "Notifications enabled
 for web" or "disabled"; once it has a key, the menu's row shows it.
 
@@ -5259,7 +5354,8 @@ edge lights, and clicking it returns that row to the shared value.
 
 A few kernel settings stay on the machine that holds them, because they
 describe it: **Conserve memory**, **Thinking summaries**, **Whole chat
-frames**, and the **Default directory** for new sessions, a path that means
+frames**, **Extra models from your API gateway** (the gateway is that
+machine's), and the **Default directory** for new sessions, a path that means
 nothing on another machine. **Updates install automatically** is sent to every
 kernel when you click it but is not one of the converging four: each install
 keeps its own boot policy.
@@ -5273,10 +5369,11 @@ The settings open from the gear at the bottom right, or the palette's **Open
 settings**, in seven tabs: General, Chat, Feed, Sessions, Automation, Task
 tracking and Debug. The tab you used last is remembered in this browser.
 
-## Renaming and ending a session from the Outline
+## Renaming, restarting and ending a session from the Outline
 
 Right-click a session's name in the Outline pane, or press the Menu key (or
-Shift and F10) on the focused row, for two items: **Rename** and **Delete**.
+Shift and F10) on the focused row, for three items: **Rename**, **Restart
+session** and **Delete**.
 
 **Rename** turns the name into an input with the current name selected. Enter
 commits, Escape cancels, and clicking away commits as Enter does. The name is
@@ -5284,6 +5381,11 @@ a label: mail, goals and history follow the session, not the word. Nothing
 changes locally until the kernel confirms, so a name it refuses leaves the old
 one standing; on a session from another machine the `host:` prefix stays fixed
 beside the input and you edit the bare name.
+
+**Restart session** is the tab menu's own row, described under [Restarting a
+session in place](#restarting-a-session-in-place): the agent's process is
+replaced by a fresh one on the same conversation, so the row stays where it is
+and the session keeps everything but its program.
 
 **Delete** raises the same confirmation the tab strip uses. It names the
 session's open top-level goals and says that the session shuts down while its
@@ -5396,8 +5498,12 @@ gone on both ends.
 
     The kernel now protects itself: it pings every pane on each heartbeat and
     drops one whose ping goes unanswered, a reconnecting pane retires its own
-    previous socket at once, and the timeline and feed cross the wire as
-    deltas instead of whole payloads. That keeps a forwarded dashboard usable,
+    previous socket at once, the timeline and feed cross the wire as
+    deltas instead of whole payloads, and every frame over a kilobyte that
+    compression makes smaller is compressed for a client that offers WebSocket
+    compression (`permessage-deflate`, which every browser and Node's `ws` do;
+    a whole feed frame that measured 2.5 MB plain crosses as about 0.4 MB).
+    That keeps a forwarded dashboard usable,
     but the forwarder still carries every byte over a channel it shares with
     your editor, so prefer a path that gives each pane its own socket: plain ssh
     port forwarding, which the guide sets up under

@@ -61,14 +61,19 @@ test("dispatchFrame routes kernel frames to the panel", () => {
   assert.equal(dispatchFrame(panel, { type: "activeChat", activeChat: "s1" }), true);
   assert.equal(dispatchFrame(panel, { type: "hover", sid: "s1" }), true);
   assert.equal(dispatchFrame(panel, { type: "models", rev: 3 }), true);
+  // the shim's socket-flip frame: a kernel restart is the documented way to change the extra models the API gateway
+  // declares, and a restarted kernel sends no models frame for a list that changed while it was down, so the lane
+  // menu re-reads /models on the reconnect the way the chat's picker and the gear already do (review find, 2026-09-22)
+  assert.equal(dispatchFrame(panel, { type: "wsup" }), true, "the reconnect frame re-reads the model list too");
   assert.equal(dispatchFrame(panel, { type: "tagEditAck", writeId: "w1", ok: true }), true, "a targeted tag edit's ack");
   assert.equal(dispatchFrame(panel, { type: "viewsAck", writeId: "w2", ok: false }), true, "a whole-blob write's ack");
   assert.equal(dispatchFrame(panel, { type: "caps", caps: ["tagEdit"] }), true, "the kernel's capabilities");
   assert.equal(dispatchFrame(panel, { type: "unknownOp", op: "tagEdit", writeId: "w3" }), true, "an op the kernel does not know");
   assert.equal(dispatchFrame(panel, { type: "ka" }), false);
   assert.equal(dispatchFrame(null, { type: "data" }), false);
-  assert.deepEqual(calls.map((c) => c[0]), ["update", "applyBars", "setActiveChat", "setHover", "refreshModels", "viewsAck", "viewsAck", "setCaps", "unknownOp"]);
-  assert.deepEqual(calls.slice(5), [["viewsAck", "tagEditAck", "w1"], ["viewsAck", "viewsAck", "w2"], ["setCaps", ["tagEdit"]], ["unknownOp", "tagEdit", "w3"]],
+  assert.deepEqual(calls.map((c) => c[0]), ["update", "applyBars", "setActiveChat", "setHover", "refreshModels", "refreshModels", "viewsAck", "viewsAck", "setCaps", "unknownOp"],
+    "a models frame and a wsup frame each land on refreshModels, once");
+  assert.deepEqual(calls.slice(6), [["viewsAck", "tagEditAck", "w1"], ["viewsAck", "viewsAck", "w2"], ["setCaps", ["tagEdit"]], ["unknownOp", "tagEdit", "w3"]],
     "both acks land on the one panel door; caps and unknownOp on their own");
 });
 
@@ -77,6 +82,21 @@ test("dispatchFrame tolerates a panel without the optional methods", () => {
   assert.equal(dispatchFrame(panel, { type: "bars" }), false);
   assert.equal(dispatchFrame(panel, { type: "hover" }), false);
   assert.equal(dispatchFrame(panel, { type: "models" }), false);
+  assert.equal(dispatchFrame(panel, { type: "wsup" }), false, "an older view without refreshModels is skipped on the reconnect frame too, never thrown at");
+});
+
+test("the kernel's inline boot re-reads the model list on the shim's wsup frame too, so the browser timeline sees a restart", () => {
+  // The browser's timeline shim fires {type:"wsup"} as a FRAME when its socket reopens (kernel.py ws.onopen), and the
+  // chat (render.ts) and the gear (gear.js) re-read /models on it: a kernel restart is the documented way to change
+  // ROMP_ROUTER_MODELS, and the restarted kernel sends no models frame for a list that changed while it was down. The
+  // lane menu's arm lived on the models frame alone (review find, 2026-09-22); both boots take the reconnect frame now.
+  const bootStart = KERNEL.indexOf("_TIMELINE_BOOT = ");
+  const boot = KERNEL.slice(bootStart, KERNEL.indexOf('"""', bootStart + 60));
+  assert.match(boot, /else if\(\(m\.type==="models"\|\|m\.type==="wsup"\)&&panel\.refreshModels\)panel\.refreshModels\(\);/,
+    "the inline twin arms refreshModels on models and on wsup");
+  const BOOT = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "timeline-boot.ts"), "utf8");
+  assert.match(BOOT, /if \(\(m\.type === "models" \|\| m\.type === "wsup"\) && panel\.refreshModels\) \{ panel\.refreshModels\(\); return true; \}/,
+    "…and the VS Code boot's dispatchFrame the same pair");
 });
 
 test("openExternalMessage unwraps a vscode:// deep link into the kernel deepLink op", () => {

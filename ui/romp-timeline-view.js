@@ -1196,9 +1196,13 @@ function isRequestedFamily(fb, value) {
 function isRequestedVersion(fb, v) {
   return (fb.pick || '').toLowerCase() === (v.label || '').toLowerCase() || (!!fb.pickValue && fb.pickValue === v.value);
 }
+// The chat's isCurrentMeta (render.ts) for the lane menu: a declared gateway id's badge is the id verbatim, mixed
+// case and all, so both sides are downcased and the match is the whole badge or its leading word (a space
+// boundary), never a bare prefix: gpt-6-astra does not tick a declared gpt-6 row (review round two, 2026-09-22).
 function isCurrentMeta(kind, s, value) {
-  const cur = ((kind === 'model' ? s.model : s.effort) || '').toLowerCase();
-  return kind === 'effort' ? cur === value : cur.startsWith(value);
+  const cur = ((kind === 'model' ? s.model : s.effort) || '').toLowerCase(), v = (value || '').toLowerCase();
+  if (kind === 'effort') return cur === v;
+  return !!v && (cur === v || cur.startsWith(v + ' '));
 }
 
 // rounded orthogonal path through waypoints (message connectors)

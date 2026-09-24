@@ -164,7 +164,8 @@ test("a lifted column measures ITS OWN pane, never the first column's", () => {
 
 test("every chat-directed shell command lands in the column last worked in", () => {
   assert.match(MAIN, /function chatPane\(\): HTMLIFrameElement \| null \{\n\s*try \{ const id = w\.__rompFocusedChatId && w\.__rompFocusedChatId\(\);[\s\S]*?return pane\("f-chat"\);\n\s*\}/);
-  assert.match(MAIN, /function chatPost\(msg: object\): void \{[\s\S]*?const f = chatPane\(\);/);
+  assert.match(MAIN, /function chatPost\(msg: object\): void \{(?:(?!\n  function )[\s\S])*?const f = chatPane\(\);/,
+               "chatPost's OWN body aims at the column last worked in (a lazy match once reached moveActiveSession's; review 2026-09-23)");
   assert.match(MAIN, /\(chatPane\(\)\?\.contentWindow as any\)\?\.__rompSessionList/);
   assert.match(MAIN, /\(chatPane\(\)\?\.contentWindow as any\)\?\.__rompMru/);
   assert.match(MAIN, /chatPane\(\)!\.contentWindow!\.postMessage\(\{ romp: "chatNav", dir: -1 \}/);
