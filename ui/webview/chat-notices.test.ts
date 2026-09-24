@@ -11,6 +11,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createRequire } from "node:module";
 
 const UI = path.resolve(process.cwd(), "..", "ui", "webview");
 const RENDER = fs.readFileSync(path.join(UI, "render.ts"), "utf8");
@@ -241,4 +242,32 @@ test("the box's chrome: the background box's frame, its one thin edge in the Nee
   assert.match(CSS, /body\.dense-chrome #notices \{ margin: 4px 10px 0; \}/);
   assert.match(CSS, /\.ntc-attach \.fask-nimg \{ display: block; max-width: 100%;/, "the pinned picture in the row");
   assert.ok(CSS.indexOf("#notices {") > CSS.indexOf("#bg-tasks {"), "declared beside the background box's rules");
+});
+
+test("the row's badge slot sets no size of its own: the chips size themselves, so the row's chips are the card's size", () => {
+  assert.match(CSS, /\.ntc-row \.ntc-badges \{ display: flex; flex-wrap: wrap; align-items: center; gap: 6px; \}/, "the slot lays the chips out and nothing more");
+  assert.doesNotMatch(CSS, /\.ntc-row \.ntc-badges \{[^}]*font-size/, "no font-size on the slot (a contributor's post-merge note on PR 2124: 0.86em there multiplied the chips' own em sizes, 14 percent smaller than the card's)");
+});
+
+test("awaitKey and awaitChanged, executed: a status frame moving one card field on one row re-renders the box, and an unchanged one does not", () => {
+  // the whole-row key (awaitKey) and the re-render it drives (awaitChanged), lifted from render.ts and transpiled at run time (the models-rev
+  // pattern), with the renderers counted (a contributor's post-merge note on PR 2124: the key was pinned by its source text alone)
+  const req = createRequire(__filename);
+  const lift = (name: string) => req("esbuild").transformSync(fn(name), { loader: "ts" }).code;
+  const prelude = "let activeId = 's1'; const H = { bg: 0, notices: 0, sub: 0 }; const renderBgTasks = () => { H.bg++; }; const renderNotices = () => { H.notices++; }; const renderSubHead = () => { H.sub++; }; const liveSession = () => null;\n";
+  const api = new Function(prelude + lift("awaitKey") + lift("awaitChanged") + "\nreturn { awaitKey, awaitChanged, H };")() as { awaitKey: (st: unknown) => string; awaitChanged: (sid: string) => void; H: { bg: number; notices: number; sub: number } };
+  const row = { itemId: "s1:g1", kind: "goal", title: "which port?", body: "", cont: true, origin: { peer: "api", peerSid: "s2", live: true }, warns: null, tree: null };
+  const status = (r: Record<string, unknown>) => ({ state: "idle", sinceEpoch: 1, notices: [r], awaitingWhy: "", awaitingKind: "", awaitingCount: null });
+  const before = api.awaitKey(status(row));
+  assert.equal(api.awaitKey(status({ ...row })), before, "an equal row, an equal key");
+  const moved = api.awaitKey(status({ ...row, origin: { ...row.origin, live: false } }));
+  assert.notEqual(moved, before, "one card field of one row moved (origin.live): the key moves");
+  // the message handlers' pattern: the key before and after a frame, awaitChanged when it moved
+  const apply = (b: string, a: string) => { if (a !== b) api.awaitChanged("s1"); };
+  apply(before, api.awaitKey(status({ ...row })));
+  assert.equal(api.H.notices, 0, "an unchanged row re-renders nothing");
+  apply(before, moved);
+  assert.deepEqual([api.H.notices, api.H.bg], [1, 1], "the moved field re-renders the box (and the awaiting box, which rides the same key)");
+  api.awaitChanged("other");
+  assert.equal(api.H.notices, 1, "another session's change leaves the active box alone");
 });

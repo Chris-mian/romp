@@ -39,7 +39,7 @@ import { sanitizeMd } from "./md-sanitize";
 import { noticeBodyNodes, noticeAttachmentNodes } from "./notice-face";   // the one face the feed card, its modal and the chat box share
 import { applySections, resolveSec, stallText, secChoice, cardTreeExpanded, clearedTag, parkedTag, nodeStatusClass, TREE_INDENT_EM, CLEARED_TIP, registerSectionHost,
          replaceSectionChoices, configureSectionSync, buildSectionElements, cardSpin, applySpin, applyDistillLanding, stateBadges, DISTILL_FAIL_RE, sectionActs,
-         type AskTreeNode, type NodeLogRow, type SectionEnv, type SecChoice, unregisterSectionHost } from "./card-sections";   // the card's sections, one builder with the chat box's row (plans/needs-you.md)
+         applyRelayNote, type AskTreeNode, type NodeLogRow, type SectionEnv, type SecChoice, unregisterSectionHost } from "./card-sections";   // the card's sections, one builder with the chat box's row (plans/needs-you.md)
 import { initFileView, setFileViewIdentity, hostStub } from "./file-view";
 import { initFileBrowse, openFileBrowse } from "./file-browse";
 import { VIEW_STATE_KEY, parseViewState, serializeViewState, pruneViewState, capViewState, type FeedViewState, threadKey, threadKeys } from "./feed-view-state";
@@ -2077,19 +2077,8 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // section is not the summary, and on a working-column card, where the brief is withheld). Never a
   // paragraph OF the brief either: the per-paragraph stamps map briefParts onto the brief's paragraphs and
   // allow exactly one extra, so a note paragraph dropped every stamp and citation on a briefed top node.
-  // The effect is RUN in feed-render-incremental.test.ts (no brief, collapsed mode, a working card).
-  {
-    let rn = a._relayNote as HTMLElement | undefined;
-    if (!rn) {
-      rn = el("div", "fask-distill fask-relaynote");
-      const anchor = (a._face as HTMLElement | undefined) || (a._secs as HTMLElement);
-      anchor.parentNode!.insertBefore(rn, anchor.nextSibling);
-      a._relayNote = rn;
-    }
-    const note = (it.relayNote || "").trim();
-    rn.textContent = note;
-    rn.style.display = note ? "" : "none";
-  }
+  // The effect is RUN in feed-render-incremental.test.ts (no brief, collapsed mode, a working card); the helper lives in card-sections.ts so the row draws it too.
+  applyRelayNote(a, it);   // the shared helper (card-sections.ts): the Needs you row draws the same line after its sections
   // API error → a red "API error" badge + a Retry button that pastes "retry" into the session to resume
   // the stalled turn (the user 2026-06-16). The card STAYS in Working (the user 2026-06-29) — an API error is
   // a transient stall, not a block — so this badge + Retry are the only API-error cue; no column move.

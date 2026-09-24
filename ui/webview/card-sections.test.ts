@@ -37,6 +37,8 @@ class E {
   appendChild(n: E | T) { this.childNodes.push(this.adopt(n)); return n; }
   prepend(...ns: Array<E | T | string>) { this.childNodes.unshift(...ns.map((n) => this.adopt(n))); }
   replaceChildren(...ns: Array<E | T | string>) { this.childNodes = ns.map((n) => this.adopt(n)); }
+  insertBefore(n: E | T, ref: E | T | null) { const node = this.adopt(n); const i = ref ? this.childNodes.indexOf(ref) : -1; if (i < 0) this.childNodes.push(node); else this.childNodes.splice(i, 0, node); return node; }
+  get nextSibling(): E | T | null { const p = this.parentNode; if (!p) return null; const i = p.childNodes.indexOf(this); return i >= 0 && i + 1 < p.childNodes.length ? p.childNodes[i + 1] : null; }
   setAttribute(k: string, v: string) { this.attrs.set(k, v); }
   getAttribute(k: string) { return this.attrs.has(k) ? this.attrs.get(k)! : null; }
   removeAttribute(k: string) { this.attrs.delete(k); }
@@ -157,6 +159,10 @@ test("the feed card and the Needs you row build the toggles, draw the swirl, the
   assert.match(RENDER, /badgesEl\.replaceChildren\(\.\.\.stateBadges\(it, noticeSectionEnv, spin\.caption\)\);/, "the row's badges, with the caption");
   assert.match(FEED, /applyDistillLanding\(a, it, distillShown, dCompleted, dBlocked, sectionEnv\);/, "the card's line");
   assert.match(RENDER, /applyDistillLanding\(rowAny, it, shown, dCompleted, dBlocked, noticeSectionEnv\);/, "the row's line");
+  assert.match(RENDER, /const \{ completed: dCompleted, blocked: dBlocked \} = distillInputs\(n\.distillState, n\.column \|\| ""\);/, "the row reads the card's distill rule (a stall floor with no brief yet reads blocked and shows the Distilling caption; before: the row's own copy read it as neither)");
+  assert.match(RENDER, /applySections\(rowAny, it, !!shown, noticeSectionEnv\);\s*\n\s*applyRelayNote\(rowAny, n\);/, "the relayed question's line is drawn on the row after its sections");
+  assert.match(FEED, /applyRelayNote\(a, it\);/, "and on the card through the same helper");
+  assert.match(RENDER, /for \(const k of \["_secs", "_checklist", "_badges", "_awaitSpin", "_relayNote"\]\)/, "a row shedding its sections sheds the note too");
   // the Collapsed flag flipped with NO pick held: the feed's clear finds its map unchanged and posts no map, so the row's default follows from
   // the chat page's own listener on the settings key, which re-renders the box, and the row's update re-applies the sections on every render
   assert.match(RENDER, /onExternalSettingsChange\(\(\) => renderNotices\(\)\);/, "the box re-renders on the settings key's storage event");
@@ -182,8 +188,9 @@ test("every write to the section choice goes through the module's setters, which
 });
 
 test("the row's landings are the chat page's own: the line and a paragraph scroll to the turn, a sub-goal row's text jumps to its work anchor, no anchor says so in the landing toast", () => {
-  assert.match(RENDER, /landing: \(_it, target\) => \{ scrollToAnchor\(target\.anchorUuid\); \},/);
-  assert.match(RENDER, /txt\.classList\.add\("nav"\); txt\.title = "jump to where this was worked on";\s*\n\s*txt\.dataset\.act = "sec-landing"; txt\.dataset\.uuid = node\.anchorUuid;/, "a sub-goal's text: the landing act, delegated on #notices");
+  assert.match(RENDER, /landing: \(_it, target\) => \{[^\n]*\n\s*flashedAnchor = null; pendingAnchorQuote = target\.quote \?\? null; pendingAnchorClick = true;[^\n]*\n\s*scrollToAnchor\(target\.anchorUuid\);/,
+    "the row's landing re-arms the flash, hands the quoted span over and marks the click as the reader's before it scrolls, as the other landers do (a contributor's post-merge note on PR 2124)");
+  assert.match(RENDER, /txt\.classList\.add\("lz-nav"\); txt\.title = "jump to where this was worked on";[^\n]*\n\s*txt\.dataset\.act = "sec-landing"; txt\.dataset\.uuid = node\.anchorUuid;/, "a sub-goal's text: the landing act, delegated on #notices");
   assert.match(RENDER, /\.\.\.sectionActs\(noticeSectionEnv, \(el\) => el\.closest\("\.ntc-row"\) as HTMLElement \| null\),/, "the builder's acts installed on the box's stable root");
   assert.match(FEED, /delegate\(card, sectionActs\(sectionEnv, \(\) => card\)\);\s*\n[^\n]*\n\s*let pending: number \| undefined;\s*\n\s*card\.addEventListener\("click", \(\) => \{/, "and on each card, before the card's own open-modal click");
   assert.match(RENDER, /afterApply: \(a\) => \{ noticeRowLevelFace\(a\); noticeMoreButton\(a, noticeLineOf\(a\)\); \},/, "the chat page's after-apply: the items-level face and the More pass");
@@ -278,6 +285,21 @@ test("the Collapsed flag flipped with no pick held: an unchanged map still re-ap
   assert.equal(applied, 1, "every host re-applied (before: the unchanged map returned first, and the card kept the old default until its next repaint)");
   assert.equal(se.takeBtn.getAttribute("aria-pressed"), "false", "and resolved against the new default: nothing open under Collapsed");
   assert.deepEqual([writes, secChoice.size], [0, 0], "nothing persisted, the map unchanged");
+});
+
+test("applyRelayNote: the relayed question's line is created once beside the sections, after the face when the host has one, and shows only with a note", () => {
+  const { applyRelayNote } = mod as any;
+  const row = new E("DIV"); const attach = new E("DIV"); const secs = new E("DIV"); const spin = new E("DIV"); row.append(attach, secs, spin);
+  const host: any = Object.assign(new E("DIV"), { _secs: secs });               // the row: no face, so the note lands after the sections container
+  applyRelayNote(host, { relayNote: "a question to api is still parked on the far host" });
+  assert.deepEqual(row.childNodes.map((c) => (c as E) === host._relayNote ? "note" : (c as E) === secs ? "secs" : (c as E) === spin ? "spin" : "attach"), ["attach", "secs", "note", "spin"], "after the sections, before the swirl box");
+  assert.deepEqual([host._relayNote.className, host._relayNote.textContent, host._relayNote.style.display], ["fask-distill fask-relaynote", "a question to api is still parked on the far host", ""]);
+  applyRelayNote(host, { relayNote: null });
+  assert.deepEqual([row.childNodes.length, host._relayNote.style.display], [4, "none"], "the same element, hidden without a note; never a second one");
+  const card = new E("DIV"); const face = new E("DIV"); const csecs = new E("DIV"); card.append(csecs, face);
+  const chost: any = Object.assign(new E("DIV"), { _face: face, _secs: csecs });   // the card: the face is the anchor
+  applyRelayNote(chost, { relayNote: "  the note  " });
+  assert.deepEqual([card.childNodes.indexOf(chost._relayNote), chost._relayNote.textContent], [2, "the note"], "after the face, trimmed");
 });
 
 test("the warning chip on a page with no destination is a span that promises no click; with one it is a button whose hover says so", () => {
