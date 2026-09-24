@@ -5088,7 +5088,16 @@ folded. Drag a header to reorder the groups, which
 reorders the tags on every surface (the timeline's tag table shows the same order). To move
 a tab into another group, right-click it and pick **Move to <tag>** under **Tags**: one click
 adds that tag and drops the tag of the group you right-clicked it in, leaving its other tags alone. The row's
-**+** adds the tag without moving the tab. **Group tabs by tag**, at the foot of the tag
+**+** adds the tag without moving the tab. Dragging does it too, and the place you drop says where the
+tab should appear now: drop it inside a group's row, or on the group's header, and the session takes
+that group's tag and lands at the slot you dropped it in, keeping every other tag it carries — so a
+session under several tags goes on showing under each of them. The group about to take it wears the
+accent while you hold the tab over it, and a drop inside the group it already belongs to just reorders
+it. Drop a tab on the ungrouped row and it loses **every** tag instead: that row is not a group but the
+sessions carrying no tags, so nothing short of clearing them would put it there. The tags going are
+named under the tab before you let go, since dragging it back into one group restores that one tag and
+not the others; there is no undo beyond dragging. Dragging a **header** still reorders the groups, as
+above — which of the two gestures you get depends on what you picked up, never on where you dropped it. **Group tabs by tag**, at the foot of the tag
 button's menu, turns the sections off for this browser. On a phone the session picker, which stands in
 for the strip, lists the sessions the same way: each under its tag's heading, in the same order (its tag
 menu has the same switch). The folds follow you: your kernel keeps which groups are folded, which of the

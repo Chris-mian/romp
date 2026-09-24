@@ -464,9 +464,13 @@ test("under the setting (on by default), every group opens a new line: a zero-he
   assert.doesNotMatch(brk, /\.title = /, "no tooltip on a zero-height item");
   assert.match(CSS, /\.tab-group-break \{ flex: 0 0 100%; height: 0; margin: 0; padding: 0; pointer-events: none; \}/,
     "a full-row, zero-height item: the next item wraps; no rhythm of its own; takes no drop and no hover");
-  // sectionHeadOf still stops at the untagged boundary and walks past a plain break
-  const sh = RENDER.slice(RENDER.indexOf("function sectionHeadOf("), RENDER.indexOf("function makePlaceholderTab("));
-  assert.match(sh, /if \(h\.classList\.contains\("tab-group-sep"\)\) return null;/);
+  // the walk still stops at the untagged boundary and walks past a plain break. It lives in dropZoneOf
+  // since the drag-into-a-group change (2026-09-23), which needs the boundary told apart from "no header
+  // at all" — the ungrouped row takes a tag off, the head of the strip does not; sectionHeadOf, the group
+  // drag's reader, is that walk's head.
+  const sh = RENDER.slice(RENDER.indexOf("function dropZoneOf("), RENDER.indexOf("function makePlaceholderTab("));
+  assert.match(sh, /if \(h\.classList\.contains\("tab-group-sep"\)\) return \{ head: null, trail: true \};/);
+  assert.match(sh, /function sectionHeadOf\(node: HTMLElement\): HTMLElement \| null \{\s*\n\s*return dropZoneOf\(node\)\.head;/);
   // the header's own rule is unchanged: flex-none, the chip first in its row
   assert.match(CSS, /\.tab-group-head \{ display: flex; flex: 0 0 auto; align-items: center;/);
 });
