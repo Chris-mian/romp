@@ -1132,9 +1132,14 @@ def _from_disp(m):
     nm = str(m.get("from") or "").strip()
     return nm if nm and nm.lower() != "unknown" and nm != "?" else "an unidentified session"
 
+NO_AGENTS_LISTED = "(no reachable romp sessions; sessions whose mail is off are not listed)"
+WORKING_UNSEEN = ("Saved, but your own mail is off, so no peer sees it: working on '%s'. It shows "
+                  "once your mail is back on.")
+
+
 def format_agents(agents, me, me_id=""):
     if not agents:
-        return "(no live romp sessions)"
+        return NO_AGENTS_LISTED
     lines = []
     for a in agents:
         # '(you)' is an IDENTITY claim, so match on the session id when we have one. Matching on
@@ -1566,7 +1571,8 @@ def _mail_off_why(sid):
                     stat): closed, with its own words (the review's low: an ordinary session with a corrupt record was
                     told it was a comment thread, a wrong diagnosis the norms then make final).
       "isolation" — the user toggled POSTAL ISOLATION on (the timeline lane's mailbox icon → postalServiceOff;
-                    the legacy `postalOff` key still honoured).
+                    the legacy `postalOff` key still honoured), or the session has no key of its own and the
+                    master under POSTAL_ALL_KEY isolates (never for a script's ext: sender).
       "flags":    the kernel's session-flags file, which carries the isolation boundaries, cannot be read (a read or
                     parse fault, or bytes the kernel quarantined beside a now-missing file) and no flags are known:
                     closed for every session until the file is written again (mail held; the UI names the settings file).
@@ -1596,10 +1602,13 @@ def _mail_off_why(sid):
         for key in ("postalServiceOff", "postalOff"):
             if f.get(key) is not None:                   # a null is absent, as the kernel's _session_flag_raw reads it
                 return "isolation" if f[key] else ""
+    if sid.startswith(SCRIPT_SENDER_PREFIX):
+        return ""                                        # a script's `--from` label has no lane to opt in: the master skips it
     master = flags.get(POSTAL_ALL_KEY) if isinstance(flags, dict) else None
     return "isolation" if (isinstance(master, dict) and master.get("postalServiceOff")) else ""
 
 
+SCRIPT_SENDER_PREFIX = "ext:"   # the id a script's `romp mail send --from <label>` sends under (cli_send)
 _FLAGS_LAST = [None]          # the last session-flags dict read cleanly (a missing file reads {}); None: none yet
 _FLAGS_FAULT_SAID = [False]   # the flags file's read fault said once per fault spell (re-armed by a clean read)
 
@@ -2352,7 +2361,7 @@ def _stuck_warn_text(recip, box_sid, body):
     """The one-time line a sender gets about a message its LIVE recipient has not read: 'resend' for a stuck session,
     but never for a comment thread whose mail is off (the review's low on this change: the resend invitation was the
     very reroute the thread refusal calls final) — its mail is HELD in the box and lands when the user breaks the
-    thread out; nothing to resend, nothing to do."""
+    thread out; nothing to resend, nothing to do. Isolated mail, own key or master, is held the same way."""
     name = recip.get("name") or box_sid[:8]
     original = " ".join(body.split())[:160]
     why = _mail_off_why(box_sid)
@@ -2363,6 +2372,12 @@ def _stuck_warn_text(recip, box_sid, body):
         return ("↩ HELD — '%s' is a comment thread, and a thread's mail is off until the user breaks it out. Your "
                 "message waits in its box and lands the moment they do. Nothing to resend, and no other door: the "
                 "refusal is final.\nOriginal: %s" % (name, original))
+    if why == "isolation":
+        return ("↩ HELD — '%s' has its mail off. Your message waits in its box and lands when its mail is back on. "
+                "Nothing to resend, and no other door: the refusal is final.\nOriginal: %s" % (name, original))
+    if why == "flags":
+        return ("↩ HELD — the bus cannot read the session settings file, so mail is held for every session until it "
+                "is written again. Your message to '%s' waits in its box. Nothing to resend.\nOriginal: %s" % (name, original))
     return ("↩ STILL UNDELIVERED — '%s' is live but hasn't read your message after %d min; it may "
             "be stuck. Check on it or resend.\nOriginal: %s" % (name, max(1, STUCK_GRACE // 60), original))
 
@@ -5814,8 +5829,9 @@ def _mcp_call(name, args):
                     "Pass text='' if you mean to clear your published note."), True
         text = args.get("text", "")
         _publish_working(mid, text)        # the kernel's working-note store (POST /working)
-        return ("Cleared your 'working on' note." if not text.strip()
-                else "Published — others see: working on '%s'." % text), False
+        if not text.strip():
+            return "Cleared your 'working on' note.", False
+        return (WORKING_UNSEEN % text if _postal_off(mid) else "Published — others see: working on '%s'." % text), False
     if name == "check_sent":
         if not mid:
             return _mcp_no_identity(), True
@@ -5965,7 +5981,7 @@ def cli_send(argv):
                              "not this command (inside its sandbox this command is refused by design).\n" % why)
             return 1
     if frm_label:
-        me, mid = frm_label, "ext:" + frm_label
+        me, mid = frm_label, SCRIPT_SENDER_PREFIX + frm_label
     if not mid:
         # the bus refuses anonymous sends; say it here with BOTH actionable halves: a broken
         # session identity is a bug to surface, and a deliberate non-session caller has a door

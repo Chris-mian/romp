@@ -60,7 +60,7 @@ test("the kernel and the bus derive the same default from the thread's reg and t
   // the session's own key decides either way; absent one, the master default under POSTAL_ALL_KEY does —
   // the same order the bus reads over the same file, which is what keeps the two answers equal
   assert.match(KERNEL, /def _postal_isolation_flag\(sid\):[\s\S]*?for flag in \("postalServiceOff", "postalOff"\):\s*\n\s*own = _session_flag_raw\(sid, flag\)\s*\n\s*if own is not None:\s*\n\s*return own\s*\n\s*return _session_flag\(POSTAL_ALL_KEY, "postalServiceOff"\)/);
-  assert.match(POSTAL, /for key in \("postalServiceOff", "postalOff"\)/, "the bus honours the master default too");
+  assert.match(POSTAL, /for key in \("postalServiceOff", "postalOff"\)/, "the bus reads the own keys in the kernel's order (the master: tests/test_postal_isolation.py)");
   assert.match(KERNEL, /"mailOff": bool\(mail_why\),/, "the comments frame carries it (one derivation with the reason)");
   assert.match(KERNEL, /\*\*_mail_off_fields\(m\["id"\]\),/, "the Sessions pane rows carry it, with the reason, from one derivation (T356 fifth follow-up)");
   assert.match(KERNEL, /def _mail_off_fields\(sid\):[\s\S]*?why = _mail_off_why_k\(sid\)\s*\n\s*return \{"postalServiceOff": bool\(why\), "mailOffWhy": why\}/, "the one derivation behind both fields");

@@ -95,9 +95,8 @@ class PostalOff(unittest.TestCase):
                            SID: {"postalServiceOff": True}})
         self.assertTrue(pm._postal_off(SID))
 
-    def test_this_reader_and_the_kernels_cannot_drift(self):
-        # One store, two readers, and a disagreement is a live hazard: were only the kernel to honour the
-        # master, this service would go on advertising peers and taking sends the kernel calls isolated.
+    def test_both_readers_spell_the_master_key_alike(self):
+        # Spelling only; tests/test_kernel_postal_isolation_routes.py KernelAndBusAgree pins the answers.
         self.assertEqual(pm.POSTAL_ALL_KEY, "*")
         kernel_src = open(os.path.join(BIN, "romp-kernel"), encoding="utf-8").read()
         self.assertIn('POSTAL_ALL_KEY = "*"', kernel_src)
@@ -284,6 +283,30 @@ class ThreadOwnSendRefused(unittest.TestCase):
         self.assertNotEqual(status, 403, "a promoted session sends like any other: %r" % (body,))
 
 
+class ScriptSenderUnderTheMaster(ThreadOwnSendRefused):
+    """A script's `--from` label has no lane to opt in, so the master does not isolate it; the recipient's own
+    mail state still decides."""
+
+    def setUp(self):
+        self._saved = pm._kernel_sessions_checked
+        rows = [{"id": PARENT, "name": "web"}, {"id": SENDER, "name": "api"}]
+        pm._kernel_sessions_checked = lambda threads=False: (rows, True)
+        pm.STATE.mkdir(parents=True, exist_ok=True)
+
+    def test_a_script_reaches_an_opted_in_session(self):
+        _flags({pm.POSTAL_ALL_KEY: {"postalServiceOff": True}, PARENT: {"postalServiceOff": False}})
+        status, body = self._send(pm.SCRIPT_SENDER_PREFIX + "cron", "cron", "web")
+        self.assertEqual(status, 200, body)
+
+    def test_a_script_to_a_master_isolated_session_gets_the_recipient_refusal(self):
+        _flags({pm.POSTAL_ALL_KEY: {"postalServiceOff": True}})
+        status, body = self._send(pm.SCRIPT_SENDER_PREFIX + "cron", "cron", "api")
+        self.assertEqual(status, 403, body)
+        self.assertNotEqual(body["error"], pm.ISOLATION_SENDER, "the refusal names the recipient, not the script")
+
+    test_the_threads_own_send_is_refused_until_broken_out = None
+
+
 class ThreadMailOffFollowUp(unittest.TestCase):
     """The review's lows on the thread rule: a reg that exists but cannot be read fails CLOSED; the CLI judges the
     caller's own identity before a --from label substitutes a synthetic one; a sender's stuck-mail line for a thread
@@ -385,6 +408,14 @@ class ThreadMailOffFollowUp(unittest.TestCase):
         self.assertIn("Original: please look at this", held)
         stuck = pm._stuck_warn_text({"name": "api"}, SENDER, "hello")
         self.assertTrue(stuck.startswith("↩ STILL UNDELIVERED")); self.assertIn("resend", stuck)
+
+    def test_the_stuck_mail_line_says_held_for_an_isolated_session_by_master_or_own_key(self):
+        for flags in ({pm.POSTAL_ALL_KEY: {"postalServiceOff": True}}, {SENDER: {"postalServiceOff": True}}):
+            with self.subTest(flags=flags):
+                _flags(flags)
+                held = pm._stuck_warn_text({"name": "api"}, SENDER, "hello")
+                self.assertTrue(held.startswith("↩ HELD"), held)
+                self.assertIn("mail off", held); self.assertIn("Nothing to resend", held)
 
     def test_an_inbound_bounce_names_the_thread_refusal(self):
         _reg(THREAD, threadOf=PARENT)

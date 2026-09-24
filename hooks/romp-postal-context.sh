@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SessionStart hook (romp): tell a romp session it can message peers, in a COMPACT
+# SessionStart hook (romp): tell a romp session whose mail is on that it can message peers, in a COMPACT
 # pointer, not the full skill. The old hook emitted the entire SKILL.md body every
 # session (~1.4k tokens, re-sent every turn) and duplicated the postal MCP tools'
 # own instructions + descriptions. Now it emits only the essentials the session
@@ -64,7 +64,8 @@ fi
 # its flags hold threadMail at the literal True; then the session's own isolation key, legacy key
 # included, else the "*" master. A flags file or reg that exists but cannot be read is off, as the bus
 # holds mail for it; a missing file is no flag ever set, unless the kernel quarantined its bytes
-# beside it. A null key is absent, as the kernel reads it. Exit 0 = mail off.
+# beside it. A null key is absent, as the kernel reads it. Only this pointer is withheld: the postal MCP
+# server (and Codex's postal tools) still serve their tools and instructions. Exit 0 = mail off.
 if python3 - "${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}" "$ROMP_SID" <<'PY'
 import glob, json, os, sys
 root, sid = sys.argv[1], sys.argv[2]

@@ -209,7 +209,7 @@ class OtherTools(unittest.TestCase):
         with bus({"body": {"agents": []}}):
             ok, text = call("list_agents", {})
         self.assertTrue(ok)
-        self.assertIn("no live", text)
+        self.assertIn("mail is off are not listed", text)
 
     def test_set_working_writes_the_kernels_own_store_without_the_bus(self):
         with bus() as log:
@@ -335,6 +335,19 @@ class ParityWithTheBus(unittest.TestCase):
         self.assertEqual(cb.POSTAL_INSTRUCTIONS.strip().split("\n\n"), theirs)
         self.assertEqual(len(theirs) + 1, len(pm.MCP_INSTRUCTIONS.strip().split("\n\n")),
                          "exactly one paragraph is left out, the Claude Code one")
+
+    def test_a_mail_off_callers_note_is_saved_but_not_claimed_seen_by_both_copies(self):
+        saved = (pm._postal_off, km._mail_off_why_k)
+        pm._postal_off, km._mail_off_why_k = (lambda sid: True), (lambda sid: "isolation")
+        try:
+            theirs = pm._mcp_call("set_working", {"text": "editing the exporter"})
+            with bus():
+                mine = call("set_working", {"text": "editing the exporter"})
+        finally:
+            pm._postal_off, km._mail_off_why_k = saved
+        self.assertEqual(mine, (not theirs[1], theirs[0]))
+        self.assertIn("no peer sees it", mine[1])
+        self.assertEqual(km._codex_agents_text([], SID), pm.format_agents([], "api", SID))
 
     def test_the_send_sentences_and_wire_payload_match_the_bus_tool(self):
         for args, resp in ((dict(to="web", body="hi", kind="coordinate"), {"ok": True}),

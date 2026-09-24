@@ -1,6 +1,6 @@
 ---
 name: romp-postal
-description: How to message peer romp sessions (the Romp Postal Service). Use when you have the postal MCP tools (send_message / check_inbox / list_agents / set_working / check_sent / recall_message) or are inside a romp session and need to coordinate with, hand off to, or reply to sibling sessions. romp sessions get a short pointer to this at SessionStart; a plain Claude Code session has no peers and can ignore it.
+description: How to message peer romp sessions (the Romp Postal Service). Use when you have the postal MCP tools (send_message / check_inbox / list_agents / set_working / check_sent / recall_message) or are inside a romp session and need to coordinate with, hand off to, or reply to sibling sessions. romp sessions whose mail is on get a short pointer to this at SessionStart; a plain Claude Code session has no peers and can ignore it.
 allowed-tools: Bash
 ---
 

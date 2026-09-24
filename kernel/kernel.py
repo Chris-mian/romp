@@ -4324,8 +4324,9 @@ def _codex_postal_call(tool, sid, name, args):
                                "Pass text='' if you mean to clear your published note.")
             text = str(args.get("text") or "")
             _set_working_note(sid, text)
-            return True, ("Cleared your 'working on' note." if not text.strip()
-                          else "Published — others see: working on '%s'." % text)
+            if not text.strip():
+                return True, "Cleared your 'working on' note."
+            return True, (_CODEX_WORKING_UNSEEN % text if _mail_off_why_k(sid) else "Published — others see: working on '%s'." % text)
         if tool == "check_sent":
             status, body, written = _codex_postal_http("GET", "/sent?id=%s" % quote(sid), tool=tool, sid=sid)
             if status != 200:
@@ -4413,12 +4414,17 @@ def _codex_inbox_text(msgs, me_id):
     return "\n".join(out)
 
 
+_CODEX_NO_AGENTS_LISTED = "(no reachable romp sessions; sessions whose mail is off are not listed)"   # the bus's NO_AGENTS_LISTED
+_CODEX_WORKING_UNSEEN = ("Saved, but your own mail is off, so no peer sees it: working on '%s'. It shows "
+                        "once your mail is back on.")   # the bus's WORKING_UNSEEN
+
+
 def _codex_agents_text(agents, me_id):
     """A Codex session's list_agents result: one line per live session, yours marked by id, a comment thread named
     by its parent, a remote row by host, the short stable id, the branch, and the working-note with the stale flag
     when its session is not working now (a claim from a finished turn is read, never asked about)."""
     if not agents:
-        return "(no live romp sessions)"
+        return _CODEX_NO_AGENTS_LISTED
     lines = []
     for a in agents:
         rid = str(a.get("id") or "")

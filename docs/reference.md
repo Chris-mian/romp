@@ -5323,7 +5323,7 @@ box yourself, and plain text the kernel's own send route carries, is yours and
 still goes through; that is the human channel, by design, not a hole in the
 gate.
 
-## Mail off for every session by default
+## A master default for mail off
 
 `session-flags.json` can carry a master isolation default under the reserved
 key `*`: with `{"*": {"postalServiceOff": true}}` every session's mail is off
@@ -5334,7 +5334,14 @@ master. Turning a session's mail off always stores `true`, so a later change to
 the master cannot open it; turning it on stores an explicit `false` under an
 isolating master and removes the override otherwise. The master itself is set through the same flag route
 with `*` as the id (`POST /flag` with `{"id": "*", "flag": "postalServiceOff",
-"value": true}`); off removes the key.
+"value": true}`); off removes the key. The reserved id means something only for
+`postalServiceOff`; the notify master is the bell popover or `POST /notify-all`.
+
+A session whose mail is off, by its own toggle or by the master, is left out of
+`list_agents`, working note included, and its SessionStart pointer is withheld.
+The postal MCP tools and their instructions are still served, to Claude and
+Codex sessions alike. A script's `romp mail send --from <label>` is not
+isolated by the master; the recipient's own mail state still applies.
 
 ## The tags a new session inherits
 

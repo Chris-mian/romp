@@ -123,19 +123,50 @@ class PostalIsolated(unittest.TestCase):
         self.assertNotIn(km.POSTAL_ALL_KEY, self._stored(), "off is the absent master")
         self.assertFalse(km._postal_isolated(SID))
 
+    def test_an_opt_in_under_a_non_isolating_master_entry_stores_nothing(self):
+        self._raw_flags({km.POSTAL_ALL_KEY: {"notify": True}})
+        km._set_session_flag(SID, "postalServiceOff", False)
+        self.assertNotIn(SID, self._stored())
+        km._set_session_flag(km.POSTAL_ALL_KEY, "postalServiceOff", True)
+        self.assertTrue(km._postal_isolated(SID))
+
+    def test_the_flag_route_sets_and_clears_the_master_and_takes_an_opt_out(self):
+        route = lambda sid, value: km._state_write_route("/flag", {"id": sid, "flag": "postalServiceOff", "value": value})
+        self.assertEqual(route(km.POSTAL_ALL_KEY, True)[0], 200)
+        self.assertTrue(km._postal_isolated(SID))
+        route(SID, False)
+        self.assertEqual(self._stored()[SID], {"postalServiceOff": False})
+        self.assertFalse(km._postal_isolated(SID))
+        route(SID, True); route(km.POSTAL_ALL_KEY, False)
+        self.assertNotIn(km.POSTAL_ALL_KEY, self._stored())
+
+    def test_the_socket_op_sets_and_clears_the_master_and_takes_an_opt_out(self):
+        client = {"app": "timeline", "wid": "w1", "alive": True, "send": lambda raw: None}
+        op = lambda sid, value: km.Handler._dispatch_ws(
+            None, {"type": "setSessionFlag", "id": sid, "flag": "postalServiceOff", "value": value}, client)
+        op(km.POSTAL_ALL_KEY, True)
+        self.assertTrue(km._postal_isolated(SID))
+        op(SID, False)
+        self.assertEqual(self._stored()[SID], {"postalServiceOff": False})
+        op(SID, True); op(km.POSTAL_ALL_KEY, False)
+        self.assertNotIn(km.POSTAL_ALL_KEY, self._stored())
+
 
 class KernelAndBusAgree(unittest.TestCase):
     """The kernel's and the bus's isolation readers, fed the same flags file, give the same answer."""
     OTHER = "99999999-8888-7777-6666-555555555555"
-    SHAPES = [
-        {},
-        {"*": {"postalServiceOff": True}},
-        {"*": {"postalServiceOff": True}, SID: {"postalServiceOff": False}},
-        {"*": {"postalServiceOff": True}, SID: {"postalServiceOff": None}},
-        {SID: {"postalServiceOff": None, "postalOff": True}},
-        {SID: {"postalServiceOff": None}},
-        {SID: {"postalOff": True}},
-        {SID: {"postalServiceOff": False, "postalOff": True}},
+    SHAPES = [                                                            # (flags, isolated for SID, for OTHER)
+        ({}, False, False),
+        ({"*": {"postalServiceOff": True}}, True, True),
+        ({"*": {"postalServiceOff": False}}, False, False),
+        ({"*": {"notify": True}}, False, False),
+        ({"*": {"postalServiceOff": True}, SID: {"postalServiceOff": False}}, False, True),
+        ({"*": {"postalServiceOff": True}, SID: {"postalServiceOff": None}}, True, True),
+        ({SID: {"postalServiceOff": None, "postalOff": True}}, True, False),
+        ({SID: {"postalServiceOff": None}}, False, False),
+        ({SID: {"postalOff": True}}, True, False),
+        ({SID: {"postalServiceOff": False, "postalOff": True}}, False, False),
+        ({SID: {"postalServiceOff": True, "postalOff": False}}, True, False),
     ]
 
     def setUp(self):
@@ -148,13 +179,13 @@ class KernelAndBusAgree(unittest.TestCase):
         km.jd.STATE, pm.SESSION_FLAGS = self.saved
         self.td.cleanup()
 
-    def test_every_shape_resolves_the_same_on_both_sides(self):
-        for shape in self.SHAPES:
+    def test_every_shape_resolves_as_expected_on_both_sides(self):
+        for shape, *expected in self.SHAPES:
             pm.SESSION_FLAGS.write_text(json.dumps(shape))
             pm._FLAGS_LAST[0] = None
-            for sid in (SID, self.OTHER):
+            for sid, want in zip((SID, self.OTHER), expected):
                 with self.subTest(shape=shape, sid=sid):
-                    self.assertEqual(km._postal_isolated(sid), pm._postal_off(sid))
+                    self.assertEqual((km._postal_isolated(sid), pm._postal_off(sid)), (want, want))
 
 
 class RouteGates(unittest.TestCase):
