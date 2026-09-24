@@ -8,7 +8,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { DEFAULT_CHORDS } from "./commands";
-import { builtInOwner, chordMap, chordOf, conflictOf, dispatchable, displayChord, resolveChord, yieldsTo } from "./keybindings";
+import { BUILT_IN, FIXED_KEYS, builtInOwner, chordMap, chordOf, conflictOf, dispatchable, displayChord, resolveChord, yieldsTo } from "./keybindings";
 
 const read = (...p: string[]) => fs.readFileSync(path.resolve(process.cwd(), "..", ...p), "utf8");
 const MAIN = read("ui", "webview", "palette-main.ts");
@@ -29,6 +29,20 @@ test("the defaults are literal Ctrl+Alt+arrows: one chord on every platform, and
   }
   assert.equal(displayChord(DEFAULT_CHORDS["chat.nextTab"], true), "⌃⌥→");
   assert.equal(displayChord(DEFAULT_CHORDS["chat.nextTab"], false), "Ctrl+Alt+→");
+});
+
+test("the bare arrows are the pair's FIXED keys: shown on its rows, refused by the recorder, gone from the built-in section", () => {
+  // the maintainer (2026-09-23): the arrows already switch sessions and belong in the keymap — so the pair's rows carry them
+  assert.deepEqual(FIXED_KEYS["chat.nextTab"], ["ArrowRight", "Go to the next session, from the tab bar"]);
+  assert.deepEqual(FIXED_KEYS["chat.prevTab"], ["ArrowLeft", "Go to the previous session, from the tab bar"]);
+  for (const mac of [true, false]) {
+    assert.equal(builtInOwner("ArrowRight", mac), FIXED_KEYS["chat.nextTab"][1], "still a built-in: the panes own the bare arrows");
+    assert.equal(builtInOwner("ArrowLeft", mac), FIXED_KEYS["chat.prevTab"][1]);
+  }
+  assert.ok(!BUILT_IN.some(([spec]) => /Arrow(Left|Right)/.test(spec) && !spec.includes("+")), "the separate built-in line is gone");
+  assert.match(MODAL, /const fixedKey = FIXED_KEYS\[c\.id\];\n\s*if \(fixedKey\) \{[\s\S]*?fk\.className = "rkeys-chip rkeys-fixedkey";\n\s*fk\.textContent = displayChord\(fixedKey\[0\], mac\);[\s\S]*?where\.textContent = "from the tab bar";/,
+               "the row shows the fixed key, dressed like the built-in section's chips, and where it works");
+  assert.match(MODAL, /\.rkeys-chip\.rkeys-fixedkey\{color:#9aa0a6;border-color:#33363b\}/);
 });
 
 test("the chords are free: no built-in behaviour owns them and no other default holds them", () => {

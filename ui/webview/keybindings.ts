@@ -64,16 +64,27 @@ export function bindable(chord: string): boolean {
 export const BUILT_IN: Array<[string, string]> = [
   ["Shift+Enter", "New line in the composer"],
   ["Escape", "Leave the composer / close a panel"],
-  ["ArrowLeft / ArrowRight", "Switch session (from the tab bar)"],
   ["Ctrl+C", "Interrupt the session (composer)"],
   ["Alt+Arrows", "Move focus between panes"],
 ];
 
+// A command's FIXED key: a built-in the pane owns that does what the command does, shown on the command's own
+// row beside its rebindable chord rather than in the built-in section (the maintainer, 2026-09-23: the arrows
+// are the natural keys and belong in the keymap). Command id → [chord spec, what the recorder says when it
+// refuses the chord]. The bare arrows step sessions from the tab bar and anywhere in the chat outside a text
+// field; they cannot be bound (they are the feed's card cursor, the file browser's back, the viewer's step in
+// their own panes), so the recorder refuses them exactly as it refuses the rows above.
+export const FIXED_KEYS: Record<string, [string, string]> = {
+  "chat.nextTab": ["ArrowRight", "Go to the next session, from the tab bar"],
+  "chat.prevTab": ["ArrowLeft", "Go to the previous session, from the tab bar"],
+};
+
 // The built-in behaviour a chord already belongs to (its description), or null when it is free to bind.
 // "Alt+Arrows" stands for the four arrows; " / " separates alternatives; Ctrl here is the literal key.
+// A command's fixed key (FIXED_KEYS) is a built-in too.
 export function builtInOwner(chord: string, mac: boolean): string | null {
   const want = resolveChord(chord, mac);
-  for (const [spec, what] of BUILT_IN) {
+  for (const [spec, what] of [...BUILT_IN, ...Object.values(FIXED_KEYS)]) {
     for (const alt of spec.split(" / ")) {
       const forms = alt.endsWith("+Arrows")
         ? ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].map((k) => alt.slice(0, -"Arrows".length) + k)

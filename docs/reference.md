@@ -5109,7 +5109,8 @@ while its panel is active). From another pane they step the chat column you last
 showing a hidden chat pane first. A desktop or an assistive tool that binds Ctrl+Alt+arrows
 itself (GNOME's workspace switch, VoiceOver on a Mac) takes the key first; rebind them in the
 same dialog, where a combination you had already saved for another command keeps it and the
-new default yields. The bare ← and → keys still switch sessions while nothing is being typed. **Toggle notifications for this session** flips the bell of the
+new default yields. The bare ← and → keys still switch sessions while nothing is being typed,
+and the dialog shows them on the pair's rows as their built-in keys, beside the chord. **Toggle notifications for this session** flips the bell of the
 session you are looking at (the tab menu's **Notify me**) and flashes "Notifications enabled
 for web" or "disabled"; once it has a key, the menu's row shows it.
 

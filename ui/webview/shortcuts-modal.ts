@@ -9,7 +9,7 @@ import { commandList } from "./commands";
 import { fuzzyMatch } from "./fuzzy";
 import {
   bindable, builtInOwner, chordOf, conflictOf, displayChord, effectiveChord, yieldsTo,
-  loadOverrides, saveOverride, BUILT_IN, KEYS_EVENT,
+  loadOverrides, saveOverride, BUILT_IN, FIXED_KEYS, KEYS_EVENT,
 } from "./keybindings";
 
 const CSS =
@@ -30,6 +30,7 @@ const CSS =
   ".rkeys-chip{flex:0 0 auto;color:#cfd6dd;font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace;" +
   "border:1px solid #3d3d42;border-bottom-width:2px;border-radius:4px;padding:1px 7px;background:#1c1c1f}" +
   ".rkeys-none{flex:0 0 auto;color:#6e7681;font-size:11px}" +
+  ".rkeys-chip.rkeys-fixedkey{color:#9aa0a6;border-color:#33363b}" +   // a command's fixed built-in key, dressed like the built-in section's chips
   ".rkeys-act{flex:0 0 auto;visibility:hidden;cursor:pointer;background:#2a2a2a;color:#ccc;" +
   "border:1px solid #3a3a3a;border-radius:5px;padding:1px 8px;font-size:11px}" +
   ".rkeys-row:hover .rkeys-act{visibility:visible}" +
@@ -238,6 +239,20 @@ export function initShortcutsModal(mac: boolean, doc: Document = document): Shor
       t.className = "rkeys-title";
       t.textContent = c.title;
       row.appendChild(t);
+      const fixedKey = FIXED_KEYS[c.id];
+      if (fixedKey) {
+        // the command's fixed built-in key, on its own row beside the rebindable chord (the maintainer, 2026-09-23: the arrows
+        // belong in the keymap); dressed like the built-in section's chips, with where it works
+        const fk = doc.createElement("span");
+        fk.className = "rkeys-chip rkeys-fixedkey";
+        fk.textContent = displayChord(fixedKey[0], mac);
+        fk.title = fixedKey[1];
+        row.appendChild(fk);
+        const where = doc.createElement("span");
+        where.className = "rkeys-none";
+        where.textContent = "from the tab bar";
+        row.appendChild(where);
+      }
       if (c.id === recId) {
         const hint = doc.createElement("span");
         if (pendChord) {
