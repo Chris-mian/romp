@@ -66,9 +66,11 @@ jobs:
     # 35 minutes on the dispatch of 2026-09-24 03:48 UTC, and on the release dispatch five hours
     # later (run 35976250043) the 3.13 cell finished green in 38 min 52 s while the 3.10 cell was
     # cancelled at 40 min 20 s by the 40-minute cap with no failure in its log. macOS gets 55: about
-    # 39 minutes of suite plus the 600 s per-test timeout plus setup is about 51. Linux keeps 25,
-    # where the same two dispatches took 14 to 20 minutes.
-    timeout-minutes: ${{ matrix.os == 'macos-latest' && 55 || 25 }}
+    # 39 minutes of suite plus the 600 s per-test timeout plus setup is about 51. Linux gets 35 by
+    # the same rule: the 3.10 Linux cell took 19 min 34 s on the dispatch of 2026-09-24 03:48 UTC
+    # (run 35952964334) and the Linux cells 14 to 17 minutes on the release dispatch, so 25 left
+    # under six minutes where about 20 plus 10 plus setup is about 31.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 55 || 35 }}
     strategy:
       # One red cell must not hide the others: a 3.10-only break and a
       # macOS-only break look identical if the matrix stops at the first.
