@@ -19104,13 +19104,15 @@ def _comment_launch_prefs(model="", effort="", fast=""):
 COMMENT_START_FAILED = "A comment on %s was not started (%s), so its thread was removed. Your words: %s"
 COMMENT_FAILED_TEXT_CAP = 200   # the comment's words the error center keeps; the reason leads, so the cap cuts only these
 FILE_COMMENT_NO_ANCHOR = "this conversation has no message yet for a comment thread to attach to."
+FILE_COMMENT_UNREAD = "this conversation could not be read, so the comment was not saved."
 
 
 def _file_comment_anchor(path, sid, now):
     """The last chat event's uuid, which a FILE passage's thread is anchored at (it has no record of its
     own), so the row opens from the rail and the timeline; "" when the chat shows no event yet. Not the
     transcript leaf: that is usually an attachment or system record, which no surface renders. Read
-    from the pusher's last build of the tab; only a session no tab has built is parsed here."""
+    from the pusher's last build of the tab; only a session no tab has built is parsed here, and None
+    when that parse raises."""
     hit = _built_chat.get(sid)
     events = (hit[1] or {}).get("events") if hit else None
     if not events:
@@ -19118,7 +19120,7 @@ def _file_comment_anchor(path, sid, now):
             events = build_session(sid, now, path_override=path).get("events") or []
         except Exception as e:
             sys.stderr.write("file comment anchor for %s not read: %s: %s\n" % (sid[:8], type(e).__name__, e))
-            return ""
+            return None
     return next((str(e["uuid"]) for e in reversed(events) if e.get("uuid")), "")
 
 
@@ -19171,6 +19173,8 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", eff
         cut, cut_t = "", int(now)   # tip fork by request (see docstring) — no record to cut at
         if str(src or "").strip():
             anchor_uuid = _file_comment_anchor(sess["path"], parent_sid, now)
+            if anchor_uuid is None:
+                return FILE_COMMENT_UNREAD, None
             if not anchor_uuid:
                 return FILE_COMMENT_NO_ANCHOR, None
     nm = str(name or "").strip()
@@ -21352,7 +21356,8 @@ def _drive(msg, client):
                 # send (a send can raise): the reason and the words go to the dashboard's error center.
                 # The viewer takes the failure by its createId, so no bare warn goes out to misfire.
                 if acked_tids:
-                    _sdk_problem(COMMENT_START_FAILED % (cmt_src, err, str(msg["text"]).strip()[:COMMENT_FAILED_TEXT_CAP]))
+                    _sdk_problem(COMMENT_START_FAILED % (cmt_src, " ".join(str(err).split()),   # one line: a multi-line entry reads as a traceback
+                                                         " ".join(str(msg["text"]).split())[:COMMENT_FAILED_TEXT_CAP]))
                 else:
                     client["send"](json.dumps({"type": "warn", "text": err}))
             try:

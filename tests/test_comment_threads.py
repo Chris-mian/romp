@@ -2013,10 +2013,6 @@ class ForkCommentRoutes(CommentBase):
         self.assertIn('return self._send(res.pop("_status", 200), json.dumps(res), "application/json")', src)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class FileCommentText(unittest.TestCase):
     """The file head: capped quote, strip only a framed head, relay names the file."""
 
@@ -2027,9 +2023,13 @@ class FileCommentText(unittest.TestCase):
     def test_only_a_framed_file_head_is_stripped(self):
         framed = km._comment_first_message("Kept gates:", "still true?", "~/notes/a.md")
         self.assertEqual(km._comment_strip_frame(framed), "still true?")
-        plain = "About this part of the plan: I think we should cut scope."
-        self.assertEqual(km._comment_strip_frame(plain), plain)
+        plain = "About this part of the plan: I think\nwe should cut scope."
+        self.assertEqual(km._comment_strip_frame(plain), plain, "a plain two-line opener keeps its first line")
 
     def test_a_relay_of_a_file_thread_names_the_file(self):
         body = km._merge_body("Kept gates:", [{"who": "you", "text": "cut it"}], "~/notes/a.md")
         self.assertIn("this passage of ~/notes/a.md:", body)
+
+
+if __name__ == "__main__":
+    unittest.main()

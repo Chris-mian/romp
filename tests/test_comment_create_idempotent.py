@@ -240,12 +240,57 @@ class CreateIsIdempotent(unittest.TestCase):
         self._file_create()
         self.assertEqual(self._rows()[0]["anchorUuid"], "b7")
 
+    def test_a_transcript_that_cannot_be_parsed_is_refused_in_its_own_words(self):
+        km._built_chat.pop(PARENT, None)
+        real = km.build_session
+
+        def raising(*a, **k):
+            raise ValueError("torn line")
+        km.build_session = raising
+        self.addCleanup(setattr, km, "build_session", real)
+        _, log = self._file_create()
+        self.assertEqual((self._rows(), self._acks()), ([], []))
+        self.assertIn(km.FILE_COMMENT_UNREAD, self._warns())
+        self.assertNotIn(km.FILE_COMMENT_NO_ANCHOR, self._warns(), "a parse fault is not an empty conversation")
+        self.assertIn("file comment anchor for %s not read: ValueError: torn line" % PARENT[:8], log)
+
+    def test_a_multi_line_comment_keeps_every_line_in_the_error_center(self):
+        self._boom_fork()
+        self._file_create(text="first line of the note\nsecond line in the middle\nthird line at the end")
+        row = km._sdk_problem_rows()[-1]
+        self.assertIn("first line of the note second line in the middle third line at the end", json.dumps(row))
+
+    def test_the_recorded_words_are_capped(self):
+        self._boom_fork()
+        words = "w" * (km.COMMENT_FAILED_TEXT_CAP + 50)
+        self._file_create(text=words)
+        self.assertTrue(km._SDK_BOOT_PROBLEMS[-1]["text"].endswith("Your words: " + words[:km.COMMENT_FAILED_TEXT_CAP]))
+
+    def test_the_parked_and_busy_replies_carry_the_create_id(self):
+        km._parked_creates.clear()
+        self._create(uuid="a9", create_id="c-park"); self._create(uuid="a9", create_id="c-park")
+        nacks = [f for f in self.sent if f.get("type") == "commentCreateFailed"]
+        self.assertEqual([n.get("createId") for n in nacks], ["c-park", "c-park"], "the lag nack and the busy nack")
+        p = Path(km._sessions(0)[0]["path"])
+        with p.open("a") as fh:
+            fh.write(json.dumps(aline(self.now - 300, "Add a jitter to the backoff.", "a9", parent="a1")) + "\n")
+        with km._clients_lock:
+            km._clients.append(self.client)
+        try:
+            km._retry_parked_creates()
+        finally:
+            with km._clients_lock:
+                km._clients.remove(self.client)
+        self.assertEqual([a.get("createId") for a in self._acks()], ["c-park"], "the parked create's ack")
+
     def test_every_problem_gets_its_own_seq_past_the_ring(self):
-        seqs = []
+        seqs, counts = [], []
         for i in range(22):
             km._sdk_problem("problem %d" % i)
             seqs.append(km._SDK_BOOT_PROBLEMS[-1]["seq"])
+            counts.append(km._sdk_problem_count())
         self.assertEqual(len(set(seqs)), 22)
+        self.assertEqual([b - a for a, b in zip(counts, counts[1:])], [1] * 21, "the count moves by one per problem past the ring")
 
     def test_a_chat_comment_is_acked_only_after_its_fork(self):
         """The chat popover keeps its draft on a failure, so it must never see an ack the fork undoes."""
