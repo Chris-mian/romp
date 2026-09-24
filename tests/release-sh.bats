@@ -568,22 +568,29 @@ PYSTUB
     chmod +x "$TEST_DIR/python3"
 }
 
-_stub_node() {                          # $1 = "both" | "full-only" | "shell-only" | "none": which of playwright's two Chromium downloads are complete
-    mkdir -p "$TEST_DIR/pw/chromium-1" "$TEST_DIR/pw/chromium_headless_shell-1"
-    case "$1" in both|full-only) : > "$TEST_DIR/pw/chromium-1/INSTALLATION_COMPLETE" ;; esac
-    case "$1" in both|shell-only) : > "$TEST_DIR/pw/chromium_headless_shell-1/INSTALLATION_COMPLETE" ;; esac
+_stub_node() {                          # $1 = "both" | "full-only" | "shell-only" | "none" | "shell-no-location": which of playwright's two
+    #                                         Chromium downloads are complete; the last is both complete but the listing lost the
+    #                                         shell section's Install location line (the next section's directory must not be read)
+    mkdir -p "$TEST_DIR/pw/chromium-1" "$TEST_DIR/pw/chromium_headless_shell-1" "$TEST_DIR/pw/ffmpeg-1"
+    : > "$TEST_DIR/pw/ffmpeg-1/INSTALLATION_COMPLETE"
+    case "$1" in both|full-only|shell-no-location) : > "$TEST_DIR/pw/chromium-1/INSTALLATION_COMPLETE" ;; esac
+    case "$1" in both|shell-only|shell-no-location) : > "$TEST_DIR/pw/chromium_headless_shell-1/INSTALLATION_COMPLETE" ;; esac
+    local shell_loc="  Install location:    $TEST_DIR/pw/chromium_headless_shell-1"
+    [ "$1" = "shell-no-location" ] && shell_loc="  Download url:        https://example.test/chrome-headless-shell-linux64.zip"
+    # the resolve call (node -e ...) answers the cli's path; the listing call answers the sections, the shell's LAST so a grab
+    # that ran past a missing line would land on the download after it (ffmpeg, complete here)
     cat > "$TEST_DIR/node" <<NODESTUB
 #!/bin/sh
 echo "node \$*" >> "$TEST_DIR/seq.log"
+if [ "\$1" = "-e" ]; then printf '%s' "$TEST_DIR/pw-cli.js"; exit 0; fi
 cat <<LISTING
 Chrome for Testing 1.0 (playwright chromium v1)
   Install location:    $TEST_DIR/pw/chromium-1
   Download url:        https://example.test/chrome-linux64.zip
+Chrome Headless Shell 1.0 (playwright chromium-headless-shell v1)
+$shell_loc
 FFmpeg (playwright ffmpeg v1)
   Install location:    $TEST_DIR/pw/ffmpeg-1
-Chrome Headless Shell 1.0 (playwright chromium-headless-shell v1)
-  Install location:    $TEST_DIR/pw/chromium_headless_shell-1
-  Download url:        https://example.test/chrome-headless-shell-linux64.zip
 LISTING
 NODESTUB
     chmod +x "$TEST_DIR/node"
@@ -691,6 +698,16 @@ _with_extension_deps() { mkdir -p "$REPO/vscode-extension/node_modules"; }
     [[ "$output" == *"the full Chromium is not"* ]]
     [ "$(grep -c '^ROMP_SERVED_TESTS_REQUIRE$' "$TEST_DIR/suite-env.txt")" -eq 0 ]
     [ "$(grep -c '^python3 -m pytest tests/ -q$' "$TEST_DIR/seq.log")" -eq 1 ]
+}
+
+@test "release: a listing whose shell section lost its Install location line reads the shell as absent, never the next download's directory" {
+    _stub_gh; _stub_npm ok; _stub_node shell-no-location; _stub_python3_recording; _with_extension_deps
+    run env PATH="$(_env_path)" "$REPO/scripts/release.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"partial browser install"* ]]
+    [[ "$output" == *"the headless shell the labs launch is not"* ]]
+    [ "$(grep -c '^ROMP_SERVED_TESTS_REQUIRE$' "$TEST_DIR/suite-env.txt")" -eq 0 ]
+    grep -q "^node $TEST_DIR/pw-cli.js install --dry-run chromium$" "$TEST_DIR/seq.log"
 }
 
 @test "release: writing the gh stub runs no gh of its own (the heredoc's backticks are escaped)" {

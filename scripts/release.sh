@@ -20,9 +20,10 @@
 #   2. if VERSION needs to change: branch, commit, push, open a PR, auto-merge it, and wait
 #      for it to land on main  (skipped entirely when VERSION is already correct)
 #   3. run the test suites in CI's order: the webview typecheck, suite and BUILD, then the
-#      Python suite (the served labs serve the bundle the build just wrote) with the live
-#      kernel's exports scrubbed and, where playwright's chromium is installed, the served
-#      labs required rather than skippable (see the note on a box running a live romp below)
+#      Python suite (the served labs serve the bundle the build just wrote) with every ROMP_
+#      name the environment carries removed except the suite's own knobs, and the served labs
+#      required rather than skippable where BOTH of playwright's Chromium downloads (the full
+#      browser and the headless shell) are complete (see the note on a box running a live romp)
 #   4. the macOS gate (see below)
 #   5. tag, push the tag, and publish the GitHub release
 #
@@ -293,13 +294,21 @@ else
         # install --dry-run, no network), and each directory carries INSTALLATION_COMPLETE once its
         # download finished. With both, a skip in a served lab (an absent dep, a kernel that never
         # served) is a failure carrying its reason, never a silent pass of this gate, and the engines
-        # declared are the ones CI declares (chromium alone unless the shell says otherwise), so a leg
+        # declared are the ones CI declares (chromium alone, unless the calling shell's
+        # ROMP_SERVED_TESTS_ENGINES names others), so a leg
         # for an engine this box does not carry stays an optional skip instead of turning into a
         # failure. Without both the labs skip here and the line names what is missing; the remedy runs
         # from the extension directory, where npx resolves the PINNED playwright (in the repo root it
         # resolves whatever playwright is newest and installs a revision the pinned one never finds).
-        listing="$(cd vscode-extension && node node_modules/playwright-core/cli.js install --dry-run chromium 2>/dev/null || true)"
-        pw_dir() { printf '%s\n' "$listing" | awk -v key="(playwright $1 v" 'index($0, key) { grab = 1; next } grab && /Install location:/ { sub(/.*Install location:[ \t]*/, ""); print; exit }'; }
+        # the pinned package's own cli, resolved by NAME from the extension directory (a nested node_modules layout
+        # would make a fixed path read as "no browser"); its listing is one section per download, each headed
+        # "(playwright <name> v<rev>)" with an Install location line under it
+        pw_cli="$(cd vscode-extension && node -e "const p = require('path'); process.stdout.write(p.join(p.dirname(require.resolve('playwright-core/package.json')), 'cli.js'))" 2>/dev/null || true)"
+        listing=""
+        if [ -n "$pw_cli" ]; then listing="$(cd vscode-extension && node "$pw_cli" install --dry-run chromium 2>/dev/null || true)"; fi
+        # the section's own Install location line, or nothing: the grab stops at the NEXT section header, so a section
+        # that lost its line reads absent (the safe side) instead of returning the next download's directory
+        pw_dir() { printf '%s\n' "$listing" | awk -v key="(playwright $1 v" 'grab && index($0, "(playwright ") { exit } index($0, key) { grab = 1; next } grab && /Install location:/ { sub(/.*Install location:[ \t]*/, ""); print; exit }'; }
         full_dir="$(pw_dir chromium)"; shell_dir="$(pw_dir chromium-headless-shell)"
         have_full=0; have_shell=0
         if [ -n "$full_dir" ] && [ -f "$full_dir/INSTALLATION_COMPLETE" ]; then have_full=1; fi
