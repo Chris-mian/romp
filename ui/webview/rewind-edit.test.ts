@@ -50,10 +50,10 @@ test("the composer edit chip cancels via its x and via Escape", () => {
 test("the pending-rewind overlay is wired into every ingest path and repaints mid-window", () => {
   const calls = RENDER.match(/reconcileRewind\(s(, from)?\);/g) || [];   // chatTail passes its from: the signature's bound (chat-exact-tail.test.ts)
   assert.ok(calls.length >= 4, "reconcileRewind wired into upsert + update + chatTail + the edit send, got " + calls.length);
-  // the overlay touches MID-window turns — the append fast path won't repaint them without stale; stale is set
-  // when the overlay or the editable set CHANGED (the tail path re-renders exactly what the kernel named, so
-  // this signal is what repaints a prefix bubble — chat-exact-tail.test.ts)
-  assert.match(RENDER, /if \(v && r\.stale\) v\.stale = true;\s*\/\/ the overlay or the editable set changed: MID-window turns repaint/);
+  // the overlay touches MID-window turns — the append fast path won't repaint them without a mark; rediff is set
+  // when the overlay or the editable set CHANGED (the pass flags events in place, so the keyed paint compares every
+  // unit and repaints the ones whose dim or edit affordance moved — chat-exact-tail.test.ts; a stale rebuild until 2026-09-23)
+  assert.match(RENDER, /if \(v && r\.stale\) v\.rediff = true;\s*\/\/ the overlay or the editable set changed: MID-window turns repaint/);
   // chatTail reuses prefix event objects across pushes → stale rewound flags are stripped first (the pass
   // itself is rewind-reconcile.ts, executed by its own tests)
   const PASS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "rewind-reconcile.ts"), "utf8");

@@ -1644,8 +1644,12 @@ class EclipsedChainSelection(unittest.TestCase):
             aline(T0 + 130, "done", "a2", "u2"),
         ]
         out, mem = self._run(recs)
-        self.assertIn("trF", mem["eclipsed"], "a machine-made tool_result head survives the stand-down")
-        self.assertIn("trF", mem["kept"])
+        # since 2026-09-23 the result is kept by its own link before the eclipse probe runs: a tool_result answering
+        # the call of its on-spine parent is part of the conversation (em.FileAdapter._batch_head, the parallel tool
+        # batch keep), so its verdict is "active", in the kept set and in none of the dropped or salvaged ones
+        self.assertIn("trF", mem["kept"], "a machine-made tool_result head survives the stand-down")
+        self.assertFalse(any("trF" in mem[k] for k in ("eclipsed", "rewind", "clear", "broken")))
+        self.assertIn("trF", {a.get("uuid") for a in self._atoms(out)}, "its output reunites with the spine's own tool call")
         self.assertEqual(mem["rewind"], set())
 
     def test_two_reply_chains_prefer_the_latest_written(self):

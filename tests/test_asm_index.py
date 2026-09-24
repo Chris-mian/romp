@@ -509,9 +509,10 @@ class ScalarWalkers(Restored):
                                                                 em._prose_chars, em.atom_prose_chars, em.postal_mids, em._encoded_mids,
                                                                 em.is_interrupt_record, em._content, em._text_of, em._lazy_of, em.atom_mids,
                                                                 em._machine_written)) + "\n" + em.POSTAL_RE.pattern
-        self.assertEqual((em._ASM_CKPT_V, hashlib.sha1(rule.encode()).hexdigest()[:10]), (7, "56888f276a"),   # v7 (stage one b): the cut
-        #                                                                                      rule moved, the work rule did not
-        #                                                                                      (v6, T401 (4): the row format)
+        self.assertEqual((em._ASM_CKPT_V, hashlib.sha1(rule.encode()).hexdigest()[:10]), (8, "56888f276a"),   # v8: the batch keep moved the
+        #                                                                                      stored verdicts, the work rule did not
+        #                                                                                      (v7, stage one b: the cut rule;
+        #                                                                                      v6, T401 (4): the row format)
                          "the stored verdicts' rules changed: bump em._ASM_CKPT_V and re-pin the digest here")
 
     def test_the_stored_rules_on_odd_content_shapes(self):

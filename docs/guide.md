@@ -37,9 +37,9 @@ A path or a markdown link in the chat opens the file in the viewer, rendered. A
 passage selected there lands in the composer as a quote, labelled with the file
 and the line it came from.
 
-Tabs carry the state of their sessions. A tab wears a ring while its session
-needs you, tags group the strip into sections, and a tab can take a hot key of
-your own.
+Tabs carry the state of their sessions. A tab shows a count dot while its
+session needs you and a red ring while it is stopped, tags group the strip into
+sections, and a tab can take a hot key of your own.
 
 Drag a tab onto a tag group to put that session in it: the tab takes the group's
 tag and lands where you dropped it, keeping its other tags, so a session with
@@ -50,10 +50,10 @@ row is the sessions with no tags — so the label under the tab names them all
 before you let go. Dragging one back into a group restores that tag, not the
 rest. Dragging a group's header still reorders the groups.
 
-What a session needs from you sits in a box above its composer, one line per
-item with a way to act: a question with **Reply**, **Continue** and **Clear**, a
-held message with its own buttons. A stop the chat shows inline is not listed;
-the ring says it.
+What a session needs from you sits in a box above its composer, folded to a
+header with the count. Click the header to see the items, again for the full
+context under each. A question offers **Reply** and **Clear**, a held message its
+own buttons. A stop the chat shows inline is not listed; the tab says it.
 
 Drag a tab to the right edge and the chat splits into columns, each a full chat
 with its own tab strip and composer, four at most.
@@ -222,6 +222,17 @@ Right-click its tab and choose **Move to folder…**, or run `romp move <session
 <dir>`: its conversation, name, mail and history stay with it, and the agent
 reads the new folder's `CLAUDE.md` from the next turn.
 
+A session can also be restarted in place. Right-click its tab — or its row in
+the Sessions panel — and choose **Restart session**: the agent's own program
+ends and a fresh one picks the same conversation up, so the session keeps its
+name, its place, its tags, its model and its whole history.
+
+That is how a long-running session gets onto a newly installed Claude Code. A
+session keeps the version it launched with, so when a new model ships, only a
+session running the new version can reach it. If the session is working when
+you ask, Romp says what the restart interrupts first; if it is idle, it just
+happens.
+
 Words your team coined wear a quiet dotted underline wherever a session writes
 them: hover one for the definition, click it to open the group's glossary at
 that entry.
@@ -364,6 +375,11 @@ the target.
 How a page looks is kept in the browser you are using. What the kernel acts on,
 Auto Nudge or Task tracking for instance, is sent to every machine you are
 connected to.
+
+A few settings describe one machine and stay on it. **Extra models from your
+API gateway**, under General, This machine, offers the models that machine's
+own gateway serves in every model picker, once `ROMP_ROUTER_MODELS` in its
+`service.env` names them.
 
 A machine that was set differently while you were apart asks rather than
 changes: a line under the row, and a card on the feed, each offering **Apply**

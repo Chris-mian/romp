@@ -224,12 +224,12 @@ class OneLockAroundEveryMutation(_Drain):
         def set_model(sid, value):
             self.be.calls.append(("model", value))
             if value == "opus":
-                km._park_op(SID, ("model", "other"))       # lock free: the user re-picks mid-call
+                km._park_op(SID, ("model", "sonnet"))      # lock free: the user re-picks mid-call (a model the kernel offers: the drain vouches a pick when it fires, 2026-09-22)
             return True
         self.be.set_model = set_model
         km._pending_ops[SID] = [("model", "opus"), ("effort", "high")]
         km._apply_pending_ops()
-        self.assertEqual(self.be.calls, [("model", "opus"), ("model", "other"), ("effort", "high")],
+        self.assertEqual(self.be.calls, [("model", "opus"), ("model", "sonnet"), ("effort", "high")],
                          "the replacement delivered, not silently popped; the op behind after it")
         self.assertNotIn(SID, km._pending_ops)
 

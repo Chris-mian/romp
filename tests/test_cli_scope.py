@@ -340,6 +340,22 @@ class OptionsWiring(_Backend):
         self.assertEqual(kw["cli_path"], "/bin/true")
         self.assertNotIn("ROMP_CLI_REAL", kw["env"])
 
+    def test_every_launch_carries_this_kernels_state_tag_over_an_inherited_one(self):
+        # the proof a boot reap asks for before it ends an orphaned CLI (state_tag_of, 2026-09-23), on the direct path and
+        # the wrapper's alike; a kernel started from a session's shell inherits that session's kernel's tag, which must
+        # not reach this kernel's CLIs
+        before = os.environ.get("ROMP_STATE_TAG")
+        os.environ["ROMP_STATE_TAG"] = "0000000000000000"
+        try:
+            for on in (False, True):
+                self.be.cli_scope = on
+                self.assertEqual(self._kw()["env"]["ROMP_STATE_TAG"], sb.state_tag_of(self.d), "scope %s" % on)
+        finally:
+            if before is None:
+                os.environ.pop("ROMP_STATE_TAG", None)
+            else:
+                os.environ["ROMP_STATE_TAG"] = before
+
     def test_on_spawns_the_wrapper_with_the_real_cli_in_the_env(self):
         self.be.cli_scope = True
         kw = self._kw()
@@ -711,8 +727,9 @@ class LimitsOnTheBackend(_Backend):
         env = self._kw()["env"]
         for v in LIMIT_VARS:
             self.assertNotIn(v, env, v)
-        self.assertEqual(set(env), {"ROMP_SID", "ROMP_SESSION_NAME", "ROMP_CLI_REAL"} | ({"PATH"} if "PATH" in env else set()),
-                         "the overlay carries the identity, the real CLI, and nothing about limits")
+        self.assertEqual(set(env), {"ROMP_SID", "ROMP_SESSION_NAME", "ROMP_STATE_TAG", "ROMP_CLI_REAL"}
+                         | ({"PATH"} if "PATH" in env else set()),
+                         "the overlay carries the identity, the kernel's state tag, the real CLI, and nothing about limits")
 
     def test_a_value_the_box_refused_goes_down_empty_like_one_the_rule_refused(self):
         # rejected by the boot probe (systemd or the oom_score_adj floor): the manager environment still

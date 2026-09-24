@@ -118,7 +118,7 @@ test("the dense rules exist under the class, with these exact values", () => {
   assert.match(denseRule(".bg-sum"), /font-size: 11px;/);
   assert.match(denseRule(".bg-since"), /font-size: 10px;/);
   const badge = denseRule(".tab-badge");
-  assert.match(badge, /top: 1px;/); assert.match(badge, /right: 1px;/);
+  assert.match(badge, /top: 2px;/); assert.match(badge, /right: 2px;/);
   const badgeFull = denseRule(".tab-badge:not(:empty)");
   assert.match(badgeFull, /min-width: 12px;/); assert.match(badgeFull, /height: 12px;/); assert.match(badgeFull, /border-radius: 6px;/);
 });
@@ -197,7 +197,7 @@ test("every dense rule is scoped to the body class, and the sheet's defaults are
   assert.match(defaultRule(".bg-head"), /gap: 8px; padding: 5px 9px;/);
   assert.match(defaultRule(".bg-sum"), /font-size: 0\.92em;/);
   assert.match(defaultRule(".bg-since"), /font-size: 0\.82em;/);
-  assert.match(defaultRule(".tab-badge"), /top: 2px; right: 2px;/);
+  assert.match(defaultRule(".tab-badge"), /top: 3px; right: 3px;/);
   assert.match(defaultRule(".tab-badge:not(:empty)"), /min-width: 14px; height: 14px; border-radius: 7px;/);
   // the defaults come first, so the tests that read a selector's first rule keep reading the default
   // (tag-mounts.test.ts: .tab-add, .tab-tagbox; bg-tasks-layout.test.ts: #bg-tasks, .bg-fold-head, .bg-sum, .bg-head)

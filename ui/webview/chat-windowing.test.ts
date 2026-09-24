@@ -31,8 +31,8 @@ test("units unify both modes: one per event (normal) or the folded compactDispla
 });
 
 test("every rendered row is tagged data-unit, so the scroll↔unit map can locate it", () => {
-  assert.match(RENDER, /node\.dataset\.unit = String\(u\);/);          // appendItem (window build)
-  assert.match(RENDER, /node\.dataset\.unit = String\(i\);\s*\/\/ unit === event/); // normal incremental append
+  assert.match(RENDER, /node\.dataset\.unit = String\(u\);/);          // appendItem: the window build AND the keyed paint (one tagger)
+  assert.doesNotMatch(RENDER, /node\.dataset\.unit = String\(i\);/, "no path tags a node by its EVENT index: a history gap is a unit, so the two differ (2026-09-23)");
 });
 
 test("renderWindowItems renders [unitStart, unitEnd) with a TOP and a BOTTOM spacer", () => {
@@ -103,14 +103,15 @@ test("syncView: a fresh build / rewind renders the TAIL window, clamped to the l
 });
 
 test("syncView: a pure tab switch is a NO-OP render (reveal the cached DOM)", () => {
-  assert.match(RENDER, /if \(v\.rendered === len && !v\.stale && v\.el\.childNodes\.length > 0\) return v;/);
+  assert.match(RENDER, /const current = v\.rendered === len && !v\.stale && !v\.rediff && v\.el\.childNodes\.length > 0 && !!v\.painted && v\.painted\.items\.length === total;[\s\S]{0,120}?if \(current\) return v;/);
 });
 
-test("syncView: compact / an in-place change re-renders the CURRENT window; a browse append just grows the bottom spacer", () => {
-  // compact mode and any stale (tool-group toggle, off-screen update) re-render where the user is
-  assert.match(RENDER, /if \(settings\.compact \|\| v\.stale\) \{[\s\S]*?renderWindowItems\(v, s, items, ws, we, working\);/);
-  // browsing history away from the tail: appended events land below the window → grow the bottom spacer only
-  assert.match(RENDER, /if \(!wasAtTail\) \{\s*\n\s*v\.spacerCountBot = total - \(v\.winEnd \?\? total\);/);
+test("syncView: a stale view re-renders the CURRENT window; every other change is the keyed paint, which grows only the bottom spacer while browsing", () => {
+  // a stale view (tool-group toggle, units above the window reshaped) re-renders where the user is; compact mode no longer does on every frame
+  assert.match(RENDER, /if \(!v\.stale && tailDiff\(v, s, items, working, wasAtTail\)\) return v;[\s\S]*?renderWindowItems\(v, s, items, ws, we, working\);/);
+  // browsing history away from the tail: appended units land below the window → the bottom spacer grows, the top one stands
+  assert.match(RENDER, /const we = atTail \? total : Math\.min\(v\.winEnd \?\? total, total\);/);
+  assert.match(RENDER, /if \(bot && v\.spacerCountBot !== botCount\) sizeBottomSpacer\(v, bot, top\);/);
 });
 
 test("a new message while scrolled UP keeps the viewport put (no backwards jump)", () => {
@@ -123,7 +124,7 @@ test("a new message while scrolled UP keeps the viewport put (no backwards jump)
   assert.match(RENDER, /const before = content\.scrollTop;/);
   assert.match(RENDER, /syncView\(activeId, stick\);/);
   assert.match(RENDER, /else if \(!\(v && restoreScrollAnchor\(content, v, anchor, before\)\)\) writeScroll\(content, before, "append-raw", false, before\);/);
-  // the compact branch keeps winStart on a scrolled-up append
+  // the rebuild branch keeps winStart on a scrolled-up append (the keyed paint never evicts the top at all)
   assert.match(RENDER, /const keepTop = wasAtTail && atBottom === false;/);
   assert.match(RENDER, /const ws = keepTop \? \(v\.winStart \?\? 0\)/);
 });
@@ -188,7 +189,8 @@ test("round six fixes each carry a pin (T386 stage 2): rows name their turn, the
   // medium: the point is named by POSITION, the row's own turn stamped at its paint, never a uuid lookup into s.events (a row anchored on a tool_result uuid has none)
   assert.match(append, /const turnOf = turns && f0 >= 0 && f0 < turns\.length \? String\(turns\[f0\]\) : null;/, "appendItem knows the unit's absolute turn");
   assert.match(append, /node\.dataset\.unit = String\(u\); if \(turnOf != null\) node\.dataset\.turn = turnOf;/, "…and stamps it on every node the unit appends, beside data-unit");
-  assert.match(RENDER, /const turns = s\.regions \? turnOfEvents\(s\) : null;\s*\/\/[^\n]*\n\s*for \(let u = unitStart; u < unitEnd; u\+\+\) prevEpoch = appendItem\(v, s, items, u, prevEpoch, walk, working, turns\);/, "renderWindowItems names the turns once per paint and hands them to every unit");
+  assert.match(RENDER, /const turns = s\.regions \? turnOfEvents\(s\) : null;\s*\/\/[^\n]*\n[^\n]*\n\s*for \(let u = unitStart; u < unitEnd; u\+\+\) \{[\s\S]{0,200}?prevEpoch = appendItem\(v, s, items, u, prevEpoch, walk, working, turns\);/, "renderWindowItems names the turns once per paint and hands them to every unit");
+  assert.match(RENDER, /pe = appendItem\(v, s, items, u, pe, walk, working, turns, frag\);/, "…and the keyed paint does too: a repainted row names its turn like a built one");
   assert.match(under, /const tr = c\.dataset\.turn;[^\n]*\n\s*if \(tr != null && tr !== ""\) return Number\(tr\) \+ \(top - y0\) \/ h;/, "turnUnderTop reads the row's own turn");
   assert.doesNotMatch(under, /s\.events\.findIndex/, "…and looks nothing up by uuid");
   assert.match(yOf, /const tr = c\.dataset\.turn; if \(tr == null \|\| tr === "" \|\| Number\(tr\) !== whole\) continue;/, "yOfTurn finds the row by its own turn");

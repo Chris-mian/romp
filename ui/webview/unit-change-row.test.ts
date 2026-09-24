@@ -111,7 +111,7 @@ test("render.ts watches #content's non-thread boxes: appear, change in place and
 test("render.ts wires one observer per view over every unit, through the mutation observer, into the capped diag path", () => {
   const ev = RENDER.split("function ensureView(id: string): View {")[1].split("\n}")[0];
   assert.match(RENDER, /import \{[^}]*\bunitChangeRow\b[^}]*\bunitChanges\b[^}]*\} from "\.\/scroll-write";/);
-  assert.match(RENDER, /function scrollDiagRow\(kind: "scrollwrite" \| "scrollgesture" \| "tailchange" \| "spacer" \| "tailmut" \| "unitchange" \| "regionask" \| "landmiss", data: any\): void \{/);
+  assert.match(RENDER, /function scrollDiagRow\(kind: "scrollwrite" \| "scrollgesture" \| "tailchange" \| "spacer" \| "tailmut" \| "tailback" \| "unitchange" \| "regionask" \| "landmiss", data: any\): void \{/);
   assert.match(RENDER, /uo\?: ResizeObserver; uh\?: WeakMap<Element, number>; ro\?: ResizeObserver; mo\?: MutationObserver; \}/, "the View carries the unit observer and its heights");
   // a hidden view's units measure 0x0 on hide and their full height on re-show: neither is a change (the review's
   // find: one switch back would have filed a row per unit and burnt the minute's cap). The hide forgets baselines

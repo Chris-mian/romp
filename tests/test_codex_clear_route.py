@@ -696,38 +696,50 @@ class RealBackendClear(unittest.TestCase):
         self.assertIn("clearing", kinds)
         self.assertNotIn("queued", kinds, "a command op the drain runs as a clear folds by the drain's own rule: %r" % kinds)
 
-    def test_the_cycle_that_drains_a_parked_clear_builds_the_fresh_file_from_the_hook_on(self):
-        # The drain runs inside a pusher cycle whose memos (_live_scope.sessions, .paths) its own gates filled BEFORE
-        # the verb; the verb's push hook (push_session -> _push_session_now) built on that thread, and the old file
-        # rendered with the chip appended, in the hook's frame and in the cycle's post-drain build alike, the fresh
-        # conversation appearing a cycle later (review find, 2026-09-19). The hook resets the row memo and drops the
-        # sid's path under an open scope, so what it resolves during the verb is the row as it is now. The scope is
-        # opened here the way _pusher_cycle opens it, and the hook records what its own frame resolved.
+    def test_the_cycle_that_drains_a_parked_clear_drops_its_memos_of_the_old_row_and_builds_the_fresh_file(self):
+        # The drain runs inside a pusher cycle whose memos (_live_scope.sessions, the discover rows; _live_scope.paths, the
+        # sid's path) its own gates filled with the OLD row BEFORE the verb, and the cycle's build loop reads them after the
+        # drain. The verb's push hook used to reset them (push_session -> _push_session_now, review find 2026-09-19); the
+        # hook is _push_session_soon now, which only names the sid to the cycle and builds nothing inside the verb, so a
+        # reset left in the hook alone let the cycle build the cleared session's first frame from the OLD file (the review
+        # of that change, 2026-09-23). The drain's clear arm resets both memos itself once the verb answers that the clear
+        # happened. The scope is opened here the way _pusher_cycle opens it, the memos are filled the way the gates fill
+        # them (a _path_of read under the open scope), and the hook is the one the kernel wires.
         sid = self.be.spawn("web", "/TESTDIR-cycle", sid=SID_REAL)
         self.assertTrue(self.be.send(sid, "first synthetic turn"))
         self.assertTrue(self.cbt._lock_free(self.be, sid))
         old_path = str(self.be.transcript_path(sid))
-        resolved = []
+        in_verb = []
 
         def hook(s):
-            km._push_session_now(s)
-            resolved.append(km._path_of(s))               # what a build in the hook's frame resolves
+            km._push_session_soon(s)                      # the hook as wired: a name to the cycle, no build
+            in_verb.append(km._path_of(s))                # what the verb's own frame resolves under the cycle's memo
         self.be.push_session = hook
+        self.addCleanup(km._push_first.discard, sid)
         km._pending_ops[sid] = [("clear", "/clear")]
         km._save_pending_ops()
         km._live_scope.snapshot = km._live_map()
         km._live_scope.paths, km._live_scope.sessions = {}, {}
         try:
-            self.assertEqual(km._path_of(sid), old_path, "the gates fill the memo with the old row")
+            self.assertEqual(km._path_of(sid), old_path, "the gates fill the path memo with the old row")
+            rows = km._live_scope.sessions.get((jd.WINDOW, True)) or []   # the key _sessions normalizes to
+            self.assertEqual([r["path"] for r in rows if r["sid"] == sid], [old_path], "…and the discover rows under it")
             km._apply_pending_ops()
-            after = km._path_of(sid)                      # the cycle's post-drain build
+            self.assertNotIn(sid, km._live_scope.paths, "the clear arm dropped the sid's path from the cycle's memo")
+            self.assertEqual(km._live_scope.sessions, {}, "…and reset the cycle's discover rows")
+            after = km._path_of(sid)                      # what the cycle's build loop resolves after the drain
+            m = km.build_session(sid, int(time.time()))   # the cycle's own build of the cleared session
         finally:
             km._live_scope.snapshot = km._live_scope.paths = km._live_scope.sessions = None
         new_path = str(self.be.transcript_path(sid))
         self.assertEqual(self._registry_tid(sid), "T-2")
         self.assertNotEqual(new_path, old_path)
-        self.assertEqual(resolved[-1], new_path, "the hook's own frame resolved the fresh file during the verb: %r" % resolved)
-        self.assertEqual(after, new_path, "and so does every build after it in the cycle")
+        self.assertIn(sid, km._push_first, "the hook named the sid to the cycle")
+        self.assertEqual(in_verb[-1], old_path, "the hook resets nothing: the memo held the old row through the verb, so the arm's reset is the one that counts")
+        self.assertEqual(after, new_path, "the cycle's build after the drain resolves the fresh file")
+        self.assertIsNotNone(m)
+        self.assertEqual([e["md"] for e in m["events"] if e.get("kind") == "user"], ["/clear"],
+                         "…and renders the fresh conversation, nothing of the old one")
         self.assertNotIn(sid, km._pending_ops)
 
     def test_a_clear_parked_mid_turn_fires_on_the_turn_end_poke_with_no_clock(self):

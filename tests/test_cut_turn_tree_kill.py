@@ -201,15 +201,95 @@ class ScopePath(unittest.TestCase):
         self.assertGreaterEqual(clock[0], sb.TREE_KILL_GRACE, "…until the fake clock passes the grace")
         self.assertEqual((out["signaled"], out["forced"], out["tree"]), (3, 1, 2))
 
+    BUS_SERVE = "/usr/bin/python3 /x/romp/bin/romp-postal-service serve"
+
+    def _reap_cli_mcp_bus(self, bus_cgroup, bus_cmd):
+        """The orphaned CLI, its postal MCP server, and under that a process standing where the bus stands, whose
+        cgroup path ends in `bus_cgroup` and whose `ps` command is `bus_cmd`. That process leads its own process group
+        (start_new_session) and outlives any SIGTERM here, so a walk that reached it shows a group SIGTERM, then a group
+        SIGKILL once the fake clock passed the grace. Returns (what was signaled, the result, the log, the stops)."""
+        be = _backend()
+        mcp_pid, bus_pid = P + 70, P + 71
+        app = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/"
+        unit = "romp-session-11111111-%d-1757374800.scope" % CLI
+        cg = lambda p: app + (bus_cgroup if p == bus_pid else unit) + "\n"
+        ps = ("  %d %d /x/claude --input-format stream-json --resume %s\n"
+              "  %d %d /usr/bin/python3 /x/romp/bin/romp-postal-service mcp\n"
+              "  %d %d %s\n") % (CLI, MANAGER, SID, mcp_pid, CLI, bus_pid, mcp_pid, bus_cmd)
+        runs, sent, logs, clock = [], [], [], [0.0]
+        def run(argv, **kw):
+            runs.append(list(argv)); return mock.Mock(stdout="", returncode=0)
+        def sleep(s):
+            clock[0] += s
+        real_getpgid = os.getpgid
+        def getpgid(p):                  # the bus leads its own group; every other fake pid reads as gone
+            return p if p == bus_pid else real_getpgid(p)
+        with mock.patch.object(sb.os, "getpgid", getpgid), \
+             mock.patch.object(be, "_log", lambda m, **k: logs.append(m)):
+            out = be._end_cli_tree(CLI, ps.splitlines(), kill=lambda p, s: sent.append((p, s)),
+                                   killpg=lambda g, s: sent.append(("pg", g, s)), run=run, cgroup=cg,
+                                   alive=lambda p: p == bus_pid, sleep=sleep, now=lambda: clock[0])
+        self.assertEqual(runs, [["systemctl", "--user", "stop", unit]], "the CLI's own scope is stopped as ever")
+        return sent, out, [m for m in logs if str(bus_pid) in m], (mcp_pid, bus_pid)
+
+    def test_the_postal_bus_the_orphans_mcp_server_started_is_spared_by_the_tree_walk(self):
+        """The review of the bus-scope lane (2026-09-23). A session's postal MCP server starts the machine's shared bus
+        in a scope of its own (`romp-postal-bus-<pid>-<ns>.scope`), but systemd-run execs in place, so the bus is still
+        the MCP server's child and the orphaned CLI's grandchild in the listing. Stopping the CLI's scope leaves it
+        running, and the walk must too; the MCP server and the CLI are signaled as ever. The bus is spared under every
+        command it runs as: its serve under the script's names, and the sh its scope runs first."""
+        for cmd in (self.BUS_SERVE, "python3 /x/romp/postal/postal_service.py serve",
+                    "/usr/bin/python3 /x/romp/bin/romp-postal serve",
+                    "/bin/sh -c exec \"$@\" 2>&1 romp-postal-bus " + self.BUS_SERVE):
+            with self.subTest(cmd=cmd):
+                bus_unit = "romp-postal-bus-%d-1757374800123456789.scope" % (P + 70)
+                sent, out, said, (mcp_pid, bus_pid) = self._reap_cli_mcp_bus(bus_unit, cmd)
+                self.assertEqual(sent, [(mcp_pid, signal.SIGTERM), (CLI, signal.SIGTERM)],
+                                 "the MCP server and the CLI are signaled; the bus, by pid or by group, never")
+                self.assertEqual((out["signaled"], out["forced"], out["tree"], out.get("spared")), (2, 0, 1, 1))
+                self.assertEqual(len(said), 1, said)
+                self.assertIn(bus_unit, said[0], "the log names the scope that spared it")
+                self.assertIn("spared", said[0])
+
+    def test_a_look_alike_bus_scope_or_another_process_in_the_bus_scope_is_signaled(self):
+        """The review of the bus-scope lane (2026-09-23, fold 2): the spare once read the scope's name by prefix alone, so
+        any process under a cgroup named romp-postal-bus-*.scope survived the walk. Now it takes the producer's whole
+        unit shape as the path's last component AND the bus's serve as the command; anything short of both is signaled
+        like any other descendant, and a process in the real shape that is not the serve is logged as such."""
+        good = "romp-postal-bus-%d-1757374800123456789.scope" % (P + 70)
+        cases = [("romp-postal-bus-evil.scope", self.BUS_SERVE, False),
+                 ("app-" + good, self.BUS_SERVE, False),     # the real shape behind a prefix: a match, never a search
+                 ("x" + good, self.BUS_SERVE, False),        # (2026-09-23, the second verify pass of this lane)
+                 ("romp-postal-bus-.scope", self.BUS_SERVE, False),
+                 ("romp-postal-bus-1-2.scope.d", self.BUS_SERVE, False),
+                 (good + "/nested", self.BUS_SERVE, False),
+                 (good, "/usr/bin/sleep 1000", True),
+                 (good, "/usr/bin/python3 /x/romp/bin/romp-postal-service mcp", True),
+                 (good, "/usr/bin/python3 /x/other/serve-postal serve", True)]
+        for bus_cgroup, cmd, logged in cases:
+            with self.subTest(cgroup=bus_cgroup, cmd=cmd):
+                sent, out, said, (mcp_pid, bus_pid) = self._reap_cli_mcp_bus(bus_cgroup, cmd)
+                self.assertEqual(sent, [(mcp_pid, signal.SIGTERM), ("pg", bus_pid, signal.SIGTERM), (CLI, signal.SIGTERM),
+                                        ("pg", bus_pid, signal.SIGKILL)], "signaled like any other descendant")
+                self.assertEqual((out["signaled"], out["forced"], out["tree"], out.get("spared")), (3, 1, 2, 0))
+                if logged:
+                    self.assertEqual(len(said), 1, said)
+                    self.assertIn("not the bus's serve", said[0])
+                else:
+                    self.assertEqual(said, [], "a name of another shape is no bus scope at all")
+
     def test_the_leftover_scope_sweep_stops_our_dead_sessions_scopes_only(self):
         be = _backend()
         # a real child of THIS process stands in for "this kernel's live session": its unit is skipped
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.addCleanup(child.wait, timeout=10); self.addCleanup(child.kill)
-        listing = ("romp-session-11111111-%d-1757374800.scope loaded active running claude\n"          # our sid, CLI gone → stop
-                   "romp-session-11111111-%d-1757374801.scope loaded active running claude\n"          # our sid, our live child → keep
-                   "romp-session-22222222-%d-1757374802.scope loaded active running claude\n"          # another session → never ours
-                   ) % (CLI, child.pid, CLI + 1)
+        # each unit's Description carries this backend's state tag, as bin/romp-cli-scope writes it: the sweep stops only
+        # what it can prove it started (tests/test_reap_owned_only.py covers another kernel's tag and none)
+        T = sb.state_tag_of(be.state_dir)
+        listing = ("romp-session-11111111-%d-1757374800.scope loaded active running romp session %s romp-state=%s\n"  # our sid, CLI gone → stop
+                   "romp-session-11111111-%d-1757374801.scope loaded active running romp session %s romp-state=%s\n"  # our sid, our live child → keep
+                   "romp-session-22222222-%d-1757374802.scope loaded active running romp session %s romp-state=%s\n"  # another session → never ours
+                   ) % (CLI, SID, T, child.pid, SID, T, CLI + 1, OTHER, T)
         runs = []
         def run(argv, **kw):
             runs.append(list(argv)); return mock.Mock(stdout=listing if argv == sb.SCOPE_LIST_ARGV else "", returncode=0)
@@ -241,12 +321,14 @@ class BootReconcileEndsTheTree(unittest.TestCase):
               "  %d 1 /usr/bin/python3 /x/romp/bin/romp-kernel\n"
               "  %d %d /x/claude --output-format stream-json --resume %s --input-format stream-json\n"
               ) % (CLI, SID, TOOL, CLI, LOOP, TOOL, TERMINAL, SID, KERNEL, LIVE, KERNEL, SID)
-        listing = "romp-session-11111111-%d-1757374800.scope loaded active running claude\n" % CLI
+        T = sb.state_tag_of(d)     # this kernel's state tag: on the orphan's environment and its scope (the proof it is ours)
+        listing = "romp-session-11111111-%d-1757374800.scope loaded active running romp session %s romp-state=%s\n" % (CLI, SID, T)
         killed, runs = [], []
         def run(argv, **kw):
             runs.append(list(argv)); return mock.Mock(stdout=ps if argv == sb.PS_ARGV else (listing if argv == sb.SCOPE_LIST_ARGV else ""), returncode=0)
         with mock.patch.object(sb.subprocess, "run", side_effect=run), \
              mock.patch.object(sb.os, "kill", side_effect=lambda p, s: killed.append((p, s))), \
+             mock.patch.object(sb, "proc_state_tag", lambda p, **k: T if p in (CLI, LIVE) else None), \
              mock.patch.object(sb.SdkBackend, "_pid_alive", lambda self, p: False):   # fake pids read as gone on every platform (no /proc on macOS → os.kill(pid, 0) would be this mock)
             be._boot_reconcile([sb.read_reg(Path(d), SID)])
         self.assertEqual([p for p, _ in killed], [TOOL, LOOP, CLI], "the orphan's tree, children first, then the CLI; the terminal CLI (no stream-json mark) and the live CLI untouched")
@@ -279,8 +361,10 @@ class BootReconcileEndsTheTree(unittest.TestCase):
         ps = ("  %d 1 /x/claude --output-format stream-json --resume %s --input-format stream-json\n"
               "  %d 1 /x/claude --output-format stream-json --resume %s --input-format stream-json\n"
               ) % (LEASED, SID, STALE, OTHER)
-        listing = ("romp-session-%s-%d-1757374800.scope loaded active running claude\n"
-                   "romp-session-%s-%d-1757374801.scope loaded active running claude\n") % (SID[:8], LEASED, OTHER[:8], STALE)
+        T = sb.state_tag_of(d)
+        listing = ("romp-session-%s-%d-1757374800.scope loaded active running romp session %s romp-state=%s\n"
+                   "romp-session-%s-%d-1757374801.scope loaded active running romp session %s romp-state=%s\n"
+                   ) % (SID[:8], LEASED, SID, T, OTHER[:8], STALE, OTHER, T)
         killed, runs = [], []
         def run(argv, **kw):
             runs.append(list(argv)); return mock.Mock(stdout=ps if argv == sb.PS_ARGV else (listing if argv == sb.SCOPE_LIST_ARGV else ""), returncode=0)
@@ -288,6 +372,7 @@ class BootReconcileEndsTheTree(unittest.TestCase):
         with mock.patch.object(sb.subprocess, "run", side_effect=run), \
              mock.patch.object(sb.os, "kill", side_effect=lambda p, s: killed.append((p, s))), \
              mock.patch.object(sb, "proc_start", lambda p, run=None: starts.get(p)), \
+             mock.patch.object(sb, "proc_state_tag", lambda p, **k: T if p in (LEASED, STALE) else None), \
              mock.patch.object(sb.SdkBackend, "_pid_alive", lambda self, p: False):
             be._boot_reconcile(regs)
         self.assertEqual([p for p, _ in killed], [STALE], "only the CLI whose lease did not hold is signaled")
@@ -379,16 +464,20 @@ class RealProcessTree(unittest.TestCase):
         self.assertIsNone(by.poll(), "the bystander outside the tree was never signaled")
         self.assertGreaterEqual(out["tree"], 1)
 
-    def _fake_cli(self, sid):
+    def _fake_cli(self, sid, tag=None):
         """A process that LOOKS like an SDK CLI of ours to the ps scan (the stream-json mark and the sid in its argv)
         and is a true ORPHAN shape: started by an intermediate shell that prints its pid and exits, so the fake CLI
         re-parents to the subreaper (the user manager, or pid 1), never to this test — a child of the tester would be
         the census's own-child case. Two commands in the fake CLI, so bash does not exec into the sleep and lose the
         argv; the sleep is its descendant. The intermediate leads a new process group that the fake CLI and its
-        sleep inherit, so one killpg at cleanup ends whatever the reaper left. Returns (pid, pgid)."""
+        sleep inherit, so one killpg at cleanup ends whatever the reaper left. `tag`: the state tag its environment
+        carries, as a kernel's launch sets it (none by default, whatever this test process inherited). Returns (pid, pgid)."""
+        env = {k: v for k, v in os.environ.items() if k != sb.STATE_TAG_ENV}
+        if tag:
+            env[sb.STATE_TAG_ENV] = tag
         inter = subprocess.Popen(["bash", "-c", 'bash -c "sleep 300; :" romp-t305-fake-cli --input-format stream-json --resume "$1" '
                                   '</dev/null >/dev/null 2>&1 & echo $!', "x", sid],
-                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True, env=env)
         out, _ = inter.communicate(timeout=10)
         pid = int(out.strip())
         def sweep():
@@ -415,15 +504,17 @@ class RealProcessTree(unittest.TestCase):
         sid_a, sid_b = str(uuid.uuid4()), str(uuid.uuid4())
         for sid in (sid_a, sid_b):
             _reg(d, sid)
-        (live, live_pg), (stale, stale_pg) = self._fake_cli(sid_a), self._fake_cli(sid_b)
+        # both carry this backend's state tag in their real environment, read back from /proc by the reap (the proof
+        # it asks for before it ends a CLI; tests/test_reap_owned_only.py covers another kernel's tag and none)
+        (live, live_pg), (stale, stale_pg) = self._fake_cli(sid_a, sb.state_tag_of(d)), self._fake_cli(sid_b, sb.state_tag_of(d))
         now = time.time()
         sb.write_lease(d, {"sid": sid_a, "fsid": sid_a, "pid": live, "start": sb.proc_start(live),
                            "holder": {"pid": os.getpid(), "start": sb.proc_start(os.getpid())}, "version": "", "t": now})
         sb.write_lease(d, {"sid": sid_b, "fsid": sid_b, "pid": stale, "start": sb.proc_start(stale),
                            "holder": {"pid": P + 80, "start": "1"}, "version": "", "t": now})
         real_run = subprocess.run
-        def run(argv, **kw):
-            return mock.Mock(stdout="", returncode=0) if argv == sb.SCOPE_LIST_ARGV else real_run(argv, **kw)
+        def run(argv, **kw):   # both unit listings are answered empty: no test lists the machine's real units
+            return mock.Mock(stdout="", returncode=0) if argv in (sb.SCOPE_LIST_ARGV, sb.HOST_SCOPE_LIST_ARGV) else real_run(argv, **kw)
         # the ps scan must see both before the census reads it
         deadline = time.time() + 5
         while time.time() < deadline:

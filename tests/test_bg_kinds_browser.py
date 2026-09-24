@@ -47,8 +47,10 @@ const errors = []; page.on("pageerror", (e) => errors.push(String(e && e.message
 // frame and its probe replaced the injected verdict while the injected rows stayed (three full-suite reds on 2026-09-13, a fourth caught
 // with this trace: a chatTail 118 ms after the idle frame). So once the roads begin, the kernel's frames for the session are HELD off the
 // pane: a capture listener registered before the pane's own runs first at the window and stops the event; every held frame is listed in
-// the RESULT. The boot's own tail delta is kept for the replay road.
-await page.addInitScript(() => { window.__held = []; window.__lastTail = null; window.addEventListener("message", (e) => { const m = e.data; if (!m || !m.type || e.source === window) return; if (m.type === "chatTail" && !window.__labHold) window.__lastTail = m; if (window.__labHold && m.id === window.__labHold) { window.__held.push({ t: Math.round(performance.now()), type: m.type }); e.stopImmediatePropagation(); } }, true); });
+// the RESULT. The replay road plays back one of the kernel's status-only tail deltas, which the lab now has to provoke: since 2026-09-23
+// the kernel sends no frame the page already holds, so a quiet boot is the full and nothing after it (that 118 ms tail was the boot's
+// own view again). The listener also notes the boot's full landing, the moment the states row below can be appended.
+await page.addInitScript((sid) => { window.__held = []; window.__lastTail = null; window.__gotFull = false; window.addEventListener("message", (e) => { const m = e.data; if (!m || !m.type || e.source === window) return; if (m.type === "session" && m.id === sid && !window.__labHold) window.__gotFull = true; if (m.type === "chatTail" && !window.__labHold) window.__lastTail = m; if (window.__labHold && m.id === window.__labHold) { window.__held.push({ t: Math.round(performance.now()), type: m.type }); e.stopImmediatePropagation(); } }, true); }, cfg.frame.id);
 await page.goto(cfg.chat);
 await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
 await page.waitForSelector("#composer-input", { timeout: 20000 });
@@ -56,14 +58,69 @@ await page.waitForSelector("#composer-input", { timeout: 20000 });
 // as a window message event, so one capture listener sees both; e.source is the window for an injected one, null for the socket's)
 await page.evaluate(() => { window.__frames = []; window.__wsups = 0; window.addEventListener("romp:wsup", () => { window.__wsups++; window.__frames.push({ t: Math.round(performance.now()), type: "(wsup)", injected: false }); }); window.addEventListener("romp:wsdown", () => { window.__frames.push({ t: Math.round(performance.now()), type: "(wsdown)", injected: false }); }); window.addEventListener("message", (e) => { const m = e.data; if (!m || !m.type) return; window.__frames.push({ t: Math.round(performance.now()), type: m.type, id: m.id || null, injected: e.source === window, svc: m.status ? (m.status.bgServiceIds || null) : undefined, tasks: ("bgTasks" in m) ? ((m.bgTasks && m.bgTasks.tasks) ? m.bgTasks.tasks.length : 0) : undefined, skel: Array.isArray(m.skeleton) ? m.skeleton.length : undefined }); }, true); });
 await page.waitForTimeout(500);
-// the frame: the session working, the kernel's rows and the tracked tasks; the shim hands it to the page like a kernel push
-// the kernel's own tail delta for the session, from the boot (the replay road plays it back the shim's way); then the hold
-let bootTail = null;
-try { bootTail = await (await page.waitForFunction(() => window.__lastTail, null, { timeout: 15000 })).jsonValue(); } catch (e) { bootTail = null; }
+// the kernel's own status-only tail delta for the session (the replay road plays it back the shim's way), provoked once the page holds
+// the boot's full: an awaiting overlay row appended to the session's states log (the row test_awaiting_box_sync_served.py appends) changes
+// the status the kernel builds, the chip's awaitingBg with the row's why, and the next pusher cycle carries that status on an empty tail,
+// no event changed and no verdict in it; then the hold
+await page.waitForFunction(() => window.__gotFull, null, { timeout: 15000 });
+await page.evaluate(() => { window.__lastTail = null; });   // the tail captured is one sent after the row
+fs.appendFileSync(cfg.states, JSON.stringify({ t: Math.floor(Date.now() / 1000), awaiting: true, kind: "agents", count: 1, why: "1 background agent still working" }) + "\n");
+let kernelTail = null;
+try { kernelTail = await (await page.waitForFunction(() => window.__lastTail, null, { timeout: 30000 })).jsonValue(); } catch (e) { kernelTail = null; }   // the awaiting box lab gives the same row 30 s
 await page.evaluate((sid) => { window.__labHold = sid; }, cfg.frame.id);
+// the frame: the session working, the kernel's rows and the tracked tasks; the shim hands it to the page like a kernel push
 await page.evaluate((f) => window.postMessage(f, "*"), cfg.frame);
 await page.waitForSelector("#bg-tasks .bg-fold-head", { timeout: 15000 });
+// the kernel's awaiting status puts the box up ahead of the injection, its header the wait's words, so the click waits for the injected
+// frame's header (a whole session frame replaces the status, upsert) and never lands on a header the injected repaint is swapping out
+await page.waitForFunction(() => ((document.querySelector("#bg-tasks .bg-fold-label") || {}).textContent || "").startsWith("In the background"), null, { timeout: 15000 });
 await page.click("#bg-tasks .bg-fold-head");   // collapsed by default: open the list
+// THE HEADER KEEPS THE KEYBOARD (the box arc's round three, the second contributor's post-merge review of PR 2105): the box is emptied and its
+// header rebuilt on every render, the one the header's own click makes included, so Enter toggled the rows and dropped focus to the body (a
+// second Enter reached the bare-area handler and the composer); a push changing an awaited field and a full session frame dropped it too. The
+// focus is walked in by the KEYBOARD (Shift+Tab from the composer), so it is a focus-visible one; a mouse click's focus is deliberately not kept
+const bgActive = () => page.evaluate(() => { const a = document.activeElement; return { head: !!a && a.classList.contains("bg-fold-head"), composer: !!a && a.id === "composer-input", tag: a ? a.tagName : null, open: !!document.querySelector("#bg-tasks .bg-list") }; });
+await page.focus("#composer-input");
+const keys = { entered: false };
+for (let i = 0; i < 40; i++) {   // loop-ok: bounded; the walk stops on the header
+  await page.keyboard.press("Shift+Tab");
+  const a = await bgActive(); if (a.head) { keys.entered = true; break; }
+}
+if (keys.entered) {
+  await page.keyboard.press("Enter"); await page.waitForFunction(() => !document.querySelector("#bg-tasks .bg-list"), null, { timeout: 5000 }).catch(() => {}); keys.enter1 = await bgActive();   // closes the rows
+  await page.keyboard.press("Enter"); await page.waitForFunction(() => !!document.querySelector("#bg-tasks .bg-list"), null, { timeout: 5000 }).catch(() => {}); keys.enter2 = await bgActive();   // a second Enter opens them again (before: it reached the composer)
+  await page.keyboard.press(" "); await page.waitForFunction(() => !document.querySelector("#bg-tasks .bg-list"), null, { timeout: 5000 }).catch(() => {}); keys.space = await bgActive();
+  await page.keyboard.press(" "); await page.waitForFunction(() => !!document.querySelector("#bg-tasks .bg-list"), null, { timeout: 5000 }).catch(() => {}); keys.space2 = await bgActive();
+  // a push changing an awaited field (awaitChanged re-renders the box), then a full session frame: the header keeps the keyboard through both.
+  // Each push is READ AFTER ITS EFFECT on the page (the round-one verifier of PR 2120: a wait that could not fail read focus before the frame was
+  // handled, and both pins were green on a tree with no refocus at all): the status push turns the header's words to the idle wait's ("Awaiting"),
+  // the full session frame is counted as handled by the page's own injected-frame list; a synchronous predicate, a TimeoutError-only catch, the
+  // effect pinned beside the focus. The keyboard is walked back onto the header before each push, so the push is the only thing that could drop it
+  const f0 = cfg.frame;
+  const rewalk = async () => { await page.focus("#composer-input"); for (let i = 0; i < 40; i++) { await page.keyboard.press("Shift+Tab"); if ((await bgActive()).head) return true; } return false; };   // loop-ok: bounded
+  const waitEffect = (pred, arg) => page.waitForFunction(pred, arg, { timeout: 6000 }).then(() => true).catch((e) => { if (e.name !== "TimeoutError") throw e; return false; });
+  keys.rewalk1 = await rewalk();
+  {
+    const idleWait = { type: "status", id: f0.id, status: { ...f0.status, state: "idle", awaitingWhy: "waiting on 1 background agent: the docs build", awaitingKind: "agents", awaitingCount: 1 } };
+    await page.evaluate((x) => window.postMessage(x, "*"), idleWait);
+    const effect = await waitEffect(() => ((document.querySelector("#bg-tasks .bg-fold-label") || {}).textContent || "").startsWith("Awaiting"));
+    keys.statusPush = { ...(await bgActive()), effect, label: await page.evaluate(() => ((document.querySelector("#bg-tasks .bg-fold-label") || {}).textContent || "")) };
+  }
+  keys.rewalk2 = await rewalk();
+  {
+    const n0 = await page.evaluate(() => window.__frames.filter((x) => x.injected).length);
+    await page.evaluate((x) => window.postMessage(x, "*"), f0);
+    const effect = await waitEffect((n) => window.__frames.filter((x) => x.injected).length > n, n0);
+    keys.framePush = { ...(await bgActive()), effect, label: await page.evaluate(() => ((document.querySelector("#bg-tasks .bg-fold-label") || {}).textContent || "")) };
+  }
+  // a mouse click on the header, then Enter: the click's focus is not a keyboard's, so the rebuilt header does not take it back and Enter reaches the composer, as before.
+  // The keyboard's focus is first moved off the header by the mouse (a click in the composer), so the header's click is a mouse focus, not a keyboard one still standing
+  await page.click("#composer-input");
+  await page.click("#bg-tasks .bg-fold-head"); await page.waitForFunction(() => !document.querySelector("#bg-tasks .bg-list"), null, { timeout: 5000 }).catch(() => {});
+  keys.afterClick = await bgActive();
+  await page.keyboard.press("Enter"); keys.clickThenEnter = await bgActive();
+  if (!(await bgActive()).open) { await page.click("#bg-tasks .bg-fold-head"); await page.waitForFunction(() => !!document.querySelector("#bg-tasks .bg-list"), null, { timeout: 5000 }).catch(() => {}); }   // the list open again for the roads below
+}
 await page.waitForFunction(() => document.querySelectorAll("#bg-tasks .bg-list .bg-task").length >= 6, null, { timeout: 15000 });
 await page.waitForTimeout(200);
 const probe = () => page.evaluate(() => {
@@ -123,9 +180,10 @@ const placedOnly = await settle(only([task(cfg.placedId)], [], "working"), () =>
 // the verdict arrives by a BARE STATUS frame (round three, low 4): a session frame repaints the box unconditionally for the active
 // tab, a status frame only through awaitKey, so this is the executed coverage of the key carrying bgServiceIds
 const placedKept = await settle({ type: "status", id: f0.id, status: { ...f0.status, state: "working", awaitingItems: [], awaitingTaskIds: [], bgServiceIds: [cfg.placedId] } }, () => !!document.querySelector("#bg-tasks .bg-list .bg-task.bg-kept .bg-kept-word"));
-// the REPLAY road: the kernel's own tail delta (its status carries no verdict) dispatched the way the shim delivers a socket frame,
-// between the verdict and the next probe; at main it repainted the box from the kernel's status and the row lost its suffix; held now
-const replay = await page.evaluate((m) => { if (!m) return { had: false }; window.dispatchEvent(new MessageEvent("message", { data: m })); return { had: true, type: m.type, svc: m.status ? (m.status.bgServiceIds || null) : undefined }; }, bootTail);
+// the REPLAY road: the kernel's own status-only tail delta (the awaiting row's; its status carries no verdict) dispatched the way the shim
+// delivers a socket frame, between the verdict and the next probe; at main it repainted the box from the kernel's status and the row lost
+// its suffix; held now
+const replay = await page.evaluate((m) => { if (!m) return { had: false }; window.dispatchEvent(new MessageEvent("message", { data: m })); return { had: true, type: m.type, svc: m.status ? (m.status.bgServiceIds || null) : undefined }; }, kernelTail);
 await page.waitForTimeout(400);
 const afterReplay = await probe(); afterReplay.held = await page.evaluate(() => window.__held.slice());
 const doneOnly = await settle(only([task(cfg.doneId)], [], "idle"), () => document.querySelectorAll("#bg-tasks .bg-list .bg-task").length === 1 && !!document.querySelector("#bg-tasks .bg-list .bg-task.bg-completed"));
@@ -144,7 +202,7 @@ const idleOne = await settle({ ...f0, status: { ...f0.status, state: "idle", awa
 if (cfg.shots) { fs.mkdirSync(cfg.shots, { recursive: true }); await page.screenshot({ path: cfg.shots + "/romp_chat-T394-bg-kinds-light-served.png" }); }
 const frames = await page.evaluate(() => window.__frames); const held = await page.evaluate(() => window.__held);
 await browser.close();
-process.stdout.write("RESULT:" + JSON.stringify({ dark, light, placedOnly, placedKept, doneOnly, idleOne, peerIdle, nested, frames, errors, held, replay, afterReplay }) + "\n", () => process.exit(0));
+process.stdout.write("RESULT:" + JSON.stringify({ headKeys: keys, dark, light, placedOnly, placedKept, doneOnly, idleOne, peerIdle, nested, frames, errors, held, replay, afterReplay }) + "\n", () => process.exit(0));
 """
 
 
@@ -184,7 +242,7 @@ class ServedBgKinds(unittest.TestCase):
             raise unittest.SkipTest("esbuild failed here: " + (b.stderr or b.stdout)[-200:])
         dist = os.path.join(cls.lab, "dist")
         copy_dist(os.path.join(EXT, "dist"), dist)
-        state = os.path.join(cls.lab, "xdg", "romp")
+        cls.state = state = os.path.join(cls.lab, "xdg", "romp")
         cwd = os.path.join(cls.lab, "proj")
         for d in ("names", "sdk", "states"):
             os.makedirs(os.path.join(state, d), exist_ok=True)
@@ -253,6 +311,7 @@ class ServedBgKinds(unittest.TestCase):
             cfg = os.path.join(self.lab, "cfg.json")
             with open(cfg, "w") as f:
                 json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "frame": frame, "placedId": PLACED_ID, "doneId": DONE_ID, "cmdId": CMD_ID, "svcId": SVC_ID,
+                           "states": os.path.join(self.state, "states", SID + ".jsonl"),   # the session's states log: the driver appends the awaiting row to it
                            "shots": os.environ.get("BG_KINDS_SHOTS", "")}, f)
             driver = os.path.join(self.lab, "driver.mjs")
             with open(driver, "w") as f:
@@ -267,6 +326,32 @@ class ServedBgKinds(unittest.TestCase):
             cls._r = json.loads(line[len("RESULT:"):])
         print("RESULT:" + json.dumps(cls._r), file=sys.stderr)   # the whole measurement rides every test's captured stderr (-rA shows it for a pass)
         return cls._r
+
+    def test_the_header_keeps_the_keyboard_through_its_own_toggle_and_every_push_but_not_a_mouse_clicks_focus(self):
+        """The box arc's round three (the second contributor's post-merge review of PR 2105): the box is emptied and its header rebuilt on every
+        render, so Enter toggled the rows and dropped focus to the body, a second Enter reached the composer, and a push changing an awaited
+        field or a full session frame dropped it too. A keyboard focus on the header (focus-visible) is remembered before the box is emptied
+        and the new header takes it back; a mouse click's focus is not, so Enter after a click still reaches the composer."""
+        r = self._result(); k = r["headKeys"]
+        self.assertTrue(k["entered"], "Shift+Tab from the composer reaches the header: %r" % k)
+        self.assertEqual((k["enter1"]["head"], k["enter1"]["open"]), (True, False), "Enter closes the rows and the header keeps focus: %r" % k["enter1"])
+        self.assertEqual((k["enter2"]["head"], k["enter2"]["open"]), (True, True), "a second Enter opens them again (before: it reached the composer): %r" % k["enter2"])
+        self.assertEqual((k["space"]["head"], k["space"]["open"], k["space2"]["head"], k["space2"]["open"]), (True, False, True, True), "Space toggles and keeps focus both ways: %r %r" % (k["space"], k["space2"]))
+        self.assertFalse(k["clickThenEnter"]["head"], "after a mouse click the rebuilt header does not take the focus back (kept on purpose): %r" % k["clickThenEnter"])
+        self.assertTrue(k["clickThenEnter"]["composer"], "so Enter reaches the composer, as before: %r" % k["clickThenEnter"])
+
+    def test_the_header_keeps_the_keyboard_through_a_status_push_and_a_full_session_frame(self):
+        """The push half of the pin above, its own method so its red at the base is its own (the round-one verifier of PR 2120: the push pins
+        read focus before the frame was handled and were green on a tree with no refocus). The keyboard is walked back onto the header before
+        each push; each push is read after its EFFECT (the header's words for the status push, the page's injected-frame count for the full
+        frame); the header keeps the focus through both."""
+        r = self._result(); k = r["headKeys"]
+        self.assertTrue(k["entered"], "premise: the keyboard reached the header: %r" % k)
+        self.assertTrue(k["rewalk1"] and k["rewalk2"], "premise: the keyboard walked back onto the header before each push")
+        self.assertTrue(k["statusPush"]["effect"], "the status push took effect before the read (the header's words turned to the idle wait's): %r" % k["statusPush"])
+        self.assertTrue(k["statusPush"]["head"], "and the header keeps the focus through it (before: dropped to the body): %r" % k["statusPush"])
+        self.assertTrue(k["framePush"]["effect"], "the full session frame was handled before the read (the page's injected-frame count advanced): %r" % k["framePush"])
+        self.assertTrue(k["framePush"]["head"], "and the header keeps the focus through it too: %r" % k["framePush"])
 
     def test_every_row_sits_in_its_kinds_section_and_the_kept_task_wears_the_verdict_as_a_suffix(self):
         r = self._result()
@@ -378,9 +463,12 @@ class ServedBgKinds(unittest.TestCase):
 
     def test_the_kernels_own_tail_delta_during_a_road_is_held_off_the_pane_and_the_verdict_stays(self):
         # the mechanism behind the full-suite reds of 2026-09-13: the kernel's tail delta carries its status for the session, with no
-        # verdict, and one landing between an injected frame and its probe repainted the box from it (the rows stayed, the suffix went)
+        # verdict, and one landing between an injected frame and its probe repainted the box from it (the rows stayed, the suffix went).
+        # The replayed tail is the one the awaiting row provoked (2026-09-23: the kernel no longer sends a frame the page already holds,
+        # so the boot alone yields no tail); its status names no service, the shape the hold guards the verdict against
         r = self._result()
-        self.assertTrue(r["replay"]["had"], "the boot's tail delta was in hand for the replay: %r" % r["replay"])
+        self.assertTrue(r["replay"]["had"], "the kernel's status-only tail delta, sent for the awaiting row, was in hand for the replay: %r" % r["replay"])
+        self.assertEqual(r["replay"]["svc"], [], "the replayed frame's status names no service, the guarded shape: %r" % r["replay"])
         self.assertEqual([x["kept"] for x in r["afterReplay"]["rows"]], [KEPT_WORD], "the row keeps the verdict through the kernel's tail delta: %r" % [(x["label"], x["kept"]) for x in r["afterReplay"]["rows"]])
         self.assertIn("chatTail", [h["type"] for h in r["afterReplay"]["held"]], "the delta was held off the pane and listed: %r" % r["afterReplay"]["held"])
         self.assertEqual(r["errors"], [], "no page error through the roads: %r" % r["errors"])

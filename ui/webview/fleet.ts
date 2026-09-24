@@ -22,8 +22,9 @@ import { perfFrameHandler } from "./perf-telemetry";
 import { linkifyPrRefs, installPrLinkOpener } from "./pr-links";
 import { listenForFrames } from "./frame-listener";
 import { openGear } from "./gear-host";
-import { openContextMenu, openConfirmBox } from "./ctx-menu";
+import { menuCard, addMenuItem, showMenuCard, openConfirmBox } from "./ctx-menu";
 import { openTopTitles, endConfirmDetail, RENAME_SUBLINE, END_SESSION_STANDING } from "./clear-confirm";
+import { addRestartRow, restartInterrupts, settleRestart } from "./restart-row";
 
 type Color = { bg: string; fg: string } | null;
 interface LedgerNode {
@@ -792,6 +793,25 @@ listenForFrames(perfFrameHandler("fleet", (m) => vscodeApi?.postMessage(m), (e: 
     vscodeApi?.postMessage({ type: "needSlot", slot: m.slot });
     return;
   }
+  // The kernel's answer to this pane's Restart session (2026-09-23), aimed at the pane that asked: the row's
+  // latch lifts on the event, never on a clock. A refusal is LOUD with it — the bell entry the shell keeps,
+  // carrying the session so the entry jumps there ({romp:'notify'}, the feed's road for a refused gesture);
+  // this pane has no toast of its own and a restart that did not happen must not pass in silence.
+  if (m.type === "restarted" || m.type === "restartFailed") {
+    if (typeof m.id === "string") settleRestart(m.id);
+    if (m.type === "restartFailed")
+      window.parent?.postMessage({ romp: "notify", kind: "refused",
+        text: "Couldn’t restart “" + String(m.name || m.id) + "” — " + String(m.text || "unknown error"), sid: String(m.id || "") }, "*");
+    return;
+  }
+  // a kernel older than this page does not know the op (it advertises restartSession in its caps): the row
+  // re-arms on the refusal instead of latching for good, and says why
+  if (m.type === "unknownOp" && m.op === "restartSession") {
+    for (const s of sessions) settleRestart(s.sid);
+    window.parent?.postMessage({ romp: "notify", kind: "refused",
+      text: "This romp kernel is older than the dashboard and has no Restart session — end the session and revive it instead." }, "*");
+    return;
+  }
   if (m.type !== "feed") return;                     // the Outline rides the FEED payload (proven channel); reads its `ledgers`
   // the Task tracking switch off (T404): the frame carries `off` and no ledgers; the notice the kernel rendered shows in
   // place of the list, and nothing below applies; the next real frame swaps back
@@ -866,10 +886,22 @@ function showSessionMenu(x: number, y: number, sid: string, viaKeyboard: boolean
   // on close the focus returns to the row's head by sid (a push may have rebuilt the list under the open menu, and the builder's
   // own return refocuses only a still-connected opener), unless the close followed the focus out of this document: the window's
   // blur fires when a click lands in another pane, and a refocus then pulled the focus back to the head (Firefox lost the composer)
-  openContextMenu(x, y, [
-    { label: "Rename", sub: RENAME_SUBLINE, pick: () => startRowRename(sid) },
-    { label: "Delete", sub: "ends the session; its history stays on disk", danger: true, pick: () => confirmEndSession(sid) },
-  ], { className: "fl-sess-menu", viaKeyboard, onClose: () => { if (!document.hasFocus()) return; const h = headOf(sid); if (h) h.focus({ preventScroll: true }); } });
+  // built by hand (menuCard → rows → showMenuCard, the builder's documented road for a card with a row the
+  // standard shape cannot express): Restart session latches its own label in place, so it needs its node
+  const menu = menuCard({ className: "fl-sess-menu" });
+  addMenuItem(menu, { label: "Rename", sub: RENAME_SUBLINE, pick: () => startRowRename(sid) });
+  // Restart session between the two (the user 2026-09-23): it changes the session least of the three — the
+  // row leaves nothing behind, where Delete ends it. Everything it needs is resolved by SID at build time,
+  // never off the node under the cursor, which the next push rebuilds (this pane's own rule, above).
+  addRestartRow(menu, sid, {
+    name: displayName(sid),
+    working: restartInterrupts(sessionRow(sid)?.status?.state),
+    titles: openTopTitles((sessionRow(sid)?.ledger?.tree || []) as any),   // the live ledger at click time, as Delete reads it
+    confirm: (title, detail, buttons, cb) => openConfirmBox(title, detail, buttons, cb),
+    post: () => vscodeApi?.postMessage({ type: "restartSession", id: sid }),
+  });
+  addMenuItem(menu, { label: "Delete", sub: "ends the session; its history stays on disk", danger: true, pick: () => confirmEndSession(sid) });
+  showMenuCard(menu, x, y, { viaKeyboard, onClose: () => { if (!document.hasFocus()) return; const h = headOf(sid); if (h) h.focus({ preventScroll: true }); } });
 }
 
 function startRowRename(sid: string): void {

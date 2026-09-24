@@ -31,7 +31,7 @@ class SettingsSectionsTest(unittest.TestCase):
     def test_the_subsection_headers_are_present_in_order(self):
         h = _gear_src()
         self.assertLess(h.index("id=rs-tabs"), h.index("data-pane=general"), "the pills come first")
-        for pane, heads in (("general", ["Account", "Panes", "Appearance", "Permissions", "This machine", "Keyboard shortcuts"]), ("chat", ["Display", "Comments", "Thinking", "Chat history", "Tab strip", "Tab widgets"]),
+        for pane, heads in (("general", ["Account", "Panes", "Appearance", "Permissions", "This machine", "Keyboard shortcuts"]), ("chat", ["Display", "Boxes below the transcript", "Comments", "Thinking", "Chat history", "Tab strip", "Tab widgets"]),
                             ("feed", ["Cards"]), ("sessions", ["New sessions"]), ("automation", ["Nudges", "Model"]), ("tasks", ["Task tracking", "Judges"]),   # Model: the two model switches (2026-09-17)
                             ("debug", ["Judging bands", "Diagnostics"])):
             p = _pane(h, pane)
@@ -51,7 +51,7 @@ class SettingsSectionsTest(unittest.TestCase):
     def test_each_setting_sits_under_the_right_section(self):
         h = _gear_src()
         where = {
-            "general": ["rs-billing", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl", "rs-panedock", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-updates"],
+            "general": ["rs-billing", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl", "rs-panedock", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-router", "rs-updates"],
             "chat": ["rs-compact", "rs-dense", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast", "rs-thinksum", "rs-widgets", "rs-swidgets", "rs-needsbox"],
             "feed": ["rs-feedcollapsed"],
             "sessions": ["rs-defaultdir", "rs-backend"],
@@ -86,7 +86,7 @@ class SettingsSectionsTest(unittest.TestCase):
         ge = panes["general"]
         self.assertTrue(ge.index(">Account<") < ge.index("id=rs-login-btn") < ge.index("id=rs-panes-sec") < ge.index("id=rs-pane-feed") < ge.index("id=rs-filesctl")
                         < ge.index("id=rs-panes-data") < ge.index("id=rs-panedock") < ge.index("data-section=appearance>Appearance<") < ge.index("id=rs-theme") < ge.index("id=rs-pal") < ge.index(">Permissions<") < ge.index("id=rs-fileedit")
-                        < ge.index(">This machine<") < ge.index("id=rs-conserve") < ge.index("id=rs-updates") < ge.index(">Keyboard shortcuts<"))
+                        < ge.index(">This machine<") < ge.index("id=rs-conserve") < ge.index("id=rs-router") < ge.index("id=rs-updates") < ge.index(">Keyboard shortcuts<"))
         self.assertIn("<b>Allow file editing</b>", ge)
         self.assertIn("<b>Updates install automatically <span class=rs-mixed hidden></span></b>", ge)
         # Chat (T404): Display (the transcript rows, the text scheme, the strip's one-group-per-row), Comments, Thinking, Tab widgets

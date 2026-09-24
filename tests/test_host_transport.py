@@ -160,7 +160,9 @@ class HostScopes(unittest.TestCase):
         sb.write_lease(d, {"sid": live, "fsid": live, "pid": 999999999, "start": "1", "holder": {"pid": 999999998, "start": "2", "kind": "host"}, "version": "", "t": time.time()})
         sb.write_lease(d, {"sid": dead, "fsid": dead, "pid": 999999997, "start": "1", "holder": {"pid": 999999996, "start": "2", "kind": "host"}, "version": "", "t": time.time()})
         starts = {999999999: "1", 999999998: "2"}      # the live pair is alive; the dead host's pids are gone
-        listing = "romp-host-11111111-1.scope loaded active running a\nromp-host-22222222-2.scope loaded active running b\n"
+        T = sb.state_tag_of(d)   # both units carry this backend's state tag, as _spawn_host writes it (the sweep's proof)
+        listing = ("romp-host-11111111-1.scope loaded active running romp session host %s romp-state=%s\n"
+                   "romp-host-22222222-2.scope loaded active running romp session host %s romp-state=%s\n") % (live, T, dead, T)
         runs = []
         def run(argv, **kw):
             runs.append(list(argv)); return mock.Mock(stdout=listing if argv == sb.HOST_SCOPE_LIST_ARGV else "", returncode=0)
@@ -550,8 +552,12 @@ class BackendHostRules(unittest.TestCase):
         hdir = ht.host_dir(d, SID); hdir.mkdir(parents=True, exist_ok=True)
         (hdir / "spawn.json").write_text(json.dumps({"sid": SID, "version": "abc12345"}))
         sock = str(ht.host_sock(d, SID))
-        old = {"sid": SID, "fsid": SID, "name": "web", "pid": 11, "start": "c", "holder": {"pid": 10, "start": "h", "kind": "host"},
+        # a live holder with its lease on disk, as a host that answers has: the wait ends at once when the lease stops naming
+        # a live host (2026-09-23, the review of the turn-end handover), and the fake pids this used read as a host gone
+        me = {"pid": os.getpid(), "start": sb.proc_start(os.getpid())}
+        old = {"sid": SID, "fsid": SID, "name": "web", "pid": me["pid"], "start": me["start"], "holder": dict(me, kind="host"),
                "version": "abc12345", "t": time.time()}
+        sb.write_lease(d, old)
         def rows():
             p = Path(d) / "session-events.jsonl"
             return [r["kind"] for r in (json.loads(l) for l in p.read_text().splitlines() if l.strip())] if p.exists() else []

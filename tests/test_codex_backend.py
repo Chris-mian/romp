@@ -952,6 +952,110 @@ class PostalTools(unittest.TestCase):
         self.assertEqual(seen, [])
 
 
+class RestartWork(unittest.TestCase):
+    """would_cut and busy_breakdown (2026-09-22, the review that found the kernel's /busy and its converge gate blind
+    to Codex: both read the SDK backend alone, so the manager's quiet window applied a refresh over an open Codex
+    turn). What a kernel restart cuts here: the app-server is the kernel's child and ends with it, and a turn's
+    prompt leaves the durable queue at the turn/start ACK, so an open turn, or a compaction running as its own turn,
+    is cut and lost. A queued send is not: it stays on disk until the ACK and the next kernel sends it. Synthetic."""
+
+    def test_an_open_turn_counts_until_it_ends(self):
+        be, fake, _ = build()
+        fake.hold_open = True
+        fake.scripts = [[]]
+        sid = be.spawn("web", "/TESTDIR")
+        self.assertEqual(be.busy_breakdown(), (0, 0), "an idle session is nothing to wait on")
+        self.assertEqual(be.would_cut(), [])
+        self.assertTrue(be.send(sid, "synthetic held turn"))
+        try:
+            self.assertTrue(until(lambda: be._sessions[sid].turn_id is not None))
+            self.assertEqual(be.busy_breakdown(), (1, 0), "an open turn is a turn in flight, cut by a restart")
+            self.assertEqual(be.would_cut(), [{"sid": sid, "name": "web"}])
+            self.assertTrue(be.interrupt(sid))
+            self.assertTrue(until(lambda: not be.busy(sid)))
+            self.assertEqual(be.busy_breakdown(), (0, 0), "the turn's end is the count's end")
+        finally:
+            be.kill(sid)
+
+    def test_a_compaction_counts_and_a_queued_send_does_not(self):
+        be, _, _ = build()
+        sids = ["11111111-2222-3333-4444-5555555555%02d" % i for i in (1, 2, 3)]
+        turn = cb._Session(sids[0], "T-1", "web", "/TESTDIR")
+        compaction = cb._Session(sids[1], "T-2", "api", "/TESTDIR")
+        queued = cb._Session(sids[2], "T-3", "tests", "/TESTDIR")
+        turn.turn_id, turn.state = "t-1", "working"               # a turn the app-server ACKed
+        compaction.compacting, compaction.compact_active_seen, compaction.state = True, True, "compacting"   # its own
+        #                                                           turn on the app-server, seen active
+        queued.queue, queued.queue_ids = ["synthetic queued send"], ["q-1"]   # still on the durable queue
+        for s in (turn, compaction, queued):
+            be._put_session(s)                                    # no worker: nothing runs the queue meanwhile
+        self.assertTrue(be.busy(sids[2]), "busy() counts the queue, for the gates that must not race it...")
+        self.assertEqual(be.would_cut(), [{"sid": sids[0], "name": "web"}, {"sid": sids[1], "name": "api"}],
+                         "...but the queue survives a restart on disk, so it is nothing a restart cuts")
+        self.assertEqual(be.busy_breakdown(), (2, 0), "Codex has no background work romp tracks")
+        with turn.lock:
+            turn.dead = True
+        self.assertEqual(be.would_cut(), [{"sid": sids[1], "name": "api"}], "an ended session is nobody's turn")
+        self.assertEqual(be.busy_breakdown(), (1, 0))
+
+    def test_the_gates_read_the_cut_rows_predicate_minus_the_ended_sessions(self):
+        # 2026-09-23, the promise in #2055's body: the restart's cut row (inflight_turns) and the gates (would_cut)
+        # counted differently, the row open turns alone, the gates a compaction once seen active and no ended
+        # session. One predicate now: the row counts an open turn, dead or live, and a running compaction; the gates
+        # read that list minus the ended sessions, whose open turn the next load settles but nothing waits on
+        be, _, _ = build()
+        sids = ["11111111-2222-3333-4444-5555555556%02d" % i for i in (1, 2, 3, 4, 5)]
+        live_turn = cb._Session(sids[0], "T-1", "web", "/TESTDIR")
+        dead_turn = cb._Session(sids[1], "T-2", "api", "/TESTDIR")
+        running = cb._Session(sids[2], "T-3", "tests", "/TESTDIR")
+        latched = cb._Session(sids[3], "T-4", "docs", "/TESTDIR")
+        idle = cb._Session(sids[4], "T-5", "webby", "/TESTDIR")
+        live_turn.turn_id, live_turn.state = "t-1", "working"                  # a turn the app-server ACKed
+        dead_turn.turn_id, dead_turn.dead = "t-2", True                        # a kill whose interrupt never landed
+        running.compacting, running.compact_active_seen, running.state = True, True, "compacting"   # seen active
+        latched.compacting, latched.state = True, "compacting"                 # latched at the ACK, never seen running
+        for s in (live_turn, dead_turn, running, latched, idle):
+            be._put_session(s)                                                 # no worker: nothing moves meanwhile
+        cut = be.inflight_turns()
+        self.assertEqual(cut, [{"sid": sids[0], "name": "web", "backend": "codex"},
+                               {"sid": sids[1], "name": "api", "backend": "codex"},
+                               {"sid": sids[2], "name": "tests", "backend": "codex"}],
+                         "the cut row: both open turns and the running compaction; the latched bracket and the idle "
+                         "session are no cut")
+        dead = {sid for sid, s in be._session_items() if s.dead}
+        self.assertEqual(be.would_cut(), [{"sid": r["sid"], "name": r["name"]} for r in cut if r["sid"] not in dead],
+                         "the gates: the cut row's list minus the ended sessions, in SdkBackend.would_cut's shape")
+        self.assertEqual(be.would_cut(), [{"sid": sids[0], "name": "web"}, {"sid": sids[2], "name": "tests"}])
+        self.assertEqual(be.busy_breakdown(), (2, 0), "/busy counts what the gates read")
+
+    def test_a_compaction_counts_only_once_its_active_status_is_seen(self):
+        # 2026-09-23, the review of this lane: a bracket compact() latched with no active status yet may be a
+        # compaction Codex acknowledged and never ran (docs/codex.md), and counting it would hold a quiet refresh taken
+        # as that limit's way out to the 15-minute backstop. The worker's own test (_work) is compacting AND active.
+        be, fake, _ = build()
+        sid = be.spawn("web", "/TESTDIR")
+        self.assertTrue(be.send(sid, "first synthetic turn"))
+        self.assertTrue(_lock_free(be, sid))
+        try:
+            self.assertEqual(be.compact(sid), "")
+            self.assertIs(be.compacting(sid), True, "the bracket is latched at the ACK")
+            self.assertEqual(be.would_cut(), [], "latched, no active status seen: maybe never run, nothing to wait on")
+            self.assertEqual(be.inflight_turns(), [], "and no cut for the restart's row either (one predicate, #2055)")
+            self.assertEqual(be.busy_breakdown(), (0, 0))
+            _status(fake, "T-1", "active")
+            self.assertTrue(until(lambda: be.would_cut() == [{"sid": sid, "name": "web"}]),
+                            "the active status says the compaction runs: a restart would cut it")
+            self.assertEqual(be.inflight_turns(), [{"sid": sid, "name": "web", "backend": "codex"}],
+                             "the restart's cut row names the compaction the gates wait on (2026-09-23)")
+            self.assertEqual(be.busy_breakdown(), (1, 0))
+            _status(fake, "T-1", "idle")
+            self.assertTrue(until(lambda: be.compacting(sid) is False))
+            self.assertEqual(be.would_cut(), [], "the idle after the active ends it")
+            self.assertEqual(be.inflight_turns(), [])
+        finally:
+            be.kill(sid)
+
+
 class Lifecycle(unittest.TestCase):
     def test_spawn_send_turn_materializes_transcript(self):
         be, fake, _ = build()
@@ -1051,6 +1155,61 @@ class Lifecycle(unittest.TestCase):
         self.assertTrue(until(lambda: not be.busy(sid)))
         recs = [json.loads(l) for l in Path(be.transcript_path(sid)).read_text().splitlines()]
         self.assertTrue(any("[Request interrupted" in json.dumps(r) for r in recs))
+
+    def test_a_turn_ending_on_a_command_ends_and_the_next_prompt_opens_its_own(self):
+        """A turn that completes with a command as its last item and no final reply (2026-09-23, the post-merge
+        review of the restart-cut fix). The backend went idle (busy False), but turn/completed wrote nothing, so
+        the file's turn never ended. The kernel reads working from the transcript, so the chat and the lane read
+        Working with nothing running, and the next prompt was absorbed into the dead turn as mid-turn input: one
+        turn holding both prompts. Red on stock: the first turn parsed open, then as one turn with one trigger."""
+        be, fake, _ = build()
+        sid = be.spawn("web", "/TESTDIR")
+        path = Path(be.transcript_path(sid))
+
+        def recs():
+            return [json.loads(l) for l in path.read_text().splitlines() if l.strip()] if path.exists() else []
+
+        def turns():
+            parsed = em.parse_session(str(path), rompuuid=sid, name="web", dir="/TESTDIR",
+                                      candidate_files=[str(path)], sdk_human=True)
+            return [((t["trigger"] or {}).get("uuid"), t["ended"]) for t in parsed["turns"]]
+
+        def item(turn, ms, it, done=True):
+            key = "completedAtMs" if done else "startedAtMs"
+            return ("item/completed" if done else "item/started",
+                    {"threadId": "T-1", "turnId": turn, key: ms, "item": it})
+
+        # wire stamps track the wall clock, as the app-server's do: the end record takes the clock (floored at the
+        # turn's newest record), and a fixed-past stamp on the next turn would sort it ahead of that record
+        ms = int(time.time() * 1000)
+        cmd = {"type": "commandExecution", "id": "c-1", "command": "make synthetic", "cwd": "/TESTDIR"}
+        fake.scripts = [[
+            item("t-1", ms, {"type": "userMessage", "id": "u-1",
+                             "content": [{"type": "text", "text": "run the synthetic build"}]}),
+            item("t-1", ms + 10, dict(cmd, status="inProgress"), done=False),
+            item("t-1", ms + 20, dict(cmd, status="completed", exitCode=0, aggregatedOutput="ok")),
+            ("thread/tokenUsage/updated",
+             {"threadId": "T-1", "turnId": "t-1",
+              "tokenUsage": {"last": {"inputTokens": 900, "outputTokens": 40, "cachedInputTokens": 500,
+                                      "reasoningOutputTokens": 10, "totalTokens": 1450},
+                             "modelContextWindow": 272000}})]]         # turn/completed(completed) follows
+        self.assertTrue(be.send(sid, "run the synthetic build"))
+        self.assertTrue(until(lambda: len(fake.called("turn_start")) == 1))
+        self.assertTrue(_lock_free(be, sid))
+        self.assertEqual(turns(), [("u-1", True)], "the backend is idle, so the file's turn must read ended")
+        end = recs()[-1]
+        self.assertEqual((end["type"], end["message"]["content"], end["message"]["stop_reason"]),
+                         ("assistant", [], "end_turn"))
+        self.assertEqual(end["message"]["usage"]["input_tokens"], 900, "the turn's usage lands on the end record")
+        ms2 = max(int(time.time() * 1000), ms + 1000)
+        fake.scripts = [[
+            item("t-2", ms2, {"type": "userMessage", "id": "u-2", "content": [{"type": "text", "text": "now lint"}]}),
+            item("t-2", ms2 + 10, {"type": "agentMessage", "id": "a-2", "text": "Lint is clean."})]]
+        self.assertTrue(be.send(sid, "now lint"))
+        self.assertTrue(until(lambda: len(fake.called("turn_start")) == 2))
+        self.assertTrue(_lock_free(be, sid))
+        self.assertEqual(turns(), [("u-1", True), ("u-2", True)], "the next prompt opens its own turn")
+        be.kill(sid)
 
     def test_turn_abandoned_by_a_dead_transport_settles_on_disk(self):
         """A turn whose stream ends WITHOUT turn/completed (the app-server died mid-turn: the SDK puts the
@@ -5237,6 +5396,411 @@ class NativeCompact(unittest.TestCase):
         self.assertTrue(be2.send(sid, "after the restart"))
         self.assertTrue(until(lambda: not be2.busy(sid) and not be2.pending_queued(sid)))
         self.assertEqual(be2.compact_end(sid), rec, "a turn erases the notice, never the record")
+
+
+class RestartCutTurn(unittest.TestCase):
+    """A kernel restart while a Codex turn runs (2026-09-22). The app-server is the kernel's child and ends with it,
+    and the kernel's exit drained only the SDK backend before os._exit, so nothing said the turn was cut: the
+    acknowledgement had taken the prompt off the durable queue, the next kernel loaded the row idle with no notice
+    and no retry, and the transcript's turn stayed open, so the chat read Working over a turn nothing ran and the
+    next prompt was absorbed into the dead turn. The row now names the accepted turn until its end, and the next
+    load settles it against the transcript: a turn whose end record landed is left alone (the review of the fix
+    found a finished turn called cut), a turn with none ends with a notice nothing retries."""
+
+    def _cut_mid_turn(self, ms=None, fake=None, sid=None, be=None, tmp=None):
+        """Backend 1 is left frozen mid-turn (the user message, then a command started), as the dying kernel's was.
+        Its worker is released only after the test's assertions, so nothing it writes stands in for the load's work.
+        Wire stamps track the wall clock and precede the load by default, as the app-server's do before a restart."""
+        fake = fake or FakeClient()
+        fake.hold_open = True
+        ms = int(time.time() * 1000) - 2000 if ms is None else ms
+        fake.scripts = [[
+            ("item/completed", {"threadId": "T-1", "turnId": "t-%d" % (fake._n + 1), "completedAtMs": ms,
+                                "item": {"type": "userMessage", "id": "u-cut",
+                                         "content": [{"type": "text", "text": "run the synthetic build"}]}}),
+            ("item/started", {"threadId": "T-1", "turnId": "t-%d" % (fake._n + 1), "startedAtMs": ms + 1000,
+                              "item": {"type": "commandExecution", "id": "c-cut", "command": "make synthetic",
+                                       "cwd": "/TESTDIR", "status": "inProgress"}})]]
+        if be is None:
+            be, _, tmp = build(factory=lambda: fake)
+            sid = be.spawn("web", "/TESTDIR")
+        path = Path(be.transcript_path(sid))
+        n = len(self._recs(path)) if path.exists() else 0
+        self.assertTrue(be.send(sid, "run the synthetic build"))
+        self.assertTrue(until(lambda: path.exists() and len(self._recs(path)) == n + 2 and be.busy(sid)))
+        turn_id = "t-%d" % fake._n
+        self.addCleanup(lambda: fake.turn_queues[turn_id].put(note("turn/completed", {
+            "threadId": "T-1", "turn": {"id": turn_id, "items": [], "status": "completed"}})))
+        return be, sid, tmp, path
+
+    def _recs(self, path):
+        return [json.loads(l) for l in Path(path).read_text().splitlines() if l.strip()]
+
+    def _row(self, tmp, sid):
+        return json.loads((Path(tmp) / "codex" / "registry.json").read_text())[sid]
+
+    def _ended(self, path, sid):
+        parsed = em.parse_session(str(path), rompuuid=sid, name="web", dir="/TESTDIR",
+                                  candidate_files=[str(path)], sdk_human=True)
+        return [t["ended"] for t in parsed["turns"]]
+
+    def test_an_open_turn_is_what_a_kernel_exit_cuts(self):
+        be, sid, tmp, _ = self._cut_mid_turn()
+        self.assertEqual(be.inflight_turns(), [{"sid": sid, "name": "web", "backend": "codex"}],
+                         "what the dying kernel's cut row names (kernel _drain_and_exit)")
+        mark = self._row(tmp, sid)["turn"]
+        self.assertEqual((mark["id"], mark["tid"]), ("t-1", "T-1"), "the row names the accepted turn and its thread")
+        self.assertIsNone(mark["after"], "a thread's first turn begins at the file's start")
+        be2 = cb.CodexBackend(tmp, client_factory=lambda: FakeClient(), log=lambda m: None)
+        self.assertEqual(be2.inflight_turns(), [], "nothing is open on the new app-server")
+
+    def test_the_next_load_ends_a_cut_turn_loudly(self):
+        _, sid, tmp, path = self._cut_mid_turn()
+        logs = []
+        fake2 = FakeClient()
+        be2 = cb.CodexBackend(tmp, client_factory=lambda: fake2, log=logs.append)
+        self.assertFalse(be2.busy(sid), "nothing runs the cut turn on the new app-server")
+        err = be2.launch_error(sid)
+        self.assertIsNotNone(err, "the restart cut a turn and the next kernel said nothing")
+        self.assertIn("restarted", err["text"])
+        self.assertNotIn("noRetry", err, "on a launch error noRetry is the mark `romp compact --wait` reads as a "
+                                         "compaction's end, which this is not")
+        last = self._recs(path)[-1]
+        self.assertEqual(last["type"], "assistant")
+        self.assertEqual(last["message"]["stop_reason"], "end_turn", "the file's turn must end, or the chat reads Working")
+        self.assertTrue(last.get("isApiErrorMessage"))
+        self.assertIs(last.get("rompNoRetry"), True, "the record the kernel's auto-retry decides from says nothing retries it")
+        self.assertEqual(last["message"]["content"][0]["text"], cb.CodexBackend.CUT_TURN_TEXT)
+        self.assertEqual(self._ended(path, sid), [True])
+        self.assertIsNone(self._row(tmp, sid)["turn"], "the mark is off the row")
+        self.assertTrue(any("was cut by a kernel restart" in l for l in logs), logs)
+        self.assertEqual(fake2.calls, [], "the settle asks nothing of the new app-server")
+        # a second load has nothing left to end
+        n = len(self._recs(path))
+        cb.CodexBackend(tmp, client_factory=lambda: FakeClient(), log=lambda m: None)
+        self.assertEqual(len(self._recs(path)), n, "a second restart re-settled a turn already ended")
+        # the next prompt opens a turn of its own instead of being absorbed into the cut one
+        self.assertTrue(be2.send(sid, "and the next thing"))
+        self.assertTrue(until(lambda: not be2.busy(sid) and not be2.pending_queued(sid)))
+        self.assertTrue(until(lambda: self._recs(path)[-1]["message"].get("stop_reason") == "end_turn"
+                              and "next thing" in json.dumps(self._recs(path)[-1])))
+        self.assertEqual(self._ended(path, sid), [True, True])
+        self.assertIsNone(be2.launch_error(sid), "the next accepted turn clears the notice")
+        self.assertIsNone(self._row(tmp, sid)["turn"], "and the row stops naming that turn once it ends")
+        be2.kill(sid)
+
+    def test_a_turn_that_finished_before_the_restart_is_not_called_cut(self):
+        be, fake, tmp = build()
+        sid = be.spawn("web", "/TESTDIR")
+        self.assertTrue(be.send(sid, "hello"))
+        self.assertTrue(until(lambda: _lock_free(be, sid)))
+        self.assertIsNone(self._row(tmp, sid).get("turn"), "a turn's end clears the row's mark")
+        path = Path(be.transcript_path(sid))
+        n = len(self._recs(path))
+        be2 = cb.CodexBackend(tmp, client_factory=lambda: fake, log=lambda m: None)
+        self.assertIsNone(be2.launch_error(sid))
+        self.assertEqual(len(self._recs(path)), n)
+
+    def test_a_finished_turn_whose_clear_failed_is_not_called_cut(self):
+        # the review's case: the turn's end record lands, then the row's clear fails (a full disk), so the row still
+        # names the turn. The transcript says it ended, and the load drops the mark without writing a thing
+        be, fake, tmp = build()
+        sid = be.spawn("web", "/TESTDIR")
+        logs = []
+        real = be._save_registry
+
+        def save(s, *, fields=(), **k):
+            if tuple(fields) == ("turn",):
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real(s, fields=fields, **k)
+        be._save_registry = save
+        be.log = logs.append
+        self.assertTrue(be.send(sid, "hello"))
+        self.assertTrue(until(lambda: _lock_free(be, sid)))
+        self.assertTrue(any(l.startswith("turn end registry save (web)") for l in logs), logs)
+        self.assertEqual(self._row(tmp, sid)["turn"]["id"], "t-1", "fixture: the failed clear left the mark")
+        path = Path(be.transcript_path(sid))
+        before = path.read_text()
+        logs2 = []
+        be2 = cb.CodexBackend(tmp, client_factory=lambda: fake, log=logs2.append)
+        self.assertIsNone(be2.launch_error(sid), "a finished turn read as cut: a false notice")
+        self.assertEqual(path.read_text(), before, "nothing is written over a turn that ended")
+        self.assertIsNone(self._row(tmp, sid)["turn"], "the stale mark is dropped")
+        self.assertTrue(any("had ended before the restart" in l for l in logs2), logs2)
+
+    def test_a_finished_turns_stale_mark_whose_drop_fails_is_dropped_by_a_later_load(self):
+        # the second verify pass of this lane's fold (2026-09-23): a finished turn's clear fails, and so does the
+        # load's save that drops the stale mark; the log must not claim the mark was dropped, and a later load with
+        # a working save drops it without writing a thing
+        be, fake, tmp = build()
+        sid = be.spawn("web", "/TESTDIR")
+        logs = []
+        self._fail_turn_clears(be, logs)
+        self.assertTrue(be.send(sid, "hello"))
+        self.assertTrue(until(lambda: _lock_free(be, sid)))
+        self.assertEqual(self._row(tmp, sid)["turn"]["id"], "t-1", "fixture: the failed clear left the mark")
+        path = Path(be.transcript_path(sid))
+        before = path.read_text()
+        real = cb.CodexBackend._save_registry
+
+        def refuse_the_drop(self_, s, *, fields=(), **k):
+            if tuple(fields) == ("turn",):
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real(self_, s, fields=fields, **k)
+        logs2 = []
+        with mock.patch.object(cb.CodexBackend, "_save_registry", refuse_the_drop):
+            cb.CodexBackend(tmp, client_factory=lambda: fake, log=logs2.append)
+        self.assertTrue(any("its stale mark could not be dropped" in l for l in logs2), logs2)
+        self.assertFalse(any("its stale mark was dropped" in l for l in logs2), "no claim of a drop that failed")
+        self.assertEqual(self._row(tmp, sid)["turn"]["id"], "t-1", "the mark stays for the next load")
+        logs3 = []
+        be3 = cb.CodexBackend(tmp, client_factory=lambda: fake, log=logs3.append)
+        self.assertIsNone(self._row(tmp, sid)["turn"], "the later load drops it")
+        self.assertIsNone(be3.launch_error(sid), "and calls nothing cut")
+        self.assertEqual(path.read_text(), before, "nothing is written over a turn that ended")
+
+    def test_a_death_between_the_end_record_and_the_clear_is_not_called_cut(self):
+        # the other face (the review's probe): the row as the dying kernel left it when it exited after the end
+        # record's write and before the clear's, rebuilt from the mark the row carried while the turn ran
+        be, sid, tmp, path = self._cut_mid_turn()
+        fake = be._client
+        mark = self._row(tmp, sid)["turn"]
+        ms = int(time.time() * 1000)
+        fake.turn_queues["t-1"].put(note("item/completed", {"threadId": "T-1", "turnId": "t-1", "completedAtMs": ms,
+                                                            "item": {"type": "agentMessage", "id": "a-fin",
+                                                                     "text": "the synthetic build passed"}}))
+        fake.turn_queues["t-1"].put(note("turn/completed", {"threadId": "T-1",
+                                                            "turn": {"id": "t-1", "items": [], "status": "completed"}}))
+        self.assertTrue(until(lambda: _lock_free(be, sid)))
+        self.assertEqual(self._recs(path)[-1]["message"]["stop_reason"], "end_turn", "fixture: the end record landed")
+        rows = json.loads((Path(tmp) / "codex" / "registry.json").read_text())
+        rows[sid]["turn"] = mark
+        (Path(tmp) / "codex" / "registry.json").write_text(json.dumps(rows))
+        before = path.read_text()
+        be2 = cb.CodexBackend(tmp, client_factory=lambda: FakeClient(), log=lambda m: None)
+        self.assertIsNone(be2.launch_error(sid))
+        self.assertEqual(path.read_text(), before, "no second end record after an ended turn")
+        self.assertIsNone(self._row(tmp, sid)["turn"])
+
+    def test_a_turn_accepted_before_its_first_record_is_still_cut(self):
+        # the prompt was accepted and nothing of the turn reached the file: its last turn, the one before, ended.
+        # The mark's anchor is what tells the two apart; a check of the file's last turn alone would drop the mark
+        # and lose the prompt silently
+        be, fake, tmp = build()
+        sid = be.spawn("web", "/TESTDIR")
+        self.assertTrue(be.send(sid, "the first thing"))
+        self.assertTrue(until(lambda: _lock_free(be, sid)))
+        path = Path(be.transcript_path(sid))
+        n = len(self._recs(path))
+        fake.hold_open = True
+        fake.scripts = [[]]
+        self.assertTrue(be.send(sid, "a second thing, cut before any record"))
+        self.assertTrue(until(lambda: be.busy(sid) and self._row(tmp, sid)["turn"] is not None))
+        self.addCleanup(lambda: fake.turn_queues["t-2"].put(note("turn/completed", {
+            "threadId": "T-1", "turn": {"id": "t-2", "items": [], "status": "completed"}})))
+        self.assertEqual(len(self._recs(path)), n, "fixture: nothing of the second turn is in the file")
+        self.assertEqual(self._row(tmp, sid)["turn"]["after"], self._recs(path)[-1]["uuid"],
+                         "the anchor is the file's last record when the turn was accepted")
+        be2 = cb.CodexBackend(tmp, client_factory=lambda: FakeClient(), log=lambda m: None)
+        self.assertIsNotNone(be2.launch_error(sid), "the cut turn left no record and no notice either")
+        self.assertIs(self._recs(path)[-1].get("rompNoRetry"), True)
+
+    def test_the_notice_sorts_after_a_tail_stamped_ahead_of_the_clock(self):
+        # a loading kernel whose clock is behind the file's tail (skew): the notice took the clock, sorted before the
+        # turn's own records, and ended nothing, so the chat still read Working. The normalizer's floor is seeded
+        # from the file's newest record
+        _, sid, tmp, path = self._cut_mid_turn(ms=int(time.time() * 1000) + 3600 * 1000)
+        cb.CodexBackend(tmp, client_factory=lambda: FakeClient(), log=lambda m: None)
+        recs = self._recs(path)
+        self.assertIs(recs[-1].get("rompNoRetry"), True)
+        self.assertGreaterEqual(recs[-1]["timestamp"], max(r["timestamp"] for r in recs[:-1]))
+        self.assertEqual(self._ended(path, sid), [True], "the notice must END the turn, not sort into the middle of it")
+
+    def test_a_mark_from_an_earlier_conversation_is_dropped(self):
+        # a stale mark (a failed clear) that outlived a clear: the row names a newer thread, which no open turn
+        # allows, so the mark is dropped without reading a transcript it does not belong to
+        be, fake, tmp = build()
+        sid = be.spawn("web", "/TESTDIR")
+        self.assertTrue(be.send(sid, "hello"))
+        self.assertTrue(until(lambda: _lock_free(be, sid)))
+        rows = json.loads((Path(tmp) / "codex" / "registry.json").read_text())
+        rows[sid]["turn"] = {"id": "t-old", "tid": "T-OLDER", "at": time.time() - 60, "after": "no-such-uuid"}
+        (Path(tmp) / "codex" / "registry.json").write_text(json.dumps(rows))
+        path = Path(be.transcript_path(sid))
+        before = path.read_text()
+        be2 = cb.CodexBackend(tmp, client_factory=lambda: fake, log=lambda m: None)
+        self.assertIsNone(be2.launch_error(sid))
+        self.assertEqual(path.read_text(), before)
+        self.assertIsNone(self._row(tmp, sid)["turn"])
+
+    def _fail_turn_clears(self, be, logs):
+        """The row's clear of a turn's mark fails (a full disk); every other registry write lands."""
+        real = be._save_registry
+
+        def save(s, *, fields=(), **k):
+            if tuple(fields) == ("turn",):
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real(s, fields=fields, **k)
+        be._save_registry = save
+        be.log = logs.append
+
+    def test_a_notice_that_fails_to_write_keeps_the_mark_for_the_next_load(self):
+        # the review of this lane (2026-09-23): the settle's transcript write failed and the row dropped the mark
+        # anyway, so the notice was written zero times, the turn stayed open and no later load could retry
+        _, sid, tmp, path = self._cut_mid_turn()
+        before = path.read_bytes()
+        logs = []
+        with mock.patch.object(cb.CodexBackend, "_append",
+                               side_effect=OSError(errno.EACCES, "Permission denied")):
+            be2 = cb.CodexBackend(tmp, client_factory=lambda: FakeClient(), log=logs.append)
+        self.assertEqual(path.read_bytes(), before, "fixture: nothing reached the transcript")
+        self.assertEqual(self._row(tmp, sid)["turn"]["id"], "t-1", "the mark was dropped with no notice written")
+        self.assertIsNotNone(be2.launch_error(sid), "the launch error is still saved")
+        self.assertEqual(self._row(tmp, sid)["launchError"]["text"], cb.CodexBackend.CUT_TURN_TEXT)
+        self.assertIsNone(be2._session(sid).norm, "the normalizer the failed write advanced is rebuilt from the file")
+        self.assertTrue(any("could NOT be written" in l for l in logs), logs)
+        self.assertFalse(any("ended with a notice" in l for l in logs), "the log claimed a notice that never landed")
+        self.assertEqual(self._ended(path, sid), [False], "fixture: the turn is still open")
+        # the next load, with a working disk, writes the notice once
+        logs3 = []
+        cb.CodexBackend(tmp, client_factory=lambda: FakeClient(), log=logs3.append)
+        recs = self._recs(path)
+        self.assertEqual(len(recs), len(before.splitlines()) + 1)
+        self.assertIs(recs[-1].get("rompNoRetry"), True)
+        self.assertEqual(self._ended(path, sid), [True])
+        self.assertIsNone(self._row(tmp, sid)["turn"], "the mark leaves the row with the notice")
+        self.assertTrue(any("ended with a notice" in l for l in logs3), logs3)
+
+    def test_a_torn_multibyte_tail_still_ends_the_cut_turn_with_a_notice(self):
+        # the review of this lane (2026-09-23): a write cut off at the exit left one byte of a multibyte character at
+        # the tail. Both transcript scans decoded strictly and raised UnicodeDecodeError (not an OSError), so the load
+        # wrote no notice and dropped the mark. The torn line is unparseable and skipped, the way the kernel reads
+        _, sid, tmp, path = self._cut_mid_turn()
+        with open(path, "ab") as f:
+            f.write(b'{"type":"assistant","uuid":"torn-1","message":{"content":[{"type":"text","text":"caf\xc3')
+        logs = []
+        be2 = cb.CodexBackend(tmp, client_factory=lambda: FakeClient(), log=logs.append)
+        recs = [json.loads(l) for l in path.read_text(errors="replace").splitlines()
+                if l.strip() and not l.startswith('{"type":"assistant","uuid":"torn-1"')]
+        self.assertIs(recs[-1].get("rompNoRetry"), True, logs)
+        self.assertEqual(recs[-1]["message"]["content"][0]["text"], cb.CodexBackend.CUT_TURN_TEXT)
+        self.assertEqual(self._ended(path, sid), [True], "the cut turn must end despite the torn tail")
+        self.assertIsNone(self._row(tmp, sid)["turn"])
+        self.assertIsNotNone(be2.launch_error(sid))
+        self.assertTrue(any("ended mid-line" in l for l in logs), "the torn line is closed before the notice lands")
+        self.assertFalse(any("cannot show whether it ended" in l for l in logs),
+                         "the finished-turn scan read past the torn line instead of giving up on the file")
+
+    def test_a_later_turn_that_finished_before_its_clear_failed_is_not_called_cut(self):
+        # the anchored path (the review of this lane, 2026-09-23): every finished-turn case ran a thread's first turn,
+        # whose anchor is None (a scan from the file's start), so a broken anchor match passed them all. Turn 1 runs
+        # to completion; turn 2 finishes and its clear fails, so the mark carries turn 1's last record as its anchor
+        be, fake, tmp = build()
+        sid = be.spawn("web", "/TESTDIR")
+        self.assertTrue(be.send(sid, "the first thing"))
+        self.assertTrue(until(lambda: _lock_free(be, sid)))
+        path = Path(be.transcript_path(sid))
+        first_last = self._recs(path)[-1]["uuid"]
+        logs = []
+        self._fail_turn_clears(be, logs)
+        self.assertTrue(be.send(sid, "the second thing"))
+        self.assertTrue(until(lambda: _lock_free(be, sid)))
+        self.assertEqual(len(fake.called("turn_start")), 2)
+        self.assertTrue(any(l.startswith("turn end registry save (web)") for l in logs), logs)
+        mark = self._row(tmp, sid)["turn"]
+        self.assertEqual(mark["id"], "t-2", "fixture: the failed clear left the second turn's mark")
+        self.assertEqual(mark["after"], first_last, "the anchor is the first turn's last record")
+        self.assertEqual(self._ended(path, sid), [True, True], "fixture: both turns ended in the file")
+        before = path.read_text()
+        logs2 = []
+        be2 = cb.CodexBackend(tmp, client_factory=lambda: FakeClient(), log=logs2.append)
+        self.assertIsNone(be2.launch_error(sid), "a finished later turn read as cut: a false notice")
+        self.assertEqual(path.read_text(), before, "nothing is written over a turn that ended")
+        self.assertIsNone(self._row(tmp, sid)["turn"], "the stale mark is dropped")
+        self.assertTrue(any("had ended before the restart" in l for l in logs2), logs2)
+
+    def test_a_completed_turn_with_no_final_reply_whose_clear_failed_is_not_called_cut(self):
+        # #2052's review (2026-09-23) pinned a known false notice here: a turn that completes on a command, with no
+        # final reply held, got no end record (codex_events ThreadNormalizer._turn_completed flushed only what was
+        # held), so the load, which recognizes a finished turn by its end record, settled a lost clear on it as a
+        # cut. _turn_completed now writes an empty end record when nothing is held (2026-09-23, the post-merge review
+        # of the restart-cut fix), and this test flips as planned: the reload writes nothing and drops the mark, as
+        # for a turn that ends on a reply
+        be, fake, tmp = build()
+        sid = be.spawn("web", "/TESTDIR")
+        ms = int(time.time() * 1000) - 2000
+        fake.scripts = [[
+            ("item/completed", {"threadId": "T-1", "turnId": "t-1", "completedAtMs": ms,
+                                "item": {"type": "userMessage", "id": "u-cmd",
+                                         "content": [{"type": "text", "text": "run the synthetic build"}]}}),
+            ("item/started", {"threadId": "T-1", "turnId": "t-1", "startedAtMs": ms + 100,
+                              "item": {"type": "commandExecution", "id": "c-cmd", "command": "make synthetic",
+                                       "cwd": "/TESTDIR", "status": "inProgress"}}),
+            ("item/completed", {"threadId": "T-1", "turnId": "t-1", "completedAtMs": ms + 200,
+                                "item": {"type": "commandExecution", "id": "c-cmd", "command": "make synthetic",
+                                         "cwd": "/TESTDIR", "status": "completed", "exitCode": 0,
+                                         "aggregatedOutput": "ok"}})]]      # turn/completed(completed) follows
+        logs = []
+        self._fail_turn_clears(be, logs)
+        self.assertTrue(be.send(sid, "run the synthetic build"))
+        self.assertTrue(until(lambda: _lock_free(be, sid)))
+        self.assertTrue(any(l.startswith("turn end registry save (web)") for l in logs), logs)
+        path = Path(be.transcript_path(sid))
+        self.assertTrue(cb._events.ends_turn(self._recs(path)[-1]), "the completion wrote its own end record")
+        self.assertEqual(self._ended(path, sid), [True])
+        self.assertEqual(self._row(tmp, sid)["turn"]["id"], "t-1", "fixture: the failed clear left the mark")
+        before = path.read_text()
+        logs2 = []
+        be2 = cb.CodexBackend(tmp, client_factory=lambda: FakeClient(), log=logs2.append)
+        self.assertEqual(path.read_text(), before, "nothing is written over a turn that ended")
+        self.assertIsNone(be2.launch_error(sid), "a finished turn read as cut: a false notice")
+        self.assertIsNone(self._row(tmp, sid)["turn"], "the stale mark is dropped")
+        self.assertTrue(any("had ended before the restart" in l for l in logs2), logs2)
+
+    def test_a_kill_whose_interrupt_never_lands_is_cut_at_the_exit_and_noticed_at_the_load(self):
+        # the review of this lane (2026-09-23): the load settles a dead row's mark (a kill whose interrupt never
+        # landed leaves the turn open), and the exit's cut row skipped dead sessions, so the ledger counted a clean
+        # restart over a turn the next load called cut. Both halves now agree
+        class DeafClient(FakeClient):
+            def turn_interrupt(self, tid, turn_id):
+                self._rec("turn_interrupt", tid, turn_id)       # queues nothing: the interrupt never lands
+
+        fake = DeafClient()
+        with mock.patch.object(cb, "WORKER_JOIN_TIMEOUT", 0.05):
+            be, sid, tmp, path = self._cut_mid_turn(fake=fake)
+            self.assertTrue(be.kill(sid))
+        self.assertEqual(len(fake.called("turn_interrupt")), 1, "fixture: the kill asked")
+        row = self._row(tmp, sid)
+        self.assertIs(row["dead"], True)
+        self.assertEqual(row["turn"]["id"], "t-1", "fixture: the turn is still open when the kernel exits")
+        self.assertEqual(be.inflight_turns(), [{"sid": sid, "name": "web", "backend": "codex"}],
+                         "the exit's cut row names the ended session's open turn")
+        logs = []
+        be2 = cb.CodexBackend(tmp, client_factory=lambda: FakeClient(), log=logs.append)
+        last = self._recs(path)[-1]
+        self.assertIs(last.get("rompNoRetry"), True, "the load writes the notice the cut row promised")
+        self.assertEqual(self._ended(path, sid), [True])
+        self.assertIsNone(self._row(tmp, sid)["turn"])
+        self.assertIsNotNone(be2.launch_error(sid))
+        self.assertTrue(any("was cut by a kernel restart: ended with a notice" in l for l in logs), logs)
+
+
+class TurnEndsPredicate(unittest.TestCase):
+    """codex_events.ends_turn reads a record the way the transcript's parser does (2026-09-22)."""
+
+    def test_the_records_that_end_a_turn(self):
+        ev = cb._events
+        self.assertTrue(ev.ends_turn({"type": "assistant", "message": {"stop_reason": "end_turn"}}))
+        self.assertTrue(ev.ends_turn({"type": "assistant", "message": {"stop_reason": "stop_sequence"}}))
+        self.assertTrue(ev.ends_turn({"type": "user", "message": {"content": [
+            {"type": "text", "text": ev.INTERRUPT_TEXT}]}}))
+        self.assertFalse(ev.ends_turn({"type": "assistant", "message": {"stop_reason": None}}))
+        self.assertFalse(ev.ends_turn({"type": "user", "message": {"content": [{"type": "text", "text": "go on"}]}}))
+        self.assertFalse(ev.ends_turn({"type": "system", "subtype": "compact_boundary"}),
+                         "a compaction mid-turn is not the turn's end")
+        for stop in ("end_turn", "stop_sequence", None):
+            self.assertEqual(ev.ends_turn({"type": "assistant", "message": {"stop_reason": stop}}),
+                             stop in em.END_STOPS, "mirrors the parser's END_STOPS")
 
 
 if __name__ == "__main__":
