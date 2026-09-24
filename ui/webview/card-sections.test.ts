@@ -185,6 +185,13 @@ test("the row's landings are the chat page's own: the line and a paragraph scrol
   assert.match(RENDER, /afterApply: \(a\) => \{ noticeRowLevelFace\(a\); noticeMoreButton\(a, noticeLineOf\(a\)\); \},/, "the chat page's after-apply: the items-level face and the More pass");
   assert.match(MOD, /\(h\._sectionEnv as SectionEnv\)\.afterApply\?\.\(c\);   \/\/ last/, "called last in every re-apply");
   assert.match(RENDER, /landToast\("couldn't locate this in the transcript — no anchor was recorded for this card"\);/);
+  assert.match(RENDER, /if \(!body \|\| body\.style\.display === "none" \|\| \(!overflows && !open\)\) \{ if \(b\) b\.remove\(\); return; \}/, "no button over a hidden line, whatever the open state (the 0.17.1 fix: Less stood over the line a pick hid)");
+  assert.match(RENDER, /collapsed: \(\) => noticeCollapsedPref\(\),/, "the row's default follows the feed's Collapsed flag in the browser");
+  assert.match(RENDER, /function noticeCollapsedPref\(\): boolean \{ try \{ return JSON\.parse\(localStorage\.getItem\("romp:settings"\) \|\| "\{\}"\)\.collapsed === true; \} catch \{ return false; \} \}/);
+  assert.doesNotMatch(RENDER, /openWarns: \(\) => \{/, "the chat page names no warn destination: the shared builder gives its chip no button role and no click sentence");
+  assert.match(MOD, /if \(syncRole === "owner" && d\.from === "follower"\) postSync\(\{ kind: "ack", id: d\.id, choice: d\.choice \}\);/, "the owner acknowledges a follower's set alone");
+  assert.match(MOD, /if \(!opts\.fromPeer && syncRole === "owner"\) postSync\(\{ kind: "map", entries: Array\.from\(secChoice\.entries\(\)\) \}\);/, "the map is the owner's word alone (the feed hydrates before it is configured as the owner)");
+  assert.match(MOD, /if \(ownPicks\.has\(d\.id\) && ownPicks\.get\(d\.id\) === d\.choice\) ownPicks\.delete\(d\.id\);/, "the follower retires the pick the ack names as it stands");
   assert.match(RENDER, /refreshAges\(document\.querySelectorAll<HTMLElement>\("#notices \[data-age-t\]"\), noticeNowSec\(\), relAge, \(\) => ""\);/, "the row's stamped ages repainted by the page's own pass");
   assert.match(MOD, /else age\.textContent = env\.relAge\(0\);/, "a part with no event time: the static '<1m ago' (the medium of round two: the row printed an epoch-sized age)");
 });
@@ -222,3 +229,35 @@ test("a follower's own pick survives the owner's map and reaches the owner; the 
   setSectionChoice("i7", "none"); receiveSectionSync({ kind: "map", entries: [["i7", "none"]] }); receiveSectionSync({ kind: "map", entries: [] });
   assert.equal(secChoice.get("i7"), undefined, "a map carrying the follower's own choice acknowledges it: a later map governs");
 });
+
+test("the owner acknowledges a follower's set and the follower retires its pick on that word alone; a stale acknowledgement spares a newer pick; owners ignore acks", () => {
+  const { configureSectionSync, setSectionChoice, receiveSectionSync, secChoice } = mod as any;
+  configureSectionSync({ role: "follower" });
+  setSectionChoice("i5", "bg");                                        // the row picks
+  receiveSectionSync({ kind: "ack", id: "i5", choice: "bg" });          // the feed applied it and says so
+  receiveSectionSync({ kind: "map", entries: [] });                     // the Collapsed clear (or the prune once the item left)
+  assert.equal(secChoice.get("i5"), undefined, "acknowledged, the pick yields to the next map that lacks it (the 0.17.1 fix: it outlived every such map before)");
+  setSectionChoice("i6", "bg"); setSectionChoice("i6", "stall");        // a newer pick after an older one
+  receiveSectionSync({ kind: "ack", id: "i6", choice: "bg" });          // the ack for the older pick arrives late
+  receiveSectionSync({ kind: "map", entries: [] });
+  assert.equal(secChoice.get("i6"), "stall", "a stale acknowledgement spares the newer pick, which stands over the map");
+  receiveSectionSync({ kind: "ack", id: "i6", choice: "summary" });     // an ack the allowlist admits, for a choice never picked
+  receiveSectionSync({ kind: "ack", id: "i6", choice: "sideways" });    // outside the allowlist: ignored
+  receiveSectionSync({ kind: "map", entries: [] });
+  assert.equal(secChoice.get("i6"), "stall", "neither retires the pick");
+  configureSectionSync({ role: "owner" });
+  secChoice.clear(); receiveSectionSync({ kind: "set", id: "i5", choice: "bg", from: "owner" });   // another owner's set: applied, never acknowledged (nothing to observe here but the map)
+  assert.equal(secChoice.get("i5"), "bg");
+  receiveSectionSync({ kind: "ack", id: "i5", choice: "bg" });          // an owner ignores acks: its map stands
+  assert.equal(secChoice.get("i5"), "bg");
+  configureSectionSync({ role: "follower" }); secChoice.clear();
+});
+
+test("the warning chip on a page with no destination is a span that promises no click; with one it is a button whose hover says so", () => {
+  const withOut = stateBadges({ warns: [{ kind: "brief-failed", t: 1, msg: "the brief could not be written", detail: "" }] }, { ...env, openWarns: undefined } as any) as unknown as E[];
+  assert.deepEqual([withOut[0].tagName, withOut[0].title, withOut[0].dataset.act], ["SPAN", "the brief could not be written", undefined], "no button role, no click sentence, no act (the chat page)");
+  const withIt = badges({ warns: [{ kind: "brief-failed", t: 1, msg: "the brief could not be written", detail: "" }] });
+  assert.deepEqual([withIt[0].tagName, withIt[0].dataset.act], ["BUTTON", "sec-open-warns"], "the feed's chip keeps its destination");
+  assert.match(withIt[0].title, /click for what happened and why$/);
+});
+

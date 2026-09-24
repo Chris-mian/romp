@@ -509,12 +509,25 @@ if (fr) {
       const vis = (x) => !!x && getComputedStyle(x).display !== "none" && x.getBoundingClientRect().height > 0;
       return { more: !!m && vis(m), moreLabel: m ? m.textContent : null, line: vis(d), clamp: d ? getComputedStyle(d).webkitLineClamp : null, clipped: !!d && d.scrollHeight > d.clientHeight + 1, bg: vis(bg) }; }, rowSel(cfg.g6));
     out.content.pick = { before: await moreOf() };
+    // More pressed first (the 0.17.1 fix, a contributor's third note: Less stood over the line a Background pick hid): the brief opens, Background
+    // hides the line and its Less goes with it, Summary picked back brings the open brief with Less (the open state kept), then Less closes it
+    await fr.evaluate((s) => { const m = document.querySelector(s + " .ntc-more"); if (m) m.click(); }, rowSel(cfg.g6));
+    out.content.pick.opened = await fr.waitForFunction((s) => { const r = document.querySelector(s); return !!r && r.classList.contains("ntc-open"); }, rowSel(cfg.g6), { timeout: 10000 }).then(() => true).catch(() => false);
+    out.content.pick.beforeOpen = await moreOf();
     out.content.pick.pressedBg = await pressRow("Background"); out.content.pick.rowBg = await rowPressed("Background"); out.content.pick.afterBg = await moreOf();
     out.content.pick.pressedSummary = await pressRow("Summary"); out.content.pick.rowSummary = await rowPressed("Summary"); out.content.pick.afterSummary = await moreOf();
+    await fr.evaluate((s) => { const m = document.querySelector(s + " .ntc-more"); if (m) m.click(); }, rowSel(cfg.g6));   // Less: the brief folds back
+    out.content.pick.closed = await fr.waitForFunction((s) => { const r = document.querySelector(s); return !!r && !r.classList.contains("ntc-open"); }, rowSel(cfg.g6), { timeout: 10000 }).then(() => true).catch(() => false);
     await openNeedsBox(fr, 1);
     out.content.pick.itemsBefore = await moreOf();
     out.content.pick.cardBg = await pressCard("Background"); out.content.pick.rowFollowedBg = await rowPressed("Background");   // the card's pick reaches the row's toggles (hidden at the items) over the channel
     out.content.pick.itemsAfterCardBg = await moreOf();
+    // a REPAINT with Background picked (the same note: the items face after a repaint was unpinned): a store write that moves a field the row
+    // carries (the background paragraph itself, its family stamped), waited for on the row's own background body, then the items face read again
+    const w7 = await writeStore((st) => { st.nodes[cfg.g6].background = cfg.background + " The second loader reads the first's fixtures."; st.nodes[cfg.g6].distilledMt = briefNow() + 9; });
+    out.content.pick.repaint = await builtRecord(cfg.g6, w7, cfg.longBrief);
+    out.content.pick.repainted = await fr.waitForFunction((s) => { const r = document.querySelector(s); const b = r && r.querySelector(".fask-bg-body"); return !!b && (b.textContent || "").includes("second loader reads"); }, rowSel(cfg.g6), { timeout: 30000 }).then(() => true).catch(() => false);   // the row repainted with the new paragraph
+    out.content.pick.itemsAfterRepaint = await moreOf();
     await pressCard("Summary"); await rowPressed("Summary");
     await openNeedsBox(fr, 2);
     // 6d. THE STAMPS AND THE LANDINGS (round two of the box content PR): the brief becomes two paragraphs with two parts, the second part
@@ -550,9 +563,18 @@ if (fr) {
       // 6g. A LIVE COLLAPSED FLIP CROSSES THE CHANNEL (the verifier's round two: the whole-map post was executed by no test): the feed's Collapsed
       // preference flipped from the shell's storage (the feed hears the storage event and clears every pick through the shared setter, which posts
       // the map) empties the row's picks too: Background open on both a moment ago, the row's Background reads unpressed
+      // the pick is made on the ROW here (the 0.17.1 fix, a contributor's third note: a row pick outlived every feed map that lacked it, since the feed
+      // answered the row's set with nothing; the feed acknowledges it now, so the flip's map clears it on both documents)
+      const pressRow2 = (label) => fr2.evaluate((a) => { const r = document.querySelector(a.sel); const b = r && Array.from(r.querySelectorAll(".ntc-secs-row .fask-secbtn")).find((x) => (x.textContent || "").trim() === a.label); if (b) b.click(); return !!b; }, { sel: rowSel(cfg.g6), label });
+      const cardIs2 = (label, pressed) => ff2.waitForFunction((a) => { const c = document.querySelector(a.sel); const b = c && Array.from(c.querySelectorAll(".fask-row3 > .fask-secbtn")).find((x) => (x.textContent || "").trim() === a.label); return !!b && b.getAttribute("aria-pressed") === a.pressed; }, { sel: cardSel, label, pressed }, { timeout: 10000 }).then(() => true).catch(() => false);
+      await ff2.evaluate((s) => { const c = document.querySelector(s); const b = c && Array.from(c.querySelectorAll(".fask-row3 > .fask-secbtn")).find((x) => (x.textContent || "").trim() === "Summary"); if (b) b.click(); }, cardSel);   // the reload scene's card pick closed first
+      await cardIs2("Summary", "true");
+      out.content.collapsed = { rowPick: await pressRow2("Background"), cardFollowed: await cardIs2("Background", "true") };
       const prefs = await shell.evaluate(() => { try { return JSON.parse(localStorage.getItem("romp:settings") || "{}"); } catch (e) { return {}; } });
       await shell.evaluate((p) => { localStorage.setItem("romp:settings", JSON.stringify(Object.assign({}, p, { collapsed: true }))); }, prefs);
-      out.content.collapsed = { rowCleared: await fr2.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && Array.from(r.querySelectorAll(".ntc-secs-row .fask-secbtn")).find((x) => (x.textContent || "").trim() === "Background"); return !!b && b.getAttribute("aria-pressed") === "false"; }, { sel: rowSel(cfg.g6) }, { timeout: 15000 }).then(() => true).catch(() => false) };
+      out.content.collapsed.rowCleared = await fr2.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && Array.from(r.querySelectorAll(".ntc-secs-row .fask-secbtn")).find((x) => (x.textContent || "").trim() === "Background"); return !!b && b.getAttribute("aria-pressed") === "false"; }, { sel: rowSel(cfg.g6) }, { timeout: 15000 }).then(() => true).catch(() => false);
+      await fr2.waitForTimeout(1500);   // two payloads' worth: a pick the feed had not acknowledged came back by now (the defect re-imposed it per payload)
+      out.content.collapsed.rowLater = await readT(fr2, rowSel(cfg.g6), ".ntc-secs-row .fask-secbtn");
       out.content.collapsed.card = await readT(ff2, cardSel, ".fask-row3 > .fask-secbtn"); out.content.collapsed.row = await readT(fr2, rowSel(cfg.g6), ".ntc-secs-row .fask-secbtn");
       await shell.evaluate((p) => { localStorage.setItem("romp:settings", JSON.stringify(p)); }, prefs);   // the preference back
       await ff2.evaluate((s) => { const c = document.querySelector(s); const b = c && Array.from(c.querySelectorAll(".fask-row3 > .fask-secbtn")).find((x) => (x.textContent || "").trim() === "Summary"); if (b) b.click(); }, cardSel);   // back to the summary on both
@@ -571,7 +593,7 @@ await browser.close();
 """
 
 
-# the driver's budget. Its bounded waits sum to about 2800 s serially (every helper counted PER CALL, the round-one verifier of PR 2105: the
+# the driver's budget. Its bounded waits sum to about 2950 s serially (every helper counted PER CALL, the round-one verifier of PR 2105: the
 # kernel's four 90 s deadlines, the 60 s row, card and credential-row waits, the 30 s and 15 s waits of the brief helpers per call, the fold
 # helper's three 5 s waits per call, the shorter button, dialog, level, settings-card and frame waits, the frame loops), more than any per-test ceiling the runner gives (CI's served-page step runs pytest with --timeout=600, thread method), so
 # the cap cannot be the sum: it is the ceiling less the SETUP the same per-test timer wraps (pytest-timeout's thread method times the first
@@ -1080,11 +1102,13 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         nothing to open once the line was hidden and missing once the line came back clipped. The chat page's afterApply hook (card-sections.ts
         SectionEnv, called last in every re-apply) runs the More pass. No store write between a press and its read."""
         c = self._content(); pk = c.get("pick") or {}
-        self.assertTrue(pk.get("pressedBg") and pk.get("rowBg"), "Background pressed on the row: %r" % {k: v for k, v in pk.items() if not isinstance(v, dict)})
         self.assertTrue((pk.get("before") or {}).get("more"), "the premise: the long brief's line is clipped and More stands: %r" % pk.get("before"))
-        self.assertEqual(((pk.get("afterBg") or {}).get("line"), (pk.get("afterBg") or {}).get("more")), (False, False), "Background open: the line hidden and its More gone with it (before: More stood and opened nothing): %r" % pk.get("afterBg"))
+        self.assertTrue(pk.get("opened") and (pk.get("beforeOpen") or {}).get("moreLabel") == "Less", "More pressed: the brief open, the button reads Less: %r" % pk.get("beforeOpen"))
+        self.assertTrue(pk.get("pressedBg") and pk.get("rowBg"), "Background pressed on the row: %r" % {k: v for k, v in pk.items() if not isinstance(v, dict)})
+        self.assertEqual(((pk.get("afterBg") or {}).get("line"), (pk.get("afterBg") or {}).get("more")), (False, False), "Background open: the line hidden and its button gone with it, Less included (the 0.17.1 fix; before: Less stood over the hidden line): %r" % pk.get("afterBg"))
         self.assertTrue(pk.get("pressedSummary") and pk.get("rowSummary"), "Summary pressed back: %r" % {k: v for k, v in pk.items() if not isinstance(v, dict)})
-        self.assertEqual(((pk.get("afterSummary") or {}).get("line"), (pk.get("afterSummary") or {}).get("clipped"), (pk.get("afterSummary") or {}).get("more")), (True, True, True), "the clipped line back with its More (before: no More until a repaint): %r" % pk.get("afterSummary"))
+        self.assertEqual(((pk.get("afterSummary") or {}).get("line"), (pk.get("afterSummary") or {}).get("moreLabel")), (True, "Less"), "the open brief back with Less (the open state kept across the picks): %r" % pk.get("afterSummary"))
+        self.assertTrue(pk.get("closed"), "Less folds it back for the scenes after")
 
     def test_the_items_level_shows_the_clamped_line_whatever_the_pick(self):
         """The manager's ruling on the contributor's review (round three): the items level always shows the card's distill line, clamped with More,
@@ -1095,6 +1119,10 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertTrue(pk.get("cardBg") and pk.get("rowFollowedBg"), "Background picked on the card while the row stands at the items: %r" % {k: v for k, v in pk.items() if not isinstance(v, dict)})
         ia = pk.get("itemsAfterCardBg") or {}
         self.assertEqual((ia.get("line"), ia.get("clamp"), ia.get("more"), ia.get("bg")), (True, "4", True, False), "still the clamped line with More and no paragraph (before: the row showed the whole paragraph unclamped with no More): %r" % ia)
+        self._built(pk.get("repaint") or {}, "the repaint with Background picked")
+        self.assertTrue(pk.get("repainted"), "the row repainted with the new background paragraph (the premise): %r" % {k: v for k, v in pk.items() if not isinstance(v, dict)})
+        ir = pk.get("itemsAfterRepaint") or {}
+        self.assertEqual((ir.get("line"), ir.get("clamp"), ir.get("more"), ir.get("bg")), (True, "4", True, False), "and after a repaint with Background picked, the same items face (a contributor's third note: unpinned before; without the level face in the update the repaint showed the paragraph): %r" % ir)
 
     def test_the_rows_paragraph_stamps_read_the_cards_and_a_part_without_a_time_reads_under_a_minute(self):
         """Round two of the box content PR (the verifier): the row stamped a part with no event time with an age counted from the epoch,
@@ -1130,10 +1158,11 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         The feed's Collapsed preference flipped live clears every pick through the setter, which posts the map: the row, Background open a
         moment before, reads it unpressed."""
         c = self._content(); cl = c.get("collapsed") or {}
-        self.assertTrue(cl.get("rowCleared"), "the row's Background unpressed after the feed's live Collapsed flip (the map crossed the channel; before: nothing executed the post): %r" % cl)
+        self.assertTrue(cl.get("rowPick") and cl.get("cardFollowed"), "Background picked on the ROW, the card following: %r" % {k: v for k, v in cl.items() if not isinstance(v, list)})
+        self.assertTrue(cl.get("rowCleared"), "the row's Background unpressed after the feed's live Collapsed flip: the feed acknowledged the row's pick, so the flip's map clears it (the 0.17.1 fix; before: the row re-imposed its pick over every map that lacked it): %r" % cl)
         self.assertEqual([t["pressed"] for t in (cl.get("card") or [])], ["false", "false", "false"], "the card shows no section under the Collapsed default: %r" % cl.get("card"))
-        self.assertEqual([t["label"] for t in (cl.get("row") or [])][:1], ["Background"], "the row's toggles read: %r" % cl.get("row"))
-        self.assertEqual((cl.get("row") or [{}])[0].get("pressed"), "false")
+        self.assertEqual([t["pressed"] for t in (cl.get("row") or [])], ["false", "false", "false"], "and so does the row: its default reads the same Collapsed flag in the browser (before: the row opened Summary): %r" % cl.get("row"))
+        self.assertEqual([t["pressed"] for t in (cl.get("rowLater") or [])], ["false", "false", "false"], "and stays so two payloads later (before: re-imposed per payload): %r" % cl.get("rowLater"))
 
     def test_the_open_section_is_one_state_across_a_shell_reload(self):
         """The verifier's medium (2): three feed-only writers of the section choice never crossed the channel, so after a reload the card opened

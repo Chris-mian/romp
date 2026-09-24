@@ -1094,6 +1094,13 @@ class Differential(_World):
                     before = self.sig()
                     km._feed_needs_rows[0] = {SID: [dict(base, **{f: {"moved": f}})]}
                     self.assertEqual(self.moved(before, self.sig()), ("notices",), "the row's %s moves the label" % f)
+            # a SCALAR member moves to another scalar (nudgeFailed among them: a bool)
+            for f in set(km._NEEDS_ROW_CARD_FIELDS) - set(km._NEEDS_ROW_STRUCTURED):
+                with self.subTest(field=f, scalar=True):
+                    km._feed_needs_rows[0] = {SID: [dict(base, **{f: "one"})]}
+                    before = self.sig()
+                    km._feed_needs_rows[0] = {SID: [dict(base, **{f: "another"})]}
+                    self.assertEqual(self.moved(before, self.sig()), ("notices",), "a scalar move of the row's %s moves the label" % f)
             # and ONE INNER ELEMENT of a structured value (a contributor's review of PR 2124: a None-to-value move passes a key that is constant
             # per structure; the key must read the value itself)
             shaped = {"briefParts": ([{"id": "a", "since": 1}, {"id": "b", "since": 2}], lambda v: [dict(v[0], since=9), v[1]]),
@@ -1102,11 +1109,19 @@ class Differential(_World):
                       "tree": ([{"id": "g9", "kind": "ask", "text": "wire the fixtures", "status": "open", "children": ["g9a"]}, {"id": "g9a", "kind": "ask", "text": "pick a port", "status": "open", "children": []}],
                                lambda v: [v[0], dict(v[1], status="done")]),
                       "awaiting": ({"why": "a job on the cluster", "kind": "task", "since": 5}, lambda v: dict(v, why="a second job on the cluster")),
-                      "nudgeFailed": (True, lambda v: False),
                       "nudged": ({"count": 1, "times": [10]}, lambda v: {"count": 2, "times": [10, 20]}),
                       "waitingOn": ({"name": "api", "kind": "delegate", "since": 3}, lambda v: dict(v, name="tests")),
                       "origin": ({"peer": "api", "peerSid": SID + "-api", "live": True}, lambda v: dict(v, live=False)),
-                      "handoffTo": ({"peer": "api", "peerSid": SID + "-api"}, lambda v: dict(v, peer="tests"))}
+                      "handoffTo": ({"peer": "api", "peerSid": SID + "-api"}, lambda v: dict(v, peer="tests")),
+                      # the six a contributor's third note on PR 2124 found missing: under a key constant per structure a second warning left the row stale
+                      "warns": ([{"kind": "brief-failed", "t": 1, "msg": "the brief could not be written", "detail": ""}], lambda v: v + [{"kind": "summary-failed", "t": 2, "msg": "the takeaway could not be written", "detail": ""}]),
+                      "failLog": ([{"t": 1, "line": "brief", "model": "opus", "note": "529"}], lambda v: [dict(v[0], note="overloaded")]),
+                      "summaryAnchorsPara": ([{"u": "a1"}, None], lambda v: [dict(v[0], q="the fixtures"), None]),
+                      "blocked": ({"state": "judgeAuth", "what": "the key is refused"}, lambda v: dict(v, what="the login is refused")),
+                      "working": ({"since": 10, "toolUses": 3}, lambda v: dict(v, toolUses=4)),
+                      "delegTracked": ([{"sid": SID + "-w", "name": "web"}], lambda v: [dict(v[0], name="worker")])}
+            self.assertEqual(set(shaped), set(km._NEEDS_ROW_STRUCTURED), "the table moves every structured member of the row's card fields, no more and no fewer")
+            self.assertTrue(set(km._NEEDS_ROW_STRUCTURED) <= set(km._NEEDS_ROW_CARD_FIELDS))
             for f, (value, move) in shaped.items():
                 with self.subTest(field=f, inner=True):
                     km._feed_needs_rows[0] = {SID: [dict(base, **{f: value})]}

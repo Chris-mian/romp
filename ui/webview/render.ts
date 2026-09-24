@@ -15395,8 +15395,12 @@ function noticeLineOf(row: HTMLElement): HTMLElement | null { return ((row as an
 // active session's, so the turn is in this page), a line without an anchor says so in the landing toast and files the miss with the shell,
 // and the warning chip opens nothing here (its hover carries the evidence; the feed has the detail overlay)
 const noticeNowSec = (): number => Math.floor(Date.now() / 1000);
+// the feed's Collapsed default (feedPrefs, "romp:settings" collapsed === true): the row's default section follows it where the settings are
+// this page's too (the browser shell and a standalone chat tab share the origin); a VS Code chat webview has no such key and keeps Summary
+// (a contributor's third note on PR 2124: the card opened nothing under Collapsed while the row opened Summary)
+function noticeCollapsedPref(): boolean { try { return JSON.parse(localStorage.getItem("romp:settings") || "{}").collapsed === true; } catch { return false; } }
 const noticeSectionEnv: SectionEnv = {
-  collapsed: () => false,
+  collapsed: () => noticeCollapsedPref(),   // the feed's Collapsed default, read from the same settings in the browser (one origin); a VS Code webview has none and keeps Summary
   wireNode: (_it, node, _mark, txt, wire) => {
     if (!wire || !node.anchorUuid) return;
     txt.classList.add("nav"); txt.title = "jump to where this was worked on";
@@ -15411,7 +15415,6 @@ const noticeSectionEnv: SectionEnv = {
     landToast("couldn't locate this in the transcript — no anchor was recorded for this card");
     try { window.parent?.postMessage({ romp: "notify", kind: "locate", text: "Couldn't jump to this summary: no anchor was recorded for this card", sid: it.sid, itemId: it.itemId }, "*"); } catch { /* no shell */ }
   },
-  openWarns: () => { /* no warn-detail overlay on the chat page: the chip's hover carries the evidence */ },
   // after a re-apply from a pick or the channel (card-sections.ts reapplyHosts), what the apply alone leaves stale on this page: the items-level
   // face and the More pass (round three of the box content PR: a pick left More standing over a hidden line, or missing over a clipped one)
   afterApply: (a) => { noticeRowLevelFace(a); noticeMoreButton(a, noticeLineOf(a)); },
@@ -15477,7 +15480,9 @@ function noticeMoreButton(row: HTMLElement, body: HTMLElement | null): void {
   let b = row.querySelector<HTMLButtonElement>(".ntc-more");
   const overflows = !!body && body.style.display !== "none" && body.scrollHeight > body.clientHeight + 1;
   const open = row.classList.contains("ntc-open");
-  if (!overflows && !open) { if (b) b.remove(); return; }
+  // no line, or a hidden one (a Background or sub-goal pick at the full context hides the distill line): no button, whatever the open state,
+  // which is kept so Summary picked back restores Less (a contributor's third note on PR 2124: Less stood over a hidden line)
+  if (!body || body.style.display === "none" || (!overflows && !open)) { if (b) b.remove(); return; }
   if (!b) { b = document.createElement("button"); b.className = "ntc-btn ntc-more"; b.dataset.act = "ntc-more"; (body?.closest(".ntc-secs") ?? body)?.after(b); }   // after the sections container when the line is the distill line (the box content round), so the button stands whichever section is open
   b.textContent = open ? "Less" : "More"; (b as any)._idle = b.textContent;
 }
