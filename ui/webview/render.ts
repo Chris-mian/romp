@@ -15567,14 +15567,16 @@ function renderNotices(): void {
   if (!host) return;
   const s = activeId && !snapView ? liveSession(activeId) : null;
   const rows: ChatNotice[] = (s && s.status && s.status.notices) || [];
-  if (!s || !activeId || !rows.length || !settings.needsBox) { host.replaceChildren(); host.style.display = "none"; return; }   // the gear's Needs you box switch hides it; the ring stays
+  // the box emptied whole (a switch to a session with no rows, the gear's Needs you switch off, a snapshot view): every row leaves the item's
+  // twin set before replaceChildren detaches it, since the drop loop below never runs on this road (the verifier of PR 2141, round one)
+  if (!s || !activeId || !rows.length || !settings.needsBox) { for (const r of Array.from(host.querySelectorAll<HTMLElement>(".ntc-row"))) unregisterSectionHost(r.dataset.item || "", r); host.replaceChildren(); host.style.display = "none"; return; }   // the gear's Needs you box switch hides it; the ring stays
   host.style.display = "";
   let bar = host.querySelector<HTMLElement>(".ntc-bar");
   if (!bar) { bar = buildNoticeBar(); host.prepend(bar); }
   const lab = bar.querySelector<HTMLElement>(".ntc-label"); if (lab) lab.textContent = "Needs you · " + rows.length;
   applyNoticeBoxLevel(host, s.id, rows);   // the level the page holds for this session (a credential row floors it), before the rows so a fresh row lands under the right classes
   const want = new Set(rows.map((n) => n.itemId));
-  for (const r of Array.from(host.querySelectorAll<HTMLElement>(".ntc-row"))) if (!want.has(r.dataset.item || "")) r.remove();
+  for (const r of Array.from(host.querySelectorAll<HTMLElement>(".ntc-row"))) if (!want.has(r.dataset.item || "")) { unregisterSectionHost(r.dataset.item || "", r); r.remove(); }   // a dropped row leaves the item's twin set (card-sections.ts) as it leaves the box
   let prev: HTMLElement = bar;   // the rows follow the bar (the header and the gear), in the frame's order
   for (const n of rows) {
     let row = host.querySelector<NoticeRowEl>(noticeRowSelector(n.itemId).replace("#notices ", ""));
@@ -20069,7 +20071,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     if (row) {
       // `held` (the second executed review of PR 1935, 2026-09-21): the words went out but the dismissal's write refused: the row
       // stays with its buttons spent and says so; a plain success drops the row; a refusal re-arms it and says why
-      if (m.ok && !m.held) { row.remove(); const host = document.getElementById("notices"); if (host && !host.querySelector(".ntc-row")) host.style.display = "none"; }
+      if (m.ok && !m.held) { unregisterSectionHost(m.itemId, row); row.remove(); const host = document.getElementById("notices"); if (host && !host.querySelector(".ntc-row")) host.style.display = "none"; }
       else {
         if (!m.ok) for (const b of Array.from(row.querySelectorAll("button")) as HTMLButtonElement[]) { b.disabled = false; b.textContent = (b as any)._idle || b.textContent; }
         const e = row.querySelector<HTMLElement>(".ntc-err");
