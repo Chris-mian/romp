@@ -266,7 +266,9 @@ def test_one_session_s_failure_costs_only_its_chips(monkeypatch):
         raise RuntimeError("dictionary changed size during iteration")
 
     monkeypatch.setattr(km, "_session_pr_payload", boom)
-    assert km._safe_pr_payload("s1", None, None) == km._NO_PR_PAYLOAD
+    got = km._safe_pr_payload("s1", None, None)
+    assert {k: got[k] for k in ("branch", "prNum", "prs")} == {"branch": "", "prNum": None, "prs": None}
+    assert got["prError"] == "PR status could not be built: RuntimeError", "said, never read as no PR"
 
 
 def test_the_error_chip_retries_the_session_s_repo(monkeypatch):
