@@ -199,13 +199,20 @@ class ClaudeSDKClient:
         return {"commands": []}
 
     async def receive_messages(self):
-        delay = float(os.environ.get("ROMP_FAKE_SDK_DELAY") or 0.0)
+        # A /clear is held IN FLIGHT on an EVENT, not a timer: if ROMP_FAKE_SDK_GATE names a path, the /clear turn
+        # waits until that file exists (the served lab creates it AFTER reading the in-flight snapshot), so the
+        # test controls exactly when the clear runs and reads its 'after' state off the REPLY's own frame. Bounded
+        # so a lab that forgets to release it fails fast rather than hanging.
+        gate = os.environ.get("ROMP_FAKE_SDK_GATE") or ""
         while True:
             turn = await self._turnq.get()
             text = _turn_text(turn)
             clear = _is_clear(text)
-            if delay:
-                await asyncio.sleep(delay)   # a realistic gap so the client paints the in-flight rows first
+            if clear and gate:
+                for _ in range(300):   # loop-ok: bounded (~15s) wait for the test to release the in-flight clear
+                    if os.path.exists(gate):
+                        break
+                    await asyncio.sleep(0.05)
             if clear:
                 # a /clear mints a FRESH episode: the init carries a NEW session_id → the kernel flips
                 # lastSid and ends the clearing bracket. /clear writes NO user record for itself.

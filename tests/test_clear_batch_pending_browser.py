@@ -92,7 +92,7 @@ const qids = await page.evaluate((msg) => ({
 }), cfg.msg);
 
 // the IN-FLIGHT state (the report's starting point): the "Clearing conversation…" row is up and the
-// message is a dashed pending bubble, WHILE the clear is still running (the fake's delay holds it here)
+// message is a dashed pending bubble, WHILE the clear is still running (the fake SDK holds it in flight on the gate file)
 await page.waitForSelector("#content .turn-clearing", { timeout: 8000 }).catch(() => {});
 const mid = await page.evaluate((msg) => {
   const txt = (el) => (el.textContent || "");
@@ -106,12 +106,14 @@ const mid = await page.evaluate((msg) => {
   };
 }, cfg.msg);
 
+// RELEASE the in-flight clear on an EVENT, now that the in-flight snapshot is read (LOW c): the fake SDK is
+// waiting on this file, so creating it is what lets the /clear run; no timer decides the timing.
+fs.writeFileSync(cfg.gate, "");
 // the real kernel now runs the clear (a fresh episode) and answers the message. Wait, event-based, for the
 // agent's reply to render, the moment the report describes: the reply is below and the pill reads Ready.
 await page.waitForFunction((reply) => Array.from(document.querySelectorAll("#content .turn")).some((t) => (t.textContent || "").indexOf(reply) >= 0), cfg.reply, { timeout: 30000 }).catch(() => {});
-// give the trailing pushes (status ready, the boundary card, prune) a moment to settle
+// settle the trailing pushes (status ready, the boundary card, prune) across two frames, a paint settle, not a fixed wait
 await page.waitForFunction(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => r(true), 0)))), null, { timeout: 4000 });
-await page.waitForTimeout(800);
 
 const after = await page.evaluate((c) => {
   const txt = (el) => (el.textContent || "");
@@ -183,10 +185,11 @@ class ServedClearBatchRealKernel(unittest.TestCase):
         Path(proj, SID + ".jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
         cls.port = _free_port()
         cls.token = "testtok-clearbatch"
+        cls.gate = os.path.join(cls.lab, "clear-gate")   # the fake SDK waits on this file before running the /clear; the driver creates it after the in-flight snapshot
         # the fake Agent SDK on the kernel's import path, and the synthetic reply it answers the message with
         env = _lab.kernel_env(cls.lab, claude, dist, cls.port, cls.token,
                               PYTHONPATH=FAKE_SDK, ROMP_FAKE_SDK_REPLY=REPLY,
-                              ROMP_FAKE_SDK_DELAY="0.5")   # a realistic gap so the client paints the in-flight rows first
+                              ROMP_FAKE_SDK_GATE=cls.gate)   # the fake holds the /clear IN FLIGHT until the driver creates this file (LOW c: an event, not a timer)
         cls.klog = os.path.join(cls.lab, "kernel.log")
         cls.kernel = subprocess.Popen([os.path.join(BIN, "romp-kernel")],
                                       stdout=open(cls.klog, "w"), stderr=subprocess.STDOUT, env=env)
@@ -216,7 +219,7 @@ class ServedClearBatchRealKernel(unittest.TestCase):
             open(console_log, "w").close()
             with open(cfg, "w") as f:
                 json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token),
-                           "sid": SID, "msg": MSG, "reply": REPLY, "consoleLog": console_log}, f)
+                           "sid": SID, "msg": MSG, "reply": REPLY, "gate": self.gate, "consoleLog": console_log}, f)
             driver = os.path.join(self.lab, "driver.mjs")
             with open(driver, "w") as f:
                 f.write(DRIVER)
