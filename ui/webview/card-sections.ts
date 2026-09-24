@@ -152,6 +152,25 @@ function reapplyHosts(id: string): void {
     (h._sectionEnv as SectionEnv).afterApply?.(c);   // last: the page's own pass over what the apply changed
   }
 }
+/** A far host still holds a relayed question after its wait ended (it.relayNote, the kernel's relayCarried: the question went on before it
+ *  could be withdrawn, or the host could not be reached to withdraw it): its OWN dim line, created once beside the sections, kept OUTSIDE
+ *  them and set AFTER the section logic (inside the distill element it was hidden with that line; as a paragraph OF the brief it dropped
+ *  every per-paragraph stamp). Both pages call it after applySections, the card (feed.ts) and the Needs you row (render.ts), since the row
+ *  carries what the card carries (a contributor's post-merge note on PR 2124: the note rode the row's wire and key and was never drawn, so a
+ *  change to it alone repainted the box with nothing visible moving). The anchor is the host's face when it has one (the card), else its
+ *  sections container (the row). */
+export function applyRelayNote(a: any, it: { relayNote?: string | null }): void {
+  let rn = a._relayNote as HTMLElement | undefined;
+  if (!rn) {
+    rn = el("div", "fask-distill fask-relaynote");
+    const anchor = (a._face as HTMLElement | undefined) || (a._secs as HTMLElement);
+    anchor.parentNode!.insertBefore(rn, anchor.nextSibling);
+    a._relayNote = rn;
+  }
+  const note = (it.relayNote || "").trim();
+  rn.textContent = note;
+  rn.style.display = note ? "" : "none";
+}
 /** A tree branch's disclosure (the triangle, or the reviewed-earlier row) flipped for an item, every host of the item re-applied. */
 export function toggleTreeBranch(key: string, itemId: string): void {
   if (cardTreeExpanded.has(key)) cardTreeExpanded.delete(key); else cardTreeExpanded.add(key);

@@ -241,7 +241,10 @@ a standalone chat tab read the origin's shared storage, and a VS Code chat webvi
 extension host and writes its own copy, so its rows follow the flag as its cards do; only the picks stay per page in VS Code, since the
 section channel does not cross its webviews. On the feed, a
 sub-goal row's text and mark keep the modal's own click zones (wireNodeZones) rather than the delegated acts; on the chat page every
-rebuilt click is delegated.
+rebuilt click is delegated. The chat page lands the line, the paragraphs and a sub-goal's text in its own transcript (the turn the
+kernel's anchor names, aligned on the quoted span when the frame carries one, with the turn's flash re-armed as every lander does)
+and repaints the stamped ages live in its one-second pass; the relayed question a far host still holds is drawn on the row as on the
+card, through one helper both pages call after the sections.
 
 Every clear or undo account the kernel sends carries its Undo stack (`batches`: the ids an earlier undo left owed first, then the
 clears log's batches by stamp, newest first; `owedBatch`: the owed ids alone; `batchesTotal`: the count of log batches before the

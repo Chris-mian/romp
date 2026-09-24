@@ -39,6 +39,7 @@ class E {
 (globalThis as any).window = { BroadcastChannel };   // the browser's channel, in Node's clothes
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 30));   // a delivery hop over Node's channel
+const until = async (pred: () => boolean, ms: number): Promise<boolean> => { const t0 = Date.now(); while (!pred() && Date.now() - t0 < ms) await tick(); return pred(); };   // loop-ok: a PRESENCE wait, bounded by its deadline (the verifier's round two on the fix PR: counts read after a fixed number of ticks)
 
 // the bundle of the module under test, built ONCE per file at run time into one temporary directory (a directory per test was never removed,
 // three left per run: the manager's read of the fix PR); esbuild is loaded through a runtime require (createRequire), which the test bundler
@@ -136,14 +137,15 @@ test("two owners and a follower: a follower pick is one set and one acknowledgem
     await tick(); await tick();                                     // the owners' load-time maps, the follower's hello and its answers
     for (const k of Object.keys(counts)) delete counts[k];
     f.setSectionChoice("i1", "bg");                                 // the row picks
-    await tick(); await tick(); await tick();
+    assert.ok(await until(() => (counts.ack || 0) === 2, 3000), "the second acknowledgement arrives (a bounded wait, not a count of ticks): " + JSON.stringify(counts));
     const afterPick = { ...counts };
     assert.deepEqual(afterPick, { set: 1, ack: 2 }, "one set from the follower, one acknowledgement from each owner, no map and no second set");
     assert.deepEqual([a.secChoice.get("i1"), b.secChoice.get("i1"), f.secChoice.get("i1")], ["bg", "bg", "bg"], "all three documents hold the pick");
-    await tick(); await tick(); await tick();
+    await tick(); await tick(); await tick();                       // the ABSENCE half stays time-bounded: nothing can prove a message will never come
     assert.deepEqual(counts, afterPick, "and nothing more after a few ticks");
     a.setSectionChoice("i2", "stall");                              // an owner picks (a press on a card)
-    await tick(); await tick(); await tick();
+    assert.ok(await until(() => (counts.set || 0) === 2, 3000), "the owner's set arrives: " + JSON.stringify(counts));
+    await tick(); await tick(); await tick();                       // and the absence of any acknowledgement, time-bounded
     assert.deepEqual(counts, { set: 2, ack: 2 }, "an owner's set is acknowledged by nobody: one set, no ack");
     assert.deepEqual([b.secChoice.get("i2"), f.secChoice.get("i2")], ["stall", "stall"], "the other owner and the follower took it");
   } finally { try { spy?.close(); } catch { /* closed already */ } closeAll(a, b, f); }

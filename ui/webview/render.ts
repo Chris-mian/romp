@@ -3,8 +3,8 @@ import { GEAR_GLYPH, ICON_FORK } from "./icons";   // the fork control's glyph (
 import { sanitizeMd, userContentTarget } from "./md-sanitize";   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
 import { noticeBodyNodes, noticeAttachmentNodes, type NoticeAttachment } from "./notice-face";   // the notice face the feed card shows, for the approval box
 import { applySections, registerSectionHost, unregisterSectionHost, stateBadges, buildSectionElements, cardSpin, applySpin, applyDistillLanding, configureSectionSync, sectionActs,
-         type SectionEnv, type SectionItem, type BadgeItem, type SpinFields, type AskTreeNode } from "./card-sections";   // the card's sections, badges, swirl and landings: one builder with the feed card (plans/needs-you.md, the row carries what the card carries)
-import { applyDistillLine } from "./distiller-line";
+         applyRelayNote, type SectionEnv, type SectionItem, type BadgeItem, type SpinFields, type AskTreeNode } from "./card-sections";   // the card's sections, badges, swirl and landings: one builder with the feed card (plans/needs-you.md, the row carries what the card carries)
+import { applyDistillLine, distillInputs } from "./distiller-line";
 import { relAge, refreshAges } from "./feed-age";   // the age words and the live pass over the row's stamped ages
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
@@ -15377,10 +15377,10 @@ function noticeSectionsFor(row: HTMLElement, n: ChatNotice): boolean {
     (row.querySelector(".ntc-attach") as HTMLElement).after(secsRow, se.secs, se.awaitSpin, se.checklist, badges);   // after the attachment, before the note and the buttons
     registerSectionHost(n.itemId, row);   // the item's twin set: a press on the card's toggles or the row's reaches both (card-sections.ts)
   } else if (!want && rowAny._distill) {
-    for (const k of ["_secs", "_checklist", "_badges", "_awaitSpin"]) (rowAny[k] as HTMLElement).remove();
+    for (const k of ["_secs", "_checklist", "_badges", "_awaitSpin", "_relayNote"]) (rowAny[k] as HTMLElement | undefined)?.remove();
     (row.querySelector(".ntc-secs-row") as HTMLElement | null)?.remove();
     row.querySelector(".ntc-more")?.remove();   // the line the disclosure rode is gone; the body's own pass remakes it if the body overflows
-    for (const k of ["_bgBtn", "_takeBtn", "_stallBtn", "_subBtn", "_taskBtn", "_taskLbl", "_bgBody", "_distill", "_stallBody", "_secs", "_checklist", "_badges", "_awaitSpin", "_awaitWhy", "_it", "_sectionEnv", "_distillShown"]) delete rowAny[k];
+    for (const k of ["_bgBtn", "_takeBtn", "_stallBtn", "_subBtn", "_taskBtn", "_taskLbl", "_bgBody", "_distill", "_stallBody", "_secs", "_checklist", "_badges", "_awaitSpin", "_awaitWhy", "_relayNote", "_it", "_sectionEnv", "_distillShown"]) delete rowAny[k];
     unregisterSectionHost(n.itemId, row);
     const body = row.querySelector<HTMLElement>(".ntc-body"); if (body) body.style.display = "";
   }
@@ -15405,14 +15405,17 @@ const noticeSectionEnv: SectionEnv = {
   collapsed: () => noticeCollapsedPref(),   // the feed's Collapsed default, read from this page's copy of the settings (the origin's shared storage in the browser, the relayed copy in VS Code)
   wireNode: (_it, node, _mark, txt, wire) => {
     if (!wire || !node.anchorUuid) return;
-    txt.classList.add("nav"); txt.title = "jump to where this was worked on";
+    txt.classList.add("lz-nav"); txt.title = "jump to where this was worked on";   // lz-nav: the pointer and the hover the checklist's sheet gives a landing text (nav had no rule on this page)
     txt.dataset.act = "sec-landing"; txt.dataset.uuid = node.anchorUuid;   // delegated on #notices (sectionActs → landing → scrollToAnchor)
   },
   repoOf: () => null,
   durNodes: (since) => { if (!since || since <= 0) return []; const sp = el("span", "ntc-age fask-dur"); stampAgeOnRow(sp, since); return [" · ", sp]; },
   openSession: (sid) => { vscodeApi?.postMessage({ type: "openSession", id: sid }); },
   nowSec: noticeNowSec, relAge: (sec) => relAge(sec), ageTint: () => "", clockHM: (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-  landing: (_it, target) => { scrollToAnchor(target.anchorUuid); },
+  landing: (_it, target) => {   // as the other landers: a fresh navigation re-arms the one-per-navigation flash, the quoted span aligns the landing when the
+    flashedAnchor = null; pendingAnchorQuote = target.quote ?? null; pendingAnchorClick = true;   // frame carries one, and the click marks the attempt as the reader's
+    scrollToAnchor(target.anchorUuid);   // (a contributor's post-merge note on PR 2124: the row's landing scrolled to the turn's anchor alone, no quoted span, no repeat flash)
+  },
   noAnchor: (it) => {
     landToast("couldn't locate this in the transcript — no anchor was recorded for this card");
     try { window.parent?.postMessage({ romp: "notify", kind: "locate", text: "Couldn't jump to this summary: no anchor was recorded for this card", sid: it.sid, itemId: it.itemId }, "*"); } catch { /* no shell */ }
@@ -15450,11 +15453,15 @@ function updateNoticeRow(row: NoticeRowEl, n: ChatNotice, sid: string): void {
   if (sections) {
     const it = { ...n, sid, text: n.title } as unknown as SectionItem & BadgeItem & SpinFields;
     rowAny._it = it;
-    const dCompleted = n.distillState === "completed", dBlocked = n.distillState === "blocked" || (!n.distillState && !!(n.blockSummary || "").trim());
+    // the card's rule, settled in one place (distiller-line.ts distillInputs): a stall floor files under needs_input with no distill state and no
+    // brief yet, which reads blocked, so the row shows the Distilling caption where the card does (a contributor's post-merge note on PR 2124: the
+    // row's own copy of the rule read it as neither, and the row showed no line and no caption)
+    const { completed: dCompleted, blocked: dBlocked } = distillInputs(n.distillState, n.column || "");
     const shown = applyDistillLine(rowAny._distill as HTMLElement, dCompleted, dBlocked, n.summary, n.blockSummary);
     applyDistillLanding(rowAny, it, shown, dCompleted, dBlocked, noticeSectionEnv);   // the paragraphs with their stamps and landings, the stale note, the line's link
     const spin = cardSpin(it, dCompleted, dBlocked, noticeSectionEnv); applySpin(rowAny, it, spin, noticeSectionEnv);   // the card's swirl caption ("Analyzing…" on a re-judging card)
     applySections(rowAny, it, !!shown, noticeSectionEnv);
+    applyRelayNote(rowAny, n);   // the relayed question a far host still holds: the card's own dim line, drawn on the row too (the row carries what the card carries)
     noticeRowLevelFace(row);   // below the full context the line stands whatever the pick (the level class is set before the rows are updated)
     if (body) body.style.display = "none";   // the brief rides the distill line now
     if (badgesEl) { badgesEl.replaceChildren(...stateBadges(it, noticeSectionEnv, spin.caption)); badgesEl.style.display = badgesEl.childNodes.length ? "" : "none"; }

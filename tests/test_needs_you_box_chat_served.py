@@ -457,6 +457,7 @@ if (fr) {
     const w5 = await writeStore((st) => { st.nodes[cfg.g6].background = cfg.background; st.nodes[cfg.g6].distilledMt = briefNow() + 3;
       st.nodes[cfg.g6].origin = { peer: cfg.api, peerName: "api", goalId: cfg.api + ":g1" };
       st.nodes[cfg.g6].warns = [{ kind: "brief-failed", t: Math.floor(Date.now() / 1000) - 60, msg: "the first brief could not be written", detail: "the model returned nothing" }];   // the warning chip (the verifier's round two: the lab drove the origin badge alone); the kernel's distill pass is off (setUpClass), so the fixture stands
+      st.nodes[cfg.g6].relayCarried = "a question to api is still parked on the far host: it went on before it could be withdrawn";   // the relayed question a far host still holds: the card's own dim line, drawn on the row too (a contributor's post-merge note on PR 2124)
       st.nodes[cfg.g6c] = { id: cfg.g6c, text: cfg.g6cText, parentId: cfg.g6, nodeComplete: false, blocked: false, cleared: false, trail: [], t: Math.floor(Date.now() / 1000), log: [] }; st.status[cfg.g6c] = "working"; });
     Object.assign(out.content, await builtRecord(cfg.g6, w5, cfg.longBrief));   // { id, floor, built }: the kernel's build past the write
     const vis = "const vis = (x) => !!x && getComputedStyle(x).display !== 'none' && x.getBoundingClientRect().height > 0;";
@@ -467,6 +468,7 @@ if (fr) {
       return { title: t ? (t.textContent || "").trim() : null, distill: d ? (d.textContent || "").trim() : null,
                badges: Array.from(c.querySelectorAll(".fask-row2 .fask-badges > *")).filter(vis).map((x) => (x.textContent || "").trim()),   // the badge slot's children: the same read as the row's (symmetric, the verifier's round two)
                chip: (() => { const ch = c.querySelector(".fask-warnchip"); return ch ? { tag: ch.tagName, cursor: getComputedStyle(ch).cursor, act: ch.dataset.act || null } : null; })(),   // the warning chip's face: the hand where a click opens the detail
+               relay: (() => { const rn = c.querySelector(".fask-relaynote"); return rn ? { text: (rn.textContent || "").trim(), shown: vis(rn) } : null; })(),   // the relayed question's own line
                toggles: Array.from(c.querySelectorAll(".fask-row3 > .fask-secbtn")).filter(vis).map((x) => ({ label: (x.textContent || "").trim(), pressed: x.getAttribute("aria-pressed") })),
                bodies: { bg: vis(c.querySelector(".fask-bg-body")), distill: vis(d), stall: vis(c.querySelector(".fask-stall-body")), tree: vis(c.querySelector(".fask-checklist")) } }; }, cardSel);
     const readRow = () => fr.evaluate((s) => { const r = document.querySelector(s); if (!r) return null; const vis = (x) => !!x && getComputedStyle(x).display !== "none" && x.getBoundingClientRect().height > 0;
@@ -474,6 +476,7 @@ if (fr) {
       return { title: t ? (t.textContent || "").trim() : null, distill: d ? (d.textContent || "").trim() : null, clamp: d ? getComputedStyle(d).webkitLineClamp : null,
                badges: Array.from(r.querySelectorAll(".ntc-badges > *")).filter(vis).map((x) => (x.textContent || "").trim()),
                chip: (() => { const ch = r.querySelector(".fask-warnchip"); return ch ? { tag: ch.tagName, cursor: getComputedStyle(ch).cursor, act: ch.dataset.act || null } : null; })(),   // the row's chip: a span, the default cursor, no act
+               relay: (() => { const rn = r.querySelector(".fask-relaynote"); return rn ? { text: (rn.textContent || "").trim(), shown: vis(rn) } : null; })(),   // the same line on the row, outside its sections
                togglesShown: vis(secsRow), toggles: secsRow ? Array.from(secsRow.querySelectorAll(".fask-secbtn")).filter(vis).map((x) => ({ label: (x.textContent || "").trim(), pressed: x.getAttribute("aria-pressed") })) : null,
                bodies: { bg: vis(r.querySelector(".fask-bg-body")), distill: vis(d), stall: vis(r.querySelector(".fask-stall-body")), tree: vis(r.querySelector(".fask-checklist")) },
                nameOrAge: !!r.querySelector(".fname, .ftime, .fask-row2"), buttons: Array.from(r.querySelectorAll(".ntc-actions button")).map((b) => (b.textContent || "").trim()) }; }, rowSel(cfg.g6));
@@ -1097,6 +1100,8 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertEqual((card.get("chip") or {}).get("cursor"), "pointer", "and shows the hand: %r" % card.get("chip"))
         self.assertEqual(((row.get("chip") or {}).get("tag"), (row.get("chip") or {}).get("act"), (row.get("chip") or {}).get("cursor")), ("SPAN", None, "auto"), "the row's chip is a span with no act and the default cursor (the contributor's note on the 0.17.1 fix: the shared rule gave the span the hand and the hover tint): %r" % row.get("chip"))
         self.assertEqual(row["badges"], ["\u21aa from api", "distill failed"], "the delegation's origin and the warning chip (every warn the distiller's own), as the card words them: %r" % row["badges"])
+        self.assertEqual(card.get("relay"), {"text": "a question to api is still parked on the far host: it went on before it could be withdrawn", "shown": True}, "the card draws the relayed question a far host still holds as its own dim line: %r" % card.get("relay"))
+        self.assertEqual(row.get("relay"), card.get("relay"), "and so does the row, through the same helper (before: the note rode the row's wire and key and was never drawn): %r vs %r" % (row.get("relay"), card.get("relay")))
         self.assertFalse(row["togglesShown"], "the section toggles wait for the full context: %r" % row)
         self.assertFalse(row["nameOrAge"], "no session name and no age on the row (the box is the session's own): %r" % row)
         self.assertEqual(row["buttons"], ["Reply", "Clear"])
