@@ -233,7 +233,10 @@ binding on the card (actions.ts delegate), so they wear the repository's short p
 anchor paints a separator between each of its facts, "from a · delegated to b · delegated to c", the handoff and a tracked delegation included. The feed
 answers a row's pick with an acknowledgement, and the chat page holds its own pick only until that word arrives (a stale acknowledgement
 spares a newer pick), so the maps that lack the pick afterwards, the Collapsed clear and the prune once the item leaves, govern both
-documents (the 0.17.1 fix). The row's default section follows the feed's Collapsed flag where the settings are the chat page's own (the
+documents (the 0.17.1 fix). A flip with no pick held leaves the map unchanged, so no map crosses: the feed's setter re-applies its
+cards anyway (a caller that is not quiet gets the re-apply, since the default the cards resolve against moved), and the chat page
+re-renders the box from its own listener on the settings key, so the default follows at once in both documents with no payload
+between. The row's default section follows the feed's Collapsed flag where the settings are the chat page's own (the
 browser shell and a standalone chat tab share the origin); a VS Code chat webview has no such flag and keeps Summary. On the feed, a
 sub-goal row's text and mark keep the modal's own click zones (wireNodeZones) rather than the delegated acts; on the chat page every
 rebuilt click is delegated.

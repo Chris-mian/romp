@@ -573,10 +573,26 @@ if (fr) {
       const prefs = await shell.evaluate(() => { try { return JSON.parse(localStorage.getItem("romp:settings") || "{}"); } catch (e) { return {}; } });
       await shell.evaluate((p) => { localStorage.setItem("romp:settings", JSON.stringify(Object.assign({}, p, { collapsed: true }))); }, prefs);
       out.content.collapsed.rowCleared = await fr2.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && Array.from(r.querySelectorAll(".ntc-secs-row .fask-secbtn")).find((x) => (x.textContent || "").trim() === "Background"); return !!b && b.getAttribute("aria-pressed") === "false"; }, { sel: rowSel(cfg.g6) }, { timeout: 15000 }).then(() => true).catch(() => false);
-      await fr2.waitForTimeout(1500);   // two payloads' worth: a pick the feed had not acknowledged came back by now (the defect re-imposed it per payload)
+      // two kernel payloads AFTER the flip, each an event and never a wall-clock wait (the manager's read of the fix PR): a store write that moves the
+      // row's brief (the line's text is written on every update whatever is open; a closed background body is not), the kernel's build past the write
+      // carrying that brief, and the row's own repaint carrying the new sentence; a pick the feed had not acknowledged came back with the first of
+      // them (the defect re-imposed it per payload); then the row's toggles are read again
+      out.content.collapsed.payloads = [];
+      for (const word of ["third", "fourth"]) {   // loop-ok: two writes
+        const brief = cfg.twoParaBrief + " The " + word + " loader reads the fixtures of the one before.";
+        const w = await writeStore((st) => { st.nodes[cfg.g6].blockSummary = brief; st.nodes[cfg.g6].briefedMt = briefNow() + 10 + out.content.collapsed.payloads.length; });
+        const rec = await builtRecord(cfg.g6, w, brief);
+        rec.repainted = await fr2.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && r.querySelector(".ntc-distill"); return !!b && (b.textContent || "").includes(a.word + " loader reads"); }, { sel: rowSel(cfg.g6), word }, { timeout: 30000 }).then(() => true).catch(() => false);
+        out.content.collapsed.payloads.push(rec);
+      }
       out.content.collapsed.rowLater = await readT(fr2, rowSel(cfg.g6), ".ntc-secs-row .fask-secbtn");
       out.content.collapsed.card = await readT(ff2, cardSel, ".fask-row3 > .fask-secbtn"); out.content.collapsed.row = await readT(fr2, rowSel(cfg.g6), ".ntc-secs-row .fask-secbtn");
       await shell.evaluate((p) => { localStorage.setItem("romp:settings", JSON.stringify(p)); }, prefs);   // the preference back
+      // the flip BACK with NO pick held (the manager's read of the fix PR): the feed's clear finds its map unchanged and posts none, so each document
+      // re-applies its own hosts from its own storage listener (the chat page re-renders the box on the settings key: render.ts setupSettings), and the
+      // row's default returns to Summary at once, with no payload between; an event wait on the toggle, never a sleep
+      out.content.collapsed.backRow = await fr2.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && Array.from(r.querySelectorAll(".ntc-secs-row .fask-secbtn")).find((x) => (x.textContent || "").trim() === "Summary"); return !!b && b.getAttribute("aria-pressed") === "true"; }, { sel: rowSel(cfg.g6) }, { timeout: 10000 }).then(() => true).catch(() => false);
+      out.content.collapsed.backCard = await cardIs2("Summary", "true");
       await ff2.evaluate((s) => { const c = document.querySelector(s); const b = c && Array.from(c.querySelectorAll(".fask-row3 > .fask-secbtn")).find((x) => (x.textContent || "").trim() === "Summary"); if (b) b.click(); }, cardSel);   // back to the summary on both
     }
   }
@@ -1162,7 +1178,12 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertTrue(cl.get("rowCleared"), "the row's Background unpressed after the feed's live Collapsed flip: the feed acknowledged the row's pick, so the flip's map clears it (the 0.17.1 fix; before: the row re-imposed its pick over every map that lacked it): %r" % cl)
         self.assertEqual([t["pressed"] for t in (cl.get("card") or [])], ["false", "false", "false"], "the card shows no section under the Collapsed default: %r" % cl.get("card"))
         self.assertEqual([t["pressed"] for t in (cl.get("row") or [])], ["false", "false", "false"], "and so does the row: its default reads the same Collapsed flag in the browser (before: the row opened Summary): %r" % cl.get("row"))
+        for i, rec in enumerate(cl.get("payloads") or []):
+            self._built(rec, "payload %d after the flip" % (i + 1))
+            self.assertTrue(rec.get("repainted"), "payload %d after the flip repainted the row's background paragraph (the event the later read waits on): %r" % (i + 1, rec))
+        self.assertEqual(len(cl.get("payloads") or []), 2, "two payloads observed after the flip: %r" % cl.get("payloads"))
         self.assertEqual([t["pressed"] for t in (cl.get("rowLater") or [])], ["false", "false", "false"], "and stays so two payloads later (before: re-imposed per payload): %r" % cl.get("rowLater"))
+        self.assertEqual((cl.get("backRow"), cl.get("backCard")), (True, True), "the flip back with no pick held: no map crosses (the feed's map is unchanged), and each document returns its default to Summary from its own storage listener, no payload between: %r" % {k: cl.get(k) for k in ("backRow", "backCard")})
 
     def test_the_open_section_is_one_state_across_a_shell_reload(self):
         """The verifier's medium (2): three feed-only writers of the section choice never crossed the channel, so after a reload the card opened

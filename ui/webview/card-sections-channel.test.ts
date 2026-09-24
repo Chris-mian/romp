@@ -6,7 +6,7 @@
 // payload. The module reads `window.BroadcastChannel`, so the stand-in window hands it Node's class; the bundle is built here from the
 // source, loaded twice through a cleared require cache (one bundle, two module instances), and both channels are closed at the end so the
 // process can exit (Node's channel holds the event loop).
-import { test } from "node:test";
+import { test, after } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -36,16 +36,21 @@ class E {
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 30));   // a delivery hop over Node's channel
 
-// the bundle of the module under test, built once per test at run time; esbuild is loaded through a runtime require (createRequire), which the
-// test bundler does not follow (its own API refuses to be bundled)
+// the bundle of the module under test, built ONCE per file at run time into one temporary directory, removed when the file's tests are done (the
+// manager's read of the fix PR: a directory per test was never removed, three left per run); esbuild is loaded through a runtime require
+// (createRequire), which the test bundler does not follow (its own API refuses to be bundled)
 const req = createRequire(__filename);
+let bundleDir: string | null = null, bundlePath: string | null = null;
 function bundleOnce(): string {
+  if (bundlePath) return bundlePath;
   const esbuild = req("esbuild");
   const src = path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts");
-  const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "romp-card-sections-")), "card-sections.js");
-  esbuild.buildSync({ entryPoints: [src], bundle: true, format: "cjs", platform: "node", outfile: out, logLevel: "silent" });
-  return out;
+  bundleDir = fs.mkdtempSync(path.join(os.tmpdir(), "romp-card-sections-"));
+  bundlePath = path.join(bundleDir, "card-sections.js");
+  esbuild.buildSync({ entryPoints: [src], bundle: true, format: "cjs", platform: "node", outfile: bundlePath, logLevel: "silent" });
+  return bundlePath;
 }
+after(() => { if (bundleDir) fs.rmSync(bundleDir, { recursive: true, force: true }); bundleDir = bundlePath = null; });
 function loadFresh(out: string): any { delete req.cache[req.resolve(out)]; return req(out); }
 function twoDocuments(): { owner: any; follower: any; writes: { n: number } } {
   const out = bundleOnce();

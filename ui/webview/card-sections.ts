@@ -184,15 +184,18 @@ export function setSectionChoice(id: string, choice: SecChoice | null, opts: { f
   reapplyHosts(id);
   onChoiceChange?.();
 }
-/** The whole map at once (the feed's hydration, its prune to the live set, its clear on a Collapsed flip): posted as a map. Nothing
- *  happens when the map is already what is asked for (the prune runs on every feed render, and a map that did not move is no change, no
- *  post and no re-apply). `quiet` skips the re-apply of this document's hosts, for a caller whose own render applies every host next. */
+/** The whole map at once (the feed's hydration, its prune to the live set, its clear on a Collapsed flip): posted as a map. A map that is
+ *  already what is asked for is no change: no post, no persist (the prune runs on every feed render). `quiet` skips the re-apply of this
+ *  document's hosts, for a caller whose own render applies every host next; a caller that is NOT quiet gets the re-apply even when the map
+ *  did not move, since what changed may be the DEFAULT the hosts resolve against (the manager's read of the 0.17.1 fix: a Collapsed flip
+ *  with no pick held found the map unchanged and returned, so a card whose payload stood alone kept the old default until its next repaint;
+ *  the chat page's rows follow from the page's own settings listener either way). */
 export function replaceSectionChoices(entries: Iterable<[string, SecChoice]>, opts: { fromPeer?: boolean; quiet?: boolean } = {}): void {
   const next = new Map<string, SecChoice>();
   for (const [k, v] of entries) if (SEC_CHOICES.includes(v)) next.set(k, v);
   let same = next.size === secChoice.size;
   if (same) for (const [k, v] of next) if (secChoice.get(k) !== v) { same = false; break; }
-  if (same) return;
+  if (same) { if (!opts.quiet) reapplyAllHosts(); return; }
   secChoice.clear();
   for (const [k, v] of next) secChoice.set(k, v);
   if (!opts.fromPeer && syncRole === "owner") postSync({ kind: "map", entries: Array.from(secChoice.entries()) });   // the map is the owner's word alone: the feed's hydration runs before it is configured as the owner, and configureSectionSync posts the map then
