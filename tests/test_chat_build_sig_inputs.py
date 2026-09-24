@@ -1078,6 +1078,25 @@ class Differential(_World):
         finally:
             km._feed_needs_input[0], km._feed_needs_rows[0] = saved_in, saved_rows
 
+    def test_every_card_field_on_a_goal_row_moves_the_notices_label(self):
+        # the row carries what the card carries (plans/needs-you.md, round two of the box content PR): each of the card's fields on the row is
+        # FLIPPED against the signature, one at a time from the same base row, and each flip moves the notices label. The source-text
+        # cross-check below reads that every name is keyed; this reads that the key is read from the row itself (a key read from the wrong
+        # dict, or a field name mistyped in the tuple, passes the text and fails here). A structured sentinel, since the fields are shapes.
+        saved_in, saved_rows = km._feed_needs_input[0], km._feed_needs_rows[0]
+        try:
+            km._feed_needs_input[0] = frozenset([SID])
+            base = {"itemId": SID + ":g9", "kind": "goal", "title": "wire the fixtures", "body": "", "cont": False, "t": 1}
+            base.update({f: None for f in km._NEEDS_ROW_CARD_FIELDS})
+            for f in km._NEEDS_ROW_CARD_FIELDS:
+                with self.subTest(field=f):
+                    km._feed_needs_rows[0] = {SID: [dict(base)]}
+                    before = self.sig()
+                    km._feed_needs_rows[0] = {SID: [dict(base, **{f: {"moved": f}})]}
+                    self.assertEqual(self.moved(before, self.sig()), ("notices",), "the row's %s moves the label" % f)
+        finally:
+            km._feed_needs_input[0], km._feed_needs_rows[0] = saved_in, saved_rows
+
     def test_the_unkeyed_row_field_is_pinned_by_value_and_the_rows_other_fields_are_the_key(self):
         # _NEEDS_ROW_UNKEYED by value, as _CHAT_ROW_UNKEYED is; and every field a goal row carries but the unkeyed one is in the
         # signature's tuple, so a field added to _needs_you_rows without a place in the key fails here (the third review of PR 1967)
@@ -1092,7 +1111,8 @@ class Differential(_World):
         self.assertEqual([r["itemId"] for r in rows], [SID + ":g1", SID + ":g2"], "the plain row and the credential row: %r" % rows)
         fields = set().union(*(set(r) for r in rows))
         CARD_FIELDS = ("summary", "blockSummary", "briefParts", "summaryParts", "distillState", "summaryStale", "relayNote", "background",
-               "stalled", "tree", "awaiting", "recheck", "rejudging", "nudgeFailed", "nudged", "interrupting", "interrupted", "waitingOn", "origin", "handoffTo")   # written out, so a kernel whose rows lack them reds here on the rows (test_chat_notices holds the kernel's list to this one)
+               "stalled", "tree", "awaiting", "recheck", "rejudging", "nudgeFailed", "nudged", "interrupting", "interrupted", "waitingOn", "origin", "handoffTo",
+               "warns", "failLog", "summaryAnchorUuid", "summaryAnchorQuote", "summaryAnchorsPara", "doneConfirming", "blocked", "column", "judging", "working", "sessState", "delegTracked")   # written out, so a kernel whose rows lack them reds here on the rows (test_chat_notices holds the kernel's list to this one)
         self.assertEqual(fields - km._NEEDS_ROW_UNKEYED, {"itemId", "kind", "title", "body", "cont", "fix"} | set(CARD_FIELDS), "every field a built row carries is keyed or declared unkeyed (the card's fields since the row carries what the card carries)")
         # and the row literals' keys from the AST (the third review) read the same set: a second reading of the same rows
         tree = ast.parse(inspect.getsource(km._needs_you_rows).lstrip())

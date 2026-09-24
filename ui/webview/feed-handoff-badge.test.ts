@@ -10,9 +10,9 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const SRC = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
+const SRC = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the badge lives in the shared builder since round two of the box content PR (stateBadges); feed.ts draws it through the module
 const BLK = SRC.slice(SRC.indexOf("if (it.handoffTo && it.handoffTo.peerSid) {"),
-                      SRC.indexOf("stampAge(a._time, it.t"));
+                      SRC.indexOf("if (it.delegTracked && it.delegTracked.length) {"));
 
 test("the badge is additive on the type — a payload without it renders exactly as before", () => {
   assert.match(SRC, /handoffTo\?: \{ peer: string; peerSid: string; peerHost\?: string; color\?: \{ bg: string; fg: string \} \| null \} \| null;/);
@@ -28,11 +28,11 @@ test("the title is the kernel-shipped text verbatim — the de-arrowing lives ke
 test("the badge mirrors ↪ from: identity rendering, recipient click, stacking after origin", () => {
   assert.ok(BLK.length > 0, "the handoffTo render block exists");
   // stacks after an ↪ from badge rather than replacing it — same rule the tracked slot pinned
-  assert.match(BLK, /const hadOrigin = !!\(it\.origin && it\.origin\.peer\);/);
-  assert.match(BLK, /pre\.textContent = \(hadOrigin \? " · " : ""\) \+ "↪ delegated to ";/);
+  assert.match(SRC, /if \(it\.origin && it\.origin\.peer\) \{[\s\S]*?if \(it\.handoffTo && it\.handoffTo\.peerSid\) \{/, "stacks after the origin badge: the two are different facts about one card, in that order");
+  assert.match(BLK, /pre\.textContent = "↪ delegated to ";/);
   // identity rendering matches every other session name (quiet host: prefix included)
   assert.match(BLK, /peer\.replaceChildren\(\.\.\.hostPartsNodes\(it\.handoffTo\.peerHost, it\.handoffTo\.peer\)\);/);
   assert.match(BLK, /peer\.style\.color = it\.handoffTo\.color\.bg;/);
   // the click opens the RECIPIENT session — symmetric with the origin badge's click
-  assert.match(BLK, /openSession", id: it\.handoffTo!\.peerSid/);
+  assert.match(BLK, /const sid = it\.handoffTo\.peerSid; og\.onclick = \(ev: Event\) => \{ ev\.stopPropagation\(\); env\.openSession\(sid\); \};/);
 });

@@ -63,7 +63,7 @@ test("the renderer gates on state-matched parts + multi-item + the paragraph-cou
 test("the trailing still-open paragraph renders unstamped, and only the item paragraphs get ages", () => {
   assert.ok(FEED.includes("if (stampOk && i < bp!.length) {"),
     "the chip is appended only for paragraphs that HAVE a part; the extra one gets none");
-  const block = FEED.slice(FEED.indexOf("// PER-PARAGRAPH ages"), FEED.indexOf("// The distiller line is a LINK"));
+  const block = FEED.slice(FEED.indexOf("export function applyDistillLanding("), FEED.indexOf("// The distiller line is a LINK"));   // the block is card-sections.ts's since round two of the box content PR
   assert.ok(/paras\.forEach\(\(p, i\) => \{[\s\S]*?if \(stampOk && i < bp!\.length\) \{[\s\S]*?if \(bp!\[i\]\.since\) stampAge\(age, bp!\[i\]\.since/.test(block),
     "the guard wraps the stamp's since lookup itself, so bp[i] is never read past the end");
   assert.ok(block.includes("ONE EXTRA TRAILING PARAGRAPH"), "the why is recorded where the gate lives");
@@ -75,9 +75,9 @@ test("the trailing still-open paragraph renders unstamped, and only the item par
 
 test("each paragraph wears its own live age chip", () => {
   assert.ok(FEED.includes('el("span", "fask-para-age")'));
-  assert.ok(FEED.includes('if (bp![i].since) stampAge(age, bp![i].since, "plain", false, nowS, relAge, ageColorReadable);'),
+  assert.ok(FEED.includes('if (bp![i].since) stampAge(age, bp![i].since, "plain", false, nowS, env.relAge, env.ageTint);'),   // the page's clock and words (card-sections.ts applyDistillLanding, round two of the box content PR)
     "the ask's OWN block-event age, via the shared relAge vocabulary — stamped, so the 15 s live pass moves it on a card the update gate does not repaint");
-  assert.ok(FEED.includes('else age.textContent = relAge(0);'), "no event time → the static chip it always showed, unstamped (nothing to count from)");
+  assert.ok(FEED.includes('else age.textContent = env.relAge(0);'), "no event time → the static chip it always showed, unstamped (nothing to count from); the Needs you row reads the same words through its environment");
 });
 
 test("the chip inherits the brief's font size — dimness is the only differentiation", () => {

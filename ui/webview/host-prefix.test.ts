@@ -26,7 +26,7 @@ test("hostPrefix splits exactly the federation-prefixed names, nothing else", ()
 });
 
 test("every surface renders the prefix through the shared treatment", () => {
-  const RENDER = read("render.ts"), FEED = read("feed.ts"), FLEET = read("fleet.ts");
+  const RENDER = read("render.ts"), FEED = read("feed.ts") + read("card-sections.ts"), FLEET = read("fleet.ts");   // the card's badges live in card-sections.ts (round two of the box content PR)
   // chat tabs (live + placeholder) and the session picker
   assert.match(RENDER, /label\.replaceChildren\(\.\.\.hostNameNodes\(s\.name, id\)\)/);
   assert.match(RENDER, /if \(meta\?\.name\) label\.replaceChildren\(\.\.\.hostNameNodes\(meta\.name, id\)\);/);

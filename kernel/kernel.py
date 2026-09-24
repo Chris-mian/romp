@@ -35097,7 +35097,8 @@ def _chat_build_sig(sess, tm=None, now=None, live_map=None, deps=None):
                           _row_field_key(n.get("tree")), _row_field_key(n.get("awaiting")), _row_field_key(n.get("recheck")),
                           _row_field_key(n.get("rejudging")), _row_field_key(n.get("nudgeFailed")), _row_field_key(n.get("nudged")),
                           _row_field_key(n.get("interrupting")), _row_field_key(n.get("interrupted")), _row_field_key(n.get("waitingOn")),
-                          _row_field_key(n.get("origin")), _row_field_key(n.get("handoffTo"))) for n in (_chat_notices(sid) or ())))   # the box's rows by id AND face (phase three): a brief landing, a Continue moving or a retitle (the judge retitles a top under its id; the second review of PR 1967, 2026-09-21) repaints the box; `t` is _NEEDS_ROW_UNKEYED; one value per label
+                          _row_field_key(n.get("origin")), _row_field_key(n.get("handoffTo")),
+                    _row_field_key(n.get("warns")), _row_field_key(n.get("failLog")), _row_field_key(n.get("summaryAnchorUuid")), _row_field_key(n.get("summaryAnchorQuote")), _row_field_key(n.get("summaryAnchorsPara")), _row_field_key(n.get("doneConfirming")), _row_field_key(n.get("blocked")), _row_field_key(n.get("column")), _row_field_key(n.get("judging")), _row_field_key(n.get("working")), _row_field_key(n.get("sessState")), _row_field_key(n.get("delegTracked"))) for n in (_chat_notices(sid) or ())))   # the box's rows by id AND face (phase three): a brief landing, a Continue moving or a retitle (the judge retitles a top under its id; the second review of PR 1967, 2026-09-21) repaints the box; `t` is _NEEDS_ROW_UNKEYED; one value per label
         # floor: the render floor decision (T323 stage 4b): True while a proto-1 client is connected (the pusher's
         # per-push flag), so a payload built from turn 0 is never served from the cache once the floor climbs
         sig.append(bool(getattr(_live_scope, "chat_floor0", False)))
@@ -58216,7 +58217,13 @@ def _needs_you_rows(feed):
                                              # and the state badges of the card's name row
                                              "recheck": a.get("recheck"), "rejudging": a.get("rejudging"), "nudgeFailed": a.get("nudgeFailed"),
                                              "nudged": a.get("nudged"), "interrupting": a.get("interrupting"), "interrupted": a.get("interrupted"),
-                                             "waitingOn": a.get("waitingOn"), "origin": a.get("origin"), "handoffTo": a.get("handoffTo")})
+                                             "waitingOn": a.get("waitingOn"), "origin": a.get("origin"), "handoffTo": a.get("handoffTo"),
+                                             # the warning chip's evidence, the distill line's landings and the swirl caption's inputs (round two)
+                                             "warns": a.get("warns"), "failLog": a.get("failLog"), "summaryAnchorUuid": a.get("summaryAnchorUuid"),
+                                             "summaryAnchorQuote": a.get("summaryAnchorQuote"), "summaryAnchorsPara": a.get("summaryAnchorsPara"),
+                                             "doneConfirming": a.get("doneConfirming"), "blocked": a.get("blocked"), "column": a.get("column"),
+                                             "judging": a.get("judging"), "working": a.get("working"), "sessState": a.get("sessState"),
+                                             "delegTracked": a.get("delegTracked")})
     return out
 
 
@@ -58226,7 +58233,9 @@ def _needs_you_rows(feed):
 # _chat_build_sig (the row signature test reads the two lists against each other).
 _NEEDS_ROW_CARD_FIELDS = ("summary", "blockSummary", "briefParts", "summaryParts", "distillState", "summaryStale", "relayNote", "background",
                           "stalled", "tree", "awaiting", "recheck", "rejudging", "nudgeFailed", "nudged", "interrupting", "interrupted",
-                          "waitingOn", "origin", "handoffTo")
+                          "waitingOn", "origin", "handoffTo",
+                          "warns", "failLog", "summaryAnchorUuid", "summaryAnchorQuote", "summaryAnchorsPara", "doneConfirming", "blocked",
+                          "column", "judging", "working", "sessState", "delegTracked")
 
 
 def _needs_input_sids(feed):

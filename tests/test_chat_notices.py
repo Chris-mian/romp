@@ -134,7 +134,8 @@ class ChatNotices(unittest.TestCase):
         g1, g2, g3, g4, g5 = (SID + ":g%d" % i for i in range(1, 6))
         frame = {"asks": [
             {"itemId": g1, "sid": SID, "text": "which database does the suite target?", "blockSummary": "Postgres or SQLite: the fixtures differ",
-             "background": "the suite has two databases and the fixtures load into one", "origin": {"peer": "api", "peerSid": "22222222-2222-3333-4444-000000000902", "live": True},   # a section's and a badge's field: the row must carry them (a mutant dropping one passed a fixture without them)
+             "background": "the suite has two databases and the fixtures load into one", "origin": {"peer": "api", "peerSid": "22222222-2222-3333-4444-000000000902", "live": True},
+             "warns": [{"kind": "brief-failed", "t": 99, "msg": "the brief could not be written", "detail": "the model returned nothing"}],   # a section's and a badge's field: the row must carry them (a mutant dropping one passed a fixture without them)
              "live": True, "t": 100, "board": "feed", "category": "needs_input", "column": "needs_input", "blocked": None},
             {"itemId": g2, "sid": SID, "text": "keep going on the parser", "live": True, "t": 101, "board": "feed", "category": "working", "column": "working", "blocked": None},
             {"itemId": g3, "sid": SID, "text": "the suite's fixtures directory", "live": True, "t": 102, "board": "feed", "category": "needs_input", "column": "needs_input",
@@ -154,7 +155,8 @@ class ChatNotices(unittest.TestCase):
         # the card's own fields ride the plain row (the row carries what the card carries, plans/needs-you.md): the list is written out here so a
         # kernel without them reds on the rows themselves, and the kernel's own list is held to it below
         CARD_FIELDS = ("summary", "blockSummary", "briefParts", "summaryParts", "distillState", "summaryStale", "relayNote", "background",
-               "stalled", "tree", "awaiting", "recheck", "rejudging", "nudgeFailed", "nudged", "interrupting", "interrupted", "waitingOn", "origin", "handoffTo")
+               "stalled", "tree", "awaiting", "recheck", "rejudging", "nudgeFailed", "nudged", "interrupting", "interrupted", "waitingOn", "origin", "handoffTo",
+               "warns", "failLog", "summaryAnchorUuid", "summaryAnchorQuote", "summaryAnchorsPara", "doneConfirming", "blocked", "column", "judging", "working", "sessState", "delegTracked")
         card_fields = lambda a: {f: a.get(f) for f in CARD_FIELDS}
         self.assertEqual(rows[SID], [
             {"itemId": g1, "kind": "goal", "title": "which database does the suite target?", "body": "Postgres or SQLite: the fixtures differ", "cont": True, "t": 100, **card_fields(frame["asks"][0])},

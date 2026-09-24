@@ -1141,7 +1141,7 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 .ntc-row .ntc-secs-row { margin-top: 2px; }
 .ntc-row .ntc-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 0.86em; }
 .ntc-row .ntc-distill { font-size: 0.86em; opacity: 0.85; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }   /* the card's line, clamped in the box like the brief was (the box is a strip; the card has the pane), More past it at either level */
-.ntc-row.ntc-open .ntc-distill { display: block; -webkit-line-clamp: unset; overflow: visible; }   /* the disclosure open: the clamp lifted */   /* below level 2: the background paragraph, its disclosure and the attachment hidden; the title and the buttons stand */
+.ntc-row.ntc-open .ntc-distill { display: block; -webkit-line-clamp: unset; overflow: visible; }   /* the disclosure open: the clamp lifted */
 #notices:not(.ntc-l2) .ntc-row.ntc-fault .ntc-body { display: -webkit-box; }   /* the credential row's body, the fault's explanation, shows at the items too (the box arc's round three: it hid with every body) */
 .ntc-head .ntc-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--st-needs-bg); }
 .ntc-head .ntc-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }

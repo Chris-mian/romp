@@ -65,7 +65,7 @@ test("feed: the age tip rides wireTip with prune semantics — the 1s-vanish fix
 
 test("upgraded spots wire through setTip — the native title= on them is gone", () => {
   // feed badges + the card bell
-  assert.match(FEED, /setTip\(intingBadge, BADGE_WORDS\.interrupting\.title\);/); assert.match(FEED, /interrupting: \{ text: "interrupting…", title: "stop sent/);   // the card's sections, tree and badges moved to card-sections.ts (plans/needs-you.md, one builder with the Needs you row)
+  assert.match(FEED, /setTip\(b, BADGE_WORDS\.interrupting\.title\); out\.push\(b\);/); assert.match(FEED, /interrupting: \{ text: "interrupting…", title: "stop sent/);   // the card's sections, tree and badges moved to card-sections.ts (plans/needs-you.md, one builder with the Needs you row)
   assert.match(FEED, /setTip\(a\._blocked as HTMLElement, it\.blocked\.what/);
   assert.match(FEED, /setTip\(a\._apiBadge as HTMLElement,/);
   assert.match(FEED, /setTip\(a\._jauthBadge as HTMLElement,/);

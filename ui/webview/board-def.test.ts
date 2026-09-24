@@ -110,8 +110,8 @@ const KIND_TABLE: Record<string, { sections: string[]; actions: string[]; menu: 
 };
 // a top-level function's own source: from its declaration to the next top-level declaration
 function fnBody(name: string): string {
-  const at = FEED.indexOf("\nfunction " + name + "(");
-  assert.ok(at >= 0, "feed.ts has function " + name);
+  const at = FEED.indexOf("function " + name + "(");   // "export function" too: the section builder lives in card-sections.ts (read into FEED with feed.ts)
+  assert.ok(at >= 0, "the card's source has function " + name);
   const next = FEED.indexOf("\nfunction ", at + 1);
   return FEED.slice(at, next < 0 ? FEED.length : next);
 }

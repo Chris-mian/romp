@@ -219,14 +219,14 @@ line); and in the shell and VS Code the header's bar carries the box's own gear,
 The row carries what the card carries (the user 2026-09-23, from a screenshot of a row at the items level that showed its title and
 two buttons alone). At the items level a row shows the card at a glance: the title, the content of the card's default-open section
 under it (the distill line, the decision brief or the takeaway, as the card shows it), the state badges the card wears on its name row
-(re-judging, follow-up failed, interrupted, awaiting a peer, a delegation's origin), then Reply and Clear. At the full-context level
+(re-judging, done confirming, follow-up failed, interrupting or interrupted, the warning chip with its evidence, awaiting a peer, a delegation's origin or handoff), then Reply and Clear. At the full-context level
 the row shows the card's whole disclosure: the same section toggles in the same order (Background, Summary, Stalled, the sub-goals,
 Awaiting task, each present when the card has it), the same one-open rule with the same default, driving the same section bodies (the
 background paragraph, the distill line with its paragraph stamps, the stall note, the sub-goal tree, the awaited-task list), and for a
 notice row the notice's body and attachment. One builder draws both: the card's section toggles, bodies and distill line move into a
 shared module that the feed and the chat page both import, as the notice face already is, and the row joins the card's twin set for
 the item, so which section is open is one state and never a second copy. The session name and the age stay off the row: the box is the
-session's own page. The kernel's row carries every field the card's sections read, from the same feed item.
+session's own page. The kernel's row carries every field the card's sections read, from the same feed item. The one open section is one state across the shell's two documents: every write to the choice goes through the shared module's setter, which carries it over a channel from the feed page (the owner, which persists it) to the chat page (a follower, which asks for the map when it loads), so after a reload the row opens what the card opens. In VS Code the chat and feed webviews are separate origins and the channel crosses nothing: each page keeps its own choice there, and a fallback through the extension host is deferred to after the release (the freeze of 2026-09-23).
 
 Every clear or undo account the kernel sends carries its Undo stack (`batches`: the ids an earlier undo left owed first, then the
 clears log's batches by stamp, newest first; `owedBatch`: the owed ids alone; `batchesTotal`: the count of log batches before the

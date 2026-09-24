@@ -11,22 +11,22 @@ const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", 
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.css"), "utf8");   // the badge and paragraph rules moved to the sheet both pages import (plans/needs-you.md)
 
 test("a waiting-on chip is built and rides the wrapping chip row (its own line when it doesn't fit)", () => {
-  assert.match(FEED, /const waitOnBadge = el\("span", "fask-waiton"\)/);
-  assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge\)/);
-  assert.match(FEED, /a\._waitOn = waitOnBadge;/);
+  assert.match(FEED, /const b = el\("span", "fask-waiton" \+ \(wo\.inCycle \? " fask-waiton-cycle" : ""\)\);/);
+  assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, badges\)/);
+  assert.match(FEED, /a\._badges = badges;/);   // the chip is a state badge in the name row slot (card-sections.ts stateBadges)
 });
 
 test("it.waitingOn drives the chip: 'Awaiting <peer>' / 'Handed off to <peer>' (native-colour name, NO emoji) / 'Deadlock' for a cycle", () => {
   // the label is "Awaiting " / "Handed off to " (delegate kind) / "Deadlock " — no ⏳/⟲ emoji
   // (the user 2026-06-22 / 2026-07-25: a delegation handoff is not "awaiting background agents")
-  assert.match(FEED, /woPre\.textContent = wo\.inCycle \? "Deadlock " : wo\.kind === "delegate" \? "Handed off to " : "Awaiting "/);
+  assert.match(FEED, /pre\.textContent = wo\.inCycle \? "Deadlock " : wo\.kind === "delegate" \? "Handed off to " : "Awaiting "/);
   assert.doesNotMatch(FEED, /⏳ waiting on|⟲ deadlock/, "no emoji prefix anymore");
   // the peer NAME is a separate span in its OWN identity colour (like the ↪ from provenance)
-  assert.match(FEED, /woName\.textContent = wo\.name/);
-  assert.match(FEED, /if \(wo\.color && wo\.color\.bg\) woName\.style\.color = wo\.color\.bg/);
+  assert.match(FEED, /name\.textContent = wo\.name/);
+  assert.match(FEED, /if \(wo\.color && wo\.color\.bg\) name\.style\.color = wo\.color\.bg/);
   assert.match(FEED, /"fask-waiton" \+ \(wo\.inCycle \? " fask-waiton-cycle" : ""\)/);   // teal pill / red cycle kept
-  assert.match(FEED, /a\._waitOn\.style\.display = "";/, "shown when waitingOn is set");
-  assert.match(FEED, /a\._waitOn\.style\.display = "none";/, "hidden when it isn't");
+  assert.match(FEED, /const wo = it\.waitingOn;\s*\n\s*if \(wo\) \{/, "built when waitingOn is set");
+  assert.match(FEED, /out\.push\(b\);\s*\n\s*\}\s*\n\s*if \(it\.handoffTo/, "and not built when it isn't (the slot is rebuilt on every update)");
 });
 
 test("the chip has its own teal style + a distinct red cycle variant", () => {

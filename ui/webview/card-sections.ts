@@ -8,7 +8,10 @@
 // them all: the feed card, its focused-section copy and the chat box's row are one twin set for the item.
 import { linkifyPrRefs } from "./pr-links";
 import { hostPartsNodes } from "./host-prefix";
-import { awaitWord, groupRows, waitsNote, GROUP_TITLE, ROW_KIND_OF_LEGACY, type AwaitRow } from "./spin-caption";
+import { awaitWord, groupRows, waitsNote, GROUP_TITLE, ROW_KIND_OF_LEGACY, spinFor, type AwaitRow, type Spin } from "./spin-caption";
+import { distillPending, distillParas, distillStaleNote } from "./distiller-line";
+import { stampAge } from "./feed-age";
+import { setTip } from "./tip";   // the interrupting chip's styled tip, as the card had it (tip.ts), never a native title
 
 function el(tag: string, cls?: string): HTMLElement {
   const e = document.createElement(tag);
@@ -51,9 +54,13 @@ export interface AskTreeNode {
 /** The fields of a feed item the sections read: the card's AskItem satisfies it, and so does the chat box's row (the kernel's _needs_you_rows
  *  carries every one of them from the same feed item). */
 export interface SectionItem {
-  itemId: string; sid: string;
+  itemId: string; sid: string; t?: number | null;
   background?: string | null;
   summary?: string | null; blockSummary?: string | null;
+  briefParts?: { id?: string; since: number }[] | null; summaryParts?: { id?: string; since: number }[] | null;   // the distill line's per-paragraph stamps
+  summaryAnchorUuid?: string | null; summaryAnchorQuote?: string | null;   // the whole line's landing: where the takeaway or brief was written
+  summaryAnchorsPara?: ({ u: string; q?: string } | null)[] | null;   // T220: a paragraph's own citation
+  summaryStale?: boolean | null;
   tree?: AskTreeNode[] | null;
   stalled?: { why: string; since?: number; note?: string | null; blocked?: boolean } | null;
   awaiting?: { why?: string | null; kind?: string | null; since?: number | null; count?: number | null; tasks?: string[] | null;
@@ -62,14 +69,27 @@ export interface SectionItem {
 }
 
 /** What a page supplies to the shared builder: its collapsed-by-default preference, how a sub-goal row's zones are wired, the PR repo for
- *  a row's links, the live duration nodes, and how a peer's session is opened. */
+ *  a row's links, the live duration nodes, how a peer's session is opened, its clock and age words (the feed's kernel-synced clock and its
+ *  recency tint; the stamped ages are repainted by each page's own live pass over [data-age-t]), and its landings: where a click on the
+ *  distill line or a paragraph goes (the feed posts showOnTimeline; the chat page scrolls to the turn), what a line without an anchor says,
+ *  and what the warning chip opens (the feed's detail overlay; the chat page has none). */
 export interface SectionEnv {
   collapsed(): boolean;
   wireNode(it: SectionItem, node: AskTreeNode, mark: HTMLElement, txt: HTMLElement, wire: boolean): void;
   repoOf(sid: string | undefined): string | null;
   durNodes(since: number | null | undefined): (string | HTMLElement)[];
   openSession(sid: string): void;
+  nowSec(): number;
+  relAge(sec: number): string;
+  ageTint(sec: number): string;
+  clockHM(t: number): string;
+  landing(it: SectionItem, target: { anchorUuid: string; quote?: string; anchor: "work" }): void;
+  noAnchor(it: SectionItem): void;
+  openWarns(it: BadgeItem & SectionItem, title: string): void;
+  workDot?(peer: HTMLElement, name: string): void;   // the feed's live working/awaiting dot before a tracked recipient's name; a page without one leaves the name bare
 }
+export type SecChoice = "bg" | "summary" | "subgoals" | "tasks" | "stall" | "none";
+const SEC_CHOICES: readonly string[] = ["bg", "summary", "subgoals", "tasks", "stall", "none"];
 
 // the twin set per item: every host element that shows the item's sections (a feed card, its focused-section copy, the chat box's row);
 // hosts that left the document are dropped on the next read, so nothing has to unregister
@@ -91,20 +111,63 @@ export function sectionHosts(itemId: string): HTMLElement[] {
   return Array.from(set);
 }
 // THE CHOICE ACROSS DOCUMENTS (plans/needs-you.md, the row carries what the card carries): the card lives in the feed page and the Needs you
-// row in the chat page, two documents in the shell, each with its own copy of this module and its own secChoice. A pick on either reaches the
-// other over a BroadcastChannel (same origin; the shell's panes are), which persists nothing: a reload starts at the default as before, and a
-// page without the channel (a VS Code webview is its own origin, so nobody listens) keeps its own choice. The receiver re-applies to every
-// host it has for the item with the item and environment each host remembered.
-const sectionChannel: BroadcastChannel | null = typeof BroadcastChannel === "function" ? new BroadcastChannel("romp-card-sections") : null;
-(sectionChannel as unknown as { unref?: () => void } | null)?.unref?.();   // Node has a BroadcastChannel too, and an open one holds its event loop: the node test run hung on the first module that imports this (2026-09-24); a browser's channel has no unref, so the call is nothing there
+// row in the chat page, two documents in the shell, each with its own copy of this module and its own secChoice. EVERY write to the choice
+// goes through setSectionChoice or replaceSectionChoices below (a press, the feed's hydration from localStorage, its prune to the live card
+// set, its clear when the Collapsed preference flips), and each posts on a BroadcastChannel (same origin; the shell's panes are), which
+// persists nothing. The feed page is the OWNER of the state (it persists the map in its view state) and the chat page a FOLLOWER: a
+// follower says hello when it loads and the owner answers with its whole map, and the owner posts its map when it loads too, so whichever
+// document comes up second gets the state (the shell loads the feed pane on demand); a follower's own pick goes to the owner as a set, which
+// the owner applies and persists. In VS Code the chat and feed webviews are separate origins, so nobody hears: each page keeps its own choice
+// there (plans/needs-you.md; a fallback through the extension host is deferred to after the release). The receiver re-applies to every host
+// it has for the item with the item and environment each host remembered. The channel is the WINDOW's: Node has a BroadcastChannel of its
+// own, and one that has posted keeps the process alive, so the node test run hung on the first module importing this (2026-09-24, twice);
+// a page without a window, or a test's stand-in window, gets no channel and keeps its own choice.
+type SectionSyncMsg = { kind: "hello" } | { kind: "set"; id: string; choice: SecChoice | null } | { kind: "map"; entries: [string, SecChoice][] };
+const sectionChannel: BroadcastChannel | null = typeof window !== "undefined" && typeof (window as { BroadcastChannel?: unknown }).BroadcastChannel === "function" ? new window.BroadcastChannel("romp-card-sections") : null;
+let syncRole: "owner" | "follower" = "follower";
+let onChoiceChange: (() => void) | null = null;
+function postSync(m: SectionSyncMsg): void { try { sectionChannel?.postMessage(m); } catch { /* a closed channel */ } }
+function reapplyHosts(id: string): void {
+  for (const c of sectionHosts(id)) { const h = c as any; if (h._it && h._sectionEnv) applySections(h, h._it, !!h._distillShown, h._sectionEnv); }
+}
+function reapplyAllHosts(): void { for (const id of Array.from(hosts.keys())) reapplyHosts(id); }
+/** The page's role in the sync and what it does when the choice changes by any road (the feed persists its view state). Called once at load,
+ *  after the owner hydrated its map: the owner then posts the map for a follower already up. */
+export function configureSectionSync(opts: { role: "owner" | "follower"; onChange?: () => void }): void {
+  syncRole = opts.role; onChoiceChange = opts.onChange || null;
+  if (syncRole === "owner") postSync({ kind: "map", entries: Array.from(secChoice.entries()) });
+  else postSync({ kind: "hello" });
+}
+/** ONE item's choice (null forgets it): posted to the other document, re-applied to this document's hosts, the change callback run. */
+export function setSectionChoice(id: string, choice: SecChoice | null, opts: { fromPeer?: boolean } = {}): void {
+  if (choice === null) secChoice.delete(id); else secChoice.set(id, choice);
+  if (!opts.fromPeer) postSync({ kind: "set", id, choice });
+  reapplyHosts(id);
+  onChoiceChange?.();
+}
+/** The whole map at once (the feed's hydration, its prune to the live set, its clear on a Collapsed flip): posted as a map. Nothing
+ *  happens when the map is already what is asked for (the prune runs on every feed render, and a map that did not move is no change, no
+ *  post and no re-apply). `quiet` skips the re-apply of this document's hosts, for a caller whose own render applies every host next. */
+export function replaceSectionChoices(entries: Iterable<[string, SecChoice]>, opts: { fromPeer?: boolean; quiet?: boolean } = {}): void {
+  const next = new Map<string, SecChoice>();
+  for (const [k, v] of entries) if (SEC_CHOICES.includes(v)) next.set(k, v);
+  let same = next.size === secChoice.size;
+  if (same) for (const [k, v] of next) if (secChoice.get(k) !== v) { same = false; break; }
+  if (same) return;
+  secChoice.clear();
+  for (const [k, v] of next) secChoice.set(k, v);
+  if (!opts.fromPeer) postSync({ kind: "map", entries: Array.from(secChoice.entries()) });
+  if (!opts.quiet) reapplyAllHosts();
+  onChoiceChange?.();
+}
 sectionChannel?.addEventListener("message", (ev: MessageEvent) => {
-  const d = ev.data as { id?: unknown; choice?: unknown } | null;
-  if (!d || typeof d.id !== "string" || !["bg", "summary", "subgoals", "tasks", "stall", "none"].includes(d.choice as string)) return;
-  secChoice.set(d.id, d.choice as "bg" | "summary" | "subgoals" | "tasks" | "stall" | "none");
-  for (const c of sectionHosts(d.id)) { const h = c as any; if (h._it && h._sectionEnv) applySections(h, h._it, !!h._distillShown, h._sectionEnv); }
+  const d = ev.data as SectionSyncMsg | null;
+  if (!d || typeof d !== "object") return;
+  if (d.kind === "hello") { if (syncRole === "owner") postSync({ kind: "map", entries: Array.from(secChoice.entries()) }); return; }
+  if (d.kind === "set") { if (typeof d.id !== "string" || (d.choice !== null && !SEC_CHOICES.includes(d.choice as string))) return; setSectionChoice(d.id, d.choice, { fromPeer: true }); return; }
+  if (d.kind === "map") { if (syncRole === "owner" || !Array.isArray(d.entries)) return; replaceSectionChoices(d.entries.filter((e) => Array.isArray(e) && typeof e[0] === "string"), { fromPeer: true }); }
 });
-
-export const secChoice = new Map<string, "bg" | "summary" | "subgoals" | "tasks" | "stall" | "none">();
+export const secChoice = new Map<string, SecChoice>();   // READ here; every write goes through setSectionChoice / replaceSectionChoices above
 export function resolveSec(id: string, hasAwaitTasks = false, collapsed = false): "bg" | "summary" | "subgoals" | "tasks" | "stall" | "none" {
   // an awaiting-on-tasks card OPENS its task list by default (the user 2026-08-23: the wait is the
   // one thing to read on that card); an explicit user pick and collapsed mode still win
@@ -211,14 +274,11 @@ export function applySections(a: any, it: SectionItem, distillShown: boolean, en
   if (choice === "stall" && !stall) choice = "none";
   const pick = (want: "bg" | "summary" | "subgoals" | "tasks" | "stall") => (ev: Event) => {
     ev.stopPropagation();
-    secChoice.set(id, choice === want ? "none" : want);   // click the showing one → off; else switch to it
-    // both elements of the card (T347): the disclosure is the CARD's, so the board's element and the focused
-    // section's copy show the same section after a pick on either; and the Needs you row in the chat page, another document (the box
-    // content round), through the channel
-    const twins = sectionHosts(id);
-    if (twins.length) { for (const c of twins) applySections(c as any, (c as any)._it ?? it, (c as any)._distillShown ?? distillShown, env); }
-    else applySections(a, it, distillShown, env);
-    sectionChannel?.postMessage({ id, choice: secChoice.get(id) });
+    // click the showing one → off; else switch to it. The setter re-applies every host of the item, so both elements of the card (T347: the
+    // disclosure is the CARD's, so the board's element and the focused section's copy show the same section after a pick on either) and
+    // the Needs you row in the chat page, another document (the box content round), through the channel
+    setSectionChoice(id, choice === want ? "none" : want);
+    if (!sectionHosts(id).length) applySections(a, it, distillShown, env);   // a host outside the registry (a test's bare element) re-applies itself
   };
   // Background toggle — visible only when there IS background; pressed (.on) when its body is showing
   a._bgBtn.style.display = bg ? "" : "none";
@@ -456,6 +516,179 @@ export function applySections(a: any, it: SectionItem, distillShown: boolean, en
 // THE STATE BADGES of the card's name row, as the Needs you box's row wears them too (plans/needs-you.md): one place for their words and
 // tooltips, read by the feed card (updateAskCard) and the row builder. The peer-facing ones (awaiting a peer, a delegation's origin or
 // handoff) build their nodes here, since the peer's name wears its identity colour and a quiet host prefix on both surfaces.
+/** The card's section toggles in the card's order (Background · Summary · Stalled · Sub-goals · Awaiting task), the bodies they drive and
+ *  the sub-goal checklist, as fresh elements: built here for the feed card and for the Needs you row alike, so neither hand-builds the other's
+ *  class names or order. The caller places `toggles` on its toggles row and `secs`, `checklist` and `awaitSpin` in its body. */
+export function buildSectionElements(): { toggles: HTMLElement[]; bgBtn: HTMLElement; takeBtn: HTMLElement; stallBtn: HTMLElement; subBtn: HTMLElement; taskBtn: HTMLElement; taskLbl: HTMLElement;
+                                          secs: HTMLElement; bgBody: HTMLElement; distill: HTMLElement; stallBody: HTMLElement; checklist: HTMLElement; awaitSpin: HTMLElement; awaitWhy: HTMLElement } {
+  const bgBtn = el("button", "fask-secbtn"); bgBtn.textContent = "Background";
+  const bgBody = el("div", "fask-bg-body");
+  const takeBtn = el("button", "fask-secbtn"); takeBtn.textContent = "Summary";
+  const distill = el("div", "fask-distill");
+  // "Sub-goals" — the THIRD mutually-exclusive section (the user 2026-07-08, moved off the footer): shows/hides
+  // the inline sub-goal tree (the checklist below). Sits right of Summary; hidden when the card has no
+  // sub-goals. Wired in applySections alongside Background/Summary (one open at a time, or none).
+  const subBtn = el("button", "fask-secbtn"); subBtn.textContent = "Sub-goals"; subBtn.style.display = "none";
+  // "Stalled" — the FIFTH mutually-exclusive section (the user 2026-07-23): romp is holding this card and
+  // nothing is moving it. Same press-toggle interaction as Background/Summary, but it keeps the WORKING
+  // colour in both states (see .fask-stallbtn) so it still draws the eye while open — the one section whose
+  // point is that something is wrong. Filled in applySections.
+  const stallBtn = el("button", "fask-secbtn fask-stallbtn"); stallBtn.textContent = "Stalled"; stallBtn.style.display = "none";
+  const stallBody = el("div", "fask-stall-body");
+  // "Awaiting task" — the FOURTH mutually-exclusive section (the user 2026-07-13): a compact pill (with
+  // the mini spinning swirl inside) that replaces the old boxed awaiting caption when live bg TASKS exist;
+  // click expands the task list in the checklist spot, same interaction as Sub-goals. Filled in applySections.
+  const taskBtn = el("button", "fask-secbtn fask-taskbtn"); taskBtn.style.display = "none";
+  const taskGlyph = el("span", "fask-awaiting-swirl"); taskGlyph.setAttribute("aria-hidden", "true");
+  const taskLbl = el("span", "fask-taskbtn-lbl");
+  taskBtn.append(taskGlyph, taskLbl);
+  const secs = el("div", "fask-secs");
+  secs.append(bgBody, distill, stallBody);   // the BODIES only; the toggles ride the caller's toggles row, one body shows at a time
+  const checklist = el("div", "fask-checklist");
+  // ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the SAME body spot the distiller line
+  // will eventually fill — a completed/blocked card shows its takeaway there; a WORKING card that's awaiting
+  // dispatched/delegated work shows the spinning swirl instead, a glanceable "in flight, not stalled" sign.
+  // The "why" rides beside it (it was tooltip-only on the ⏳ badge). Shown only while a caption exists; see applySpin.
+  const awaitSpin = el("div", "fask-awaiting"); awaitSpin.style.display = "none";
+  const awaitGlyph = el("span", "fask-awaiting-swirl"); awaitGlyph.setAttribute("aria-hidden", "true");
+  const awaitWhy = el("span", "fask-awaiting-why");
+  awaitSpin.append(awaitGlyph, awaitWhy);
+  return { toggles: [bgBtn, takeBtn, stallBtn, subBtn, taskBtn], bgBtn, takeBtn, stallBtn, subBtn, taskBtn, taskLbl, secs, bgBody, distill, stallBody, checklist, awaitSpin, awaitWhy };
+}
+
+/** The item as the swirl ladder and the badges read it (spin-caption.ts SpinItem plus the fields the distill states need). */
+export interface SpinFields {
+  notice?: unknown; blocked?: unknown; column?: string | null; judging?: boolean | null; provisional?: boolean | null;   // notice: the notice card's payload on the feed, read for truth alone
+  working?: { since?: number | null; toolUses?: number | null } | null; sessState?: string | null;
+  summary?: string | null; blockSummary?: string | null; awaiting?: SectionItem["awaiting"]; waitingOn?: unknown;
+  recheck?: boolean | null; rejudging?: boolean | null;
+}
+/** The card's swirl for the item: spinFor over the item's fields with the distiller's pending rule, on the page's clock. One call for the
+ *  card and the row, so a re-judging card (rejudging, not recheck) says "Analyzing…" on both and wears no chip on either. */
+export function cardSpin(it: SpinFields, dCompleted: boolean, dBlocked: boolean, env: { nowSec(): number }): Spin {
+  return spinFor(it as Parameters<typeof spinFor>[0], !it.notice && distillPending(dCompleted, dBlocked, it.summary, it.blockSummary, !!it.blocked), dCompleted, env.nowSec());
+}
+/** Draw the swirl box (`awaitSpin`, `awaitWhy` from buildSectionElements) for a spin: the caption, the AWAITING case's rounded box, the
+ *  at-rest floor, a delegation wait naming its peers in their colours, a running duration on its own live element. */
+export function applySpin(a: { _awaitSpin: HTMLElement; _awaitWhy: HTMLElement }, it: SpinFields & { awaiting?: SectionItem["awaiting"] }, spin: Spin, env: SectionEnv): void {
+  const spinCaption = spin.caption, spinTip = spin.tip, awaitingBg = spin.awaitingBg;
+  a._awaitSpin.style.display = spinCaption ? "" : "none";
+  // The AWAITING case gets a rounded box (its distinct read); the swirl spins in every case now —
+  // except the at-rest floor (`still`): quiet/unknown keep the glyph as the state anchor, stilled,
+  // because spin reads as in-flight and nothing is (the user 2026-08-14).
+  a._awaitSpin.classList.toggle("await-paused", awaitingBg);
+  a._awaitSpin.classList.toggle("await-still", !!spin.still);
+  if (!spinCaption) return;
+  // a DELEGATION wait names its peers the way the "↪ from" line does (the user 2026-08-23): the
+  // quiet host: prefix + the peer's identity colour, never a colourless "Awaiting peer". The
+  // ladder's caption stays the fallback (older kernel payloads carry no peers).
+  const awPeers = (awaitingBg && it.awaiting && it.awaiting.peers) || [];
+  if (awPeers.length) {
+    a._awaitWhy.replaceChildren();
+    a._awaitWhy.append("Awaiting ");
+    awPeers.forEach((p, i) => {
+      if (i) a._awaitWhy.append(", ");
+      const nm = el("span", "fask-waiton-name");
+      nm.replaceChildren(...hostPartsNodes(p.host, p.name));
+      if (p.color && p.color.bg) nm.style.color = p.color.bg;
+      if (p.sid) {
+        // the standard session-chip gesture (the handoffTo idiom): click opens the session
+        nm.title = "waiting on " + p.name + " — click opens the session";
+        nm.style.cursor = "pointer";
+        const sid = p.sid; nm.onclick = (ev: Event) => { ev.stopPropagation(); env.openSession(sid); };
+      }
+      a._awaitWhy.appendChild(nm);
+    });
+    a._awaitWhy.append(...env.durNodes(it.awaiting && it.awaiting.since));
+  } else if (spin.dur) {   // the caption's running duration, live (feed-age.ts fmt "dur"; the page's own pass repaints it)
+    const d = el("span", "fask-dur"); stampAge(d, spin.dur.since, "dur", false, env.nowSec(), env.relAge, env.ageTint);
+    a._awaitWhy.replaceChildren(spin.dur.text, d);
+  } else a._awaitWhy.textContent = spinCaption;
+  a._awaitSpin.title = spinTip || spinCaption;
+  // HONEST fallback (the user 2026-08-26): a peer-kind wait with no named session says WHY the
+  // name is missing, instead of presenting "peer" as a style — identity is only truly unknowable
+  // when the record predates identity capture or an older/offline kernel shipped the payload.
+  if (awaitingBg && !awPeers.length && it.awaiting && it.awaiting.kind === "peer")
+    a._awaitSpin.title += " (No session is named in this wait's record — it predates identity capture, or an older kernel shipped it.)";
+}
+
+/** THE DISTILL LINE'S PARAGRAPHS, STAMPS AND LANDINGS, after applyDistillLine set its text: a multi-item brief or summary splits into its
+ *  paragraphs (distillParas, the shared gate), each stamped with its part's age (stampAge on the page's clock, repainted by the page's live
+ *  pass; a part with no event time reads the static "<1m ago" the chip always showed) and linked to where its piece resolved (T220: the
+ *  paragraph's own citation first, then the item's tree row's work anchor); the stale-takeaway note is prepended; and the whole line is a
+ *  link to where the takeaway or brief was written, or an honest click that says no anchor was recorded. Moved here from the card
+ *  (2026-09-24) so the Needs you row's line carries the same affordances through its page's landings. */
+export function applyDistillLanding(a: { _distill: HTMLElement }, it: SectionItem, distillShown: string, dCompleted: boolean, dBlocked: boolean, env: SectionEnv): void {
+  const dle = a._distill;
+  const bp = dCompleted ? it.summaryParts : dBlocked ? it.briefParts : null;   // parts must belong to the state being shown: briefParts <-> blocked brief, summaryParts <-> takeaway
+  const pAnchors = (distillShown && it.summaryAnchorsPara) || null;
+  // PER-PARAGRAPH ages (the user 2026-07-24): a MULTI-item decision brief writes one paragraph per owed item IN ORDER (briefParts), so each
+  // paragraph can wear the age of ITS OWN ask; the DONE side mirrors it with summaryParts. The gates (distillParas): the parts must belong to
+  // the STATE being shown, multi-item only, and the paragraph count must MATCH the parts (a missing stamp beats a wrong one).
+  // ONE EXTRA TRAILING PARAGRAPH is allowed and left UNSTAMPED (the user 2026-07-29): the judge prompts put whatever is still open in a last paragraph
+  // of its own, which belongs to no item and carries no item's age; a bigger surplus means the mapping cannot be trusted.
+  if (distillShown && ((bp && bp.length > 1) || (pAnchors && pAnchors.some(Boolean)))) {
+    const split = distillParas(distillShown, bp);
+    const paras = split.paras;
+    const stampOk = split.stamps !== null;
+    const anchOk = !!(pAnchors && paras.length === pAnchors.length);   // count drift → drop, never mis-map
+    if (stampOk || anchOk) {
+      dle.textContent = "";
+      const nowS = env.nowSec();
+      paras.forEach((p, i) => {
+        const para = el("div", "fask-para");
+        para.textContent = p;
+        if (stampOk && i < bp!.length) {
+          const age = el("span", "fask-para-age");
+          if (bp![i].since) stampAge(age, bp![i].since, "plain", false, nowS, env.relAge, env.ageTint);   // stamped: the live pass moves it
+          else age.textContent = env.relAge(0);   // no event time → the static "<1m ago" this chip always showed; nothing to count from
+          para.append(" ", age);
+        }
+        // T220 first: the paragraph's own citation, with its located span riding the landing
+        const cited = anchOk ? pAnchors![i] : null;
+        let au: string | null = null, aq: string | undefined;
+        if (cited && cited.u) { au = cited.u; aq = cited.q; }
+        else if (stampOk && i < bp!.length) {
+          // T153: the item's tree row carries its WORK anchor
+          const pid = bp![i].id;
+          const prow = pid ? (it.tree || []).find((r) => r.id === pid) : undefined;
+          if (prow && prow.anchorUuid) au = prow.anchorUuid;
+        }
+        if (au) {
+          const u = au;
+          para.classList.add("fask-para-link");
+          para.title = "jump to where this piece resolved";
+          para.onclick = (ev: Event) => { ev.stopPropagation(); env.landing(it, { anchorUuid: u, quote: aq, anchor: "work" }); };
+        }
+        dle.append(para);
+      });
+    }
+  }
+  // STALE-takeaway note (the user 2026-08-19): the rule lives in ./distiller-line so the test EXECUTES it. Prepended after the
+  // parts-split (which rewrites the element), so it survives either rendering.
+  const staleNote = distillStaleNote(!!it.summaryStale, dCompleted, distillShown);
+  if (staleNote) { const sn = el("div", "fsum-stale"); sn.textContent = staleNote; dle.prepend(sn); }
+  // The distiller line is a LINK: clicking it jumps to where the takeaway/brief was actually written — the biggest contiguous
+  // assistant-text block in the goal's work span (it.summaryAnchorUuid; kernel _seg_best_text). stopPropagation so it doesn't also open
+  // the card's modal. Without an anchor the line must still ACKNOWLEDGE the click instead of rendering as silently dead text (the user
+  // 2026-07-20): the same affordance, an honest outcome (env.noAnchor: the feed toasts and files it in the error center).
+  if (distillShown && it.summaryAnchorUuid) {
+    dle.classList.add("fask-distill-link");
+    dle.title = "jump to where this was written";
+    const u = it.summaryAnchorUuid, q = it.summaryAnchorQuote || undefined;
+    dle.onclick = (ev: Event) => { ev.stopPropagation(); env.landing(it, { anchorUuid: u, quote: q, anchor: "work" }); };
+  } else if (distillShown) {
+    dle.classList.add("fask-distill-link");
+    dle.title = "no anchor recorded for this card";
+    dle.onclick = (ev: Event) => { ev.stopPropagation(); env.noAnchor(it); };
+  } else {
+    dle.classList.remove("fask-distill-link");
+    dle.onclick = null;
+    dle.removeAttribute("title");
+  }
+}
+
+export const DISTILL_FAIL_RE = /^(summary|brief|stall)-failed$/;   // the distiller's own failures (judge _node_warn kinds): a chip of these alone reads "distill failed"
 export const BADGE_WORDS = {
   rejudging: { text: "↩ re-judging", title: "you followed up — no longer waiting on you; the judge will resolve it or re-block it on the next pass" },
   nudgeFailed: { text: "follow-up failed", title: "romp followed up once; the response didn't resolve it and it won't be re-asked — it's waiting on you" },
@@ -464,28 +697,61 @@ export const BADGE_WORDS = {
 } as const;
 
 export interface BadgeItem {
-  recheck?: boolean | null; rejudging?: boolean | null; nudgeFailed?: boolean | null;
+  itemId?: string; sid?: string; text?: string | null;
+  recheck?: boolean | null; rejudging?: boolean | null; nudgeFailed?: boolean | null; doneConfirming?: boolean | null;
+  warns?: { kind: string; t: number; msg: string; detail: string }[] | null;   // judge-stamped anomalies → the yellow "warning" chip
+  failLog?: { t: number; line: string; model: string; note: string }[] | null;   // the summarizer's failed attempts: the chip's hover evidence
   nudged?: { count: number; times: number[] } | null;
   interrupting?: boolean | null; interrupted?: boolean | null;
   waitingOn?: { peerSid?: string; name: string; color?: { bg: string; fg: string } | null; inCycle?: boolean; kind?: string; since?: number | null } | null;
   origin?: { peer: string; peerSid: string; peerHost?: string; color?: { bg: string; fg: string } | null; live?: boolean } | null;
   handoffTo?: { peer: string; peerSid: string; peerHost?: string; color?: { bg: string; fg: string } | null } | null;
+  delegTracked?: { sid: string; name: string; host?: string; color?: { bg: string; fg: string } | null }[] | null;   // a tracked delegation's recipients (the ONE card, homed under the delegator)
 }
 
-/** The badges the card's name row shows for this item, in the card's order, as fresh elements: re-judging, follow-up failed, interrupting or
- *  interrupted (the card's own precedence: follow-up failed outranks both interrupt words, and the two interrupt words never show together),
- *  awaiting a peer (or handed off to one, or a deadlock), a delegation's origin. `clockHM` formats the nudge times in the tooltip. */
-export function stateBadges(it: BadgeItem, env: { durNodes(since: number | null | undefined): (string | HTMLElement)[]; openSession(sid: string): void; clockHM(t: number): string }): HTMLElement[] {
+/** The badges the card's name row shows for this item, in the card's order, as fresh elements, with the card's own conditions and
+ *  precedence: a delegation's origin; "↩ re-judging" on a targeted follow-up (recheck) only, and not while the swirl already says
+ *  "Analyzing…" (a plain reply after a block is `rejudging`: it moves to Working with the swirl as its ONLY cue, never a chip beside it);
+ *  "done, confirming"; "follow-up failed", which outranks both interrupt words; "interrupting…" then "interrupted", never together; the
+ *  "warning" chip (or "distill failed" when every warn is the distiller's), its hover the attempt history or the last message, its click
+ *  the page's detail; "Awaiting <peer>" (or "Handed off to", or "Deadlock") with the wait's live duration; and "↪ delegated to". The
+ *  caller hands the spin caption it drew for the item (cardSpin), so both pages apply the one rule. */
+export function stateBadges(it: BadgeItem, env: Pick<SectionEnv, "durNodes" | "openSession" | "clockHM" | "openWarns" | "workDot">, spinCaption: string | null = null): HTMLElement[] {
   const out: HTMLElement[] = [];
   const badge = (cls: string, text: string, title: string) => { const b = el("span", cls); b.textContent = text; b.title = title; return b; };
-  if (it.recheck || it.rejudging) out.push(badge("fask-followedup", BADGE_WORDS.rejudging.text, BADGE_WORDS.rejudging.title));
+  if (it.origin && it.origin.peer) {
+    // ↪ courier handoff: planted by a peer's message → "↪ from <sender>", click opens the sender. "↪ from" in dim gray, the peer name in
+    // the bold session-name style in its own identity colour (the user 2026-06-16); a federated sender wears the quiet "host:" prefix.
+    // Absorbed (the sender's linked entry closed): the same badge, dimmed — provenance, not an active handoff; the title also warns that a
+    // clear takes the linked entry with it (the user 2026-08-16).
+    const og = el("a", "fask-origin" + (it.origin.live === false ? " fask-origin-absorbed" : ""));
+    const pre = el("span", "fask-origin-pre"); pre.textContent = "↪ from ";
+    const peer = el("span", "fask-origin-peer"); peer.replaceChildren(...hostPartsNodes(it.origin.peerHost, it.origin.peer)); if (it.origin.color) peer.style.color = it.origin.color.bg;
+    og.append(pre, peer);
+    og.title = (it.origin.live === false ? "delegated by " + it.origin.peer + "; their linked entry closed with this card" : "delegated by " + it.origin.peer + " — clearing this card also clears their linked entry") + " · click opens the session";
+    const sid = it.origin.peerSid; og.onclick = (ev: Event) => { ev.stopPropagation(); env.openSession(sid); };
+    out.push(og);
+  }
+  if (it.recheck && spinCaption !== "Analyzing…") out.push(badge("fask-followedup", BADGE_WORDS.rejudging.text, BADGE_WORDS.rejudging.title));
+  if (it.doneConfirming) out.push(badge("fask-doneconfirming", "done, confirming", "ruled done — it files under Completed once the session has moved on; a follow-up before then reopens it in place"));   // (the user 2026-07-24): an indicator, never a move
   if (it.nudgeFailed) {
     const b = badge("fask-nudgefailed", BADGE_WORDS.nudgeFailed.text, BADGE_WORDS.nudgeFailed.title);
+    // the chip label says "follow-up failed"; its tooltip carries the EVIDENCE — romp did follow up, and when (the user 2026-07-02)
     if (it.nudged && it.nudged.times && it.nudged.times.length) b.title = `romp followed up ${it.nudged.count}× (${it.nudged.times.map(env.clockHM).join(", ")}); the response didn't resolve it and it won't be re-asked — it's waiting on you`;
     out.push(b);
   }
-  if (it.interrupting && !it.nudgeFailed) out.push(badge("fask-interrupting", BADGE_WORDS.interrupting.text, BADGE_WORDS.interrupting.title));
+  if (it.interrupting && !it.nudgeFailed) { const b = badge("fask-interrupting", BADGE_WORDS.interrupting.text, ""); setTip(b, BADGE_WORDS.interrupting.title); out.push(b); }   // styled tip (tip.ts), not a native title
   if (it.interrupted && !it.interrupting && !it.nudgeFailed) out.push(badge("fask-interrupted", BADGE_WORDS.interrupted.text, BADGE_WORDS.interrupted.title));
+  if (it.warns && it.warns.length) {
+    // "warning" chip: a judge stamped an anomaly on this goal — the latest msg on hover, detail on click. A BUTTON so it is focusable.
+    const allDistill = it.warns.every((w) => DISTILL_FAIL_RE.test(w.kind));
+    const lbl = allDistill ? "distill failed" : "warning";
+    const chip = el("button", "fask-warnchip"); chip.textContent = it.warns.length > 1 ? `${lbl} ×${it.warns.length}` : lbl;
+    // hover = the attempt history when one exists (the user 2026-08-18: "tried opus — 529" ×3 says what the prose can't)
+    chip.title = (it.failLog && it.failLog.length ? it.failLog.map((f) => `${env.clockHM(f.t)} tried ${f.model} — ${f.note}`).join("\n") : it.warns[it.warns.length - 1].msg) + "\n— click for what happened and why";
+    chip.onclick = (ev: Event) => { ev.stopPropagation(); env.openWarns(it as BadgeItem & SectionItem, it.text || ""); };
+    out.push(chip);
+  }
   const wo = it.waitingOn;
   if (wo) {
     const b = el("span", "fask-waiton" + (wo.inCycle ? " fask-waiton-cycle" : ""));
@@ -498,21 +764,34 @@ export function stateBadges(it: BadgeItem, env: { durNodes(since: number | null 
       : "this session has an unanswered message out to " + wo.name + " — waiting on its reply, not stalled, so auto-nudge skips it";
     out.push(b);
   }
-  if (it.origin && it.origin.peer) {
-    const og = el("a", "fask-origin" + (it.origin.live === false ? " fask-origin-absorbed" : ""));
-    const pre = el("span", "fask-origin-pre"); pre.textContent = "↪ from ";
-    const peer = el("span", "fask-origin-peer"); peer.replaceChildren(...hostPartsNodes(it.origin.peerHost, it.origin.peer)); if (it.origin.color) peer.style.color = it.origin.color.bg;
-    og.append(pre, peer);
-    og.title = (it.origin.live === false ? "delegated by " + it.origin.peer + "; their linked entry closed with this card" : "delegated by " + it.origin.peer + " — clearing this card also clears their linked entry") + " · click opens the session";
-    const sid = it.origin.peerSid; og.onclick = (ev: Event) => { ev.stopPropagation(); env.openSession(sid); };
-    out.push(og);
-  }
   if (it.handoffTo && it.handoffTo.peerSid) {
+    // ↪ sender-side handoff provenance (the user 2026-08-24): the card titles the WORK and wears the delegation as this badge
     const og = el("a", "fask-origin");
     const pre = el("span", "fask-origin-pre"); pre.textContent = "↪ delegated to ";
     const peer = el("span", "fask-origin-peer"); peer.replaceChildren(...hostPartsNodes(it.handoffTo.peerHost, it.handoffTo.peer)); if (it.handoffTo.color && it.handoffTo.color.bg) peer.style.color = it.handoffTo.color.bg;
-    og.append(pre, peer); og.title = "this card's work was handed to " + it.handoffTo.peer + " · click opens the session";
+    og.append(pre, peer); og.title = "delegated to " + it.handoffTo.peer + "; their result checks this card off · click opens the session";
     const sid = it.handoffTo.peerSid; og.onclick = (ev: Event) => { ev.stopPropagation(); env.openSession(sid); };
+    out.push(og);
+  }
+  if (it.delegTracked && it.delegTracked.length) {
+    // tracked delegation PRIMARY (the user 2026-08-24): the ONE card, homed under the delegator, names the recipient(s) in their identity
+    // colours with the board's live dot (the feed's workDot), so the manager reads the worker's state without leaving this card; each
+    // recipient carries its own click
+    const og = el("a", "fask-origin");
+    og.title = "a tracked handoff: the work runs with " + it.delegTracked.map((d) => d.name).join(", ") + " and reports back to this card";
+    const pre = el("span", "fask-origin-pre"); pre.textContent = "↪ delegated to ";
+    og.append(pre);
+    it.delegTracked.forEach((d, i) => {
+      if (i) og.append(", ");
+      const peer = el("span", "fask-origin-peer");
+      peer.replaceChildren(...hostPartsNodes(d.host, d.name));
+      if (d.color && d.color.bg) peer.style.color = d.color.bg;
+      env.workDot?.(peer, d.name);
+      peer.title = "a tracked handoff: the work runs with " + d.name + " and reports back to this card · click opens the session";
+      peer.style.cursor = "pointer";
+      const sid = d.sid; peer.onclick = (ev: Event) => { ev.stopPropagation(); env.openSession(sid); };
+      og.append(peer);
+    });
     out.push(og);
   }
   return out;

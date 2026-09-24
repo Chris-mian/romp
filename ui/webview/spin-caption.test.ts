@@ -174,10 +174,10 @@ test("feed.ts routes the card's swirl through spinFor and keeps no inline copy o
   // element the 15 s live pass keeps moving (feed-age.ts fmt "dur")
   assert.match(FEED, /function durNodes\(since: number \| null \| undefined\): \(string \| HTMLElement\)\[\] \{\n\s*return since && since > 0 \? \[" · ", durSpan\(since\)\] : \[\];/);
   assert.match(FEED, /pillLbl\.append\(\.\.\.env\.durNodes\(it\.awaiting && it\.awaiting\.since\)\);\s*\/\/ the waited time, live/);   // the card's sections, tree and badges moved to card-sections.ts (plans/needs-you.md, one builder with the Needs you row)
-  assert.match(FEED, /const woDur = durNodes\(wo\.since\);/);
+  assert.match(FEED, /const dur = env\.durNodes\(wo\.since\);/);   // the badges moved to card-sections.ts (round two of the box content PR: one builder for the card and the Needs you row)
   // …and the ladder itself runs on the kernel's clock, like every other age on the board
-  assert.match(FEED, /dCompleted, nowSec\(\)\);/);
-  assert.match(FEED, /const spin = spinFor\(it, !it\.notice && distillPending\(/);
+  assert.match(FEED, /dCompleted, env\.nowSec\(\)\);/);   // cardSpin, on the page clock
+  assert.match(FEED, /return spinFor\(it as Parameters<typeof spinFor>\[0\], !it\.notice && distillPending\(/); assert.match(FEED, /const spin = cardSpin\(it, dCompleted, dBlocked, sectionEnv\);/);
   assert.match(FEED, /const spinCaption = spin\.caption, spinTip = spin\.tip, awaitingBg = spin\.awaitingBg;/);
   // the inline ladder is gone — no second, drifting copy of the rule
   assert.doesNotMatch(FEED, /spinCaption = "Analyzing…";/);

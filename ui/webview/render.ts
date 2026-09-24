@@ -2,8 +2,10 @@ import { marked } from "marked";
 import { GEAR_GLYPH, ICON_FORK } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
 import { sanitizeMd, userContentTarget } from "./md-sanitize";
 import { noticeBodyNodes, noticeAttachmentNodes, type NoticeAttachment } from "./notice-face";
-import { applySections, registerSectionHost, unregisterSectionHost, stateBadges, type SectionEnv, type SectionItem, type BadgeItem, type AskTreeNode } from "./card-sections";   // the card's sections and badges: one builder with the feed card (plans/needs-you.md, the row carries what the card carries)
-import { applyDistillLine, distillParas } from "./distiller-line";   // the notice face the feed card shows, for the approval box   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
+import { applySections, registerSectionHost, unregisterSectionHost, stateBadges, buildSectionElements, cardSpin, applySpin, applyDistillLanding, configureSectionSync,
+         type SectionEnv, type SectionItem, type BadgeItem, type SpinFields, type AskTreeNode } from "./card-sections";   // the card's sections, badges, swirl and landings: one builder with the feed card (plans/needs-you.md, the row carries what the card carries)
+import { applyDistillLine } from "./distiller-line";
+import { relAge, refreshAges } from "./feed-age";   // the age words and the live pass over the row's stamped ages   // the notice face the feed card shows, for the approval box   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
 import python from "highlight.js/lib/languages/python";
@@ -353,7 +355,10 @@ interface ChatNotice { itemId: string; key: string; rev: number; title: string; 
                        distillState?: "completed" | "blocked" | null; summaryStale?: boolean | null; relayNote?: string | null; background?: string | null;
                        stalled?: SectionItem["stalled"]; tree?: AskTreeNode[] | null; awaiting?: SectionItem["awaiting"];
                        recheck?: boolean | null; rejudging?: boolean | null; nudgeFailed?: boolean | null; nudged?: BadgeItem["nudged"]; interrupting?: boolean | null; interrupted?: boolean | null;
-                       waitingOn?: BadgeItem["waitingOn"]; origin?: BadgeItem["origin"]; handoffTo?: BadgeItem["handoffTo"] }
+                       waitingOn?: BadgeItem["waitingOn"]; origin?: BadgeItem["origin"]; handoffTo?: BadgeItem["handoffTo"];
+                       warns?: BadgeItem["warns"]; failLog?: BadgeItem["failLog"]; doneConfirming?: boolean | null;
+                       summaryAnchorUuid?: string | null; summaryAnchorQuote?: string | null; summaryAnchorsPara?: SectionItem["summaryAnchorsPara"];
+                       blocked?: unknown; column?: string | null; judging?: boolean | null; working?: SpinFields["working"]; sessState?: string | null }
 interface Status { state: ChipState; sinceEpoch: number | null; modelFallback?: ModelFallback | null; notices?: ChatNotice[] | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; needsYou?: boolean | null; needsYouCount?: number | null; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; apiNoRetry?: boolean; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions): the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you: the red tab) rather than a transient API error (amber, retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried: retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried: a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); apiNoRetry = the blocking notice is one nothing retries (the launch error's noRetry, the Codex bracket's end notices: a compaction Codex could not run, the app-server's death, or a kernel restart whose outcome the new kernel cannot learn; the ends named 2026-09-22, when the restart end outgrew a gloss of one failed compaction): the card draws no Retry, no Stop-all and no retrying-soon meta (2026-09-21); needsYou = the FEED filed a card of this session under needs-you (build_session, from the kernel's last feed build; null before the first) → the Needs you ring widget wears a dashed magenta ring on the tab in every live state, working included (tab-state.ts RING_TEST, tab-widgets.ts composeTabRing; the ask ring of 2026-09-13, renamed and recoloured 2026-09-21); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
 // The side a pick this box cannot bill actually fell to ("login" | "key"), "" when nothing did: the kernel's
@@ -15105,23 +15110,22 @@ function buildNoticeRow(n: ChatNotice, sid: string): NoticeRowEl {
 function noticeSectionsFor(row: HTMLElement, n: ChatNotice): boolean {
   const rowAny = row as any; const want = n.kind === "goal" && !n.fix;
   if (want && !rowAny._distill) {
+    // the toggles, the bodies, the checklist and the awaiting swirl are the card's own elements (card-sections.ts buildSectionElements):
+    // the same class names in the same order, built by the one builder; the row adds only its slots and its clamp class
+    const se = buildSectionElements();
     const badges = el("div", "ntc-badges");
-    const secsRow = el("div", "ntc-secs-row fask-row3");
-    const mk = (cls: string, text?: string) => { const b = el("button", cls) as HTMLButtonElement; b.type = "button"; if (text) b.textContent = text; return b; };
-    const bgBtn = mk("fask-secbtn", "Background"), takeBtn = mk("fask-secbtn", "Summary"), stallBtn = mk("fask-secbtn fask-stallbtn", "Stalled"), subBtn = mk("fask-secbtn");
-    const taskBtn = mk("fask-secbtn fask-taskbtn"); const taskGlyph = el("span", "fask-awaiting-swirl"); taskGlyph.setAttribute("aria-hidden", "true"); const taskLbl = el("span", "fask-taskbtn-lbl"); taskBtn.append(taskGlyph, taskLbl);
-    secsRow.append(bgBtn, takeBtn, stallBtn, subBtn, taskBtn);
-    const secs = el("div", "fask-secs ntc-secs"); const bgBody = el("div", "fask-bg-body"); const distill = el("div", "fask-distill ntc-distill"); const stallBody = el("div", "fask-stall-body");
-    secs.append(bgBody, distill, stallBody);
-    const checklist = el("div", "fask-checklist");
-    Object.assign(rowAny, { _bgBtn: bgBtn, _takeBtn: takeBtn, _stallBtn: stallBtn, _subBtn: subBtn, _taskBtn: taskBtn, _taskLbl: taskLbl, _bgBody: bgBody, _distill: distill, _stallBody: stallBody, _secs: secs, _checklist: checklist, _badges: badges });
-    (row.querySelector(".ntc-attach") as HTMLElement).after(secsRow, secs, checklist, badges);   // after the attachment, before the note and the buttons
+    const secsRow = el("div", "ntc-secs-row fask-row3"); secsRow.append(...se.toggles);
+    for (const b of se.toggles) (b as HTMLButtonElement).type = "button";
+    se.secs.classList.add("ntc-secs"); se.distill.classList.add("ntc-distill");
+    Object.assign(rowAny, { _bgBtn: se.bgBtn, _takeBtn: se.takeBtn, _stallBtn: se.stallBtn, _subBtn: se.subBtn, _taskBtn: se.taskBtn, _taskLbl: se.taskLbl, _bgBody: se.bgBody, _distill: se.distill, _stallBody: se.stallBody,
+                            _secs: se.secs, _checklist: se.checklist, _awaitSpin: se.awaitSpin, _awaitWhy: se.awaitWhy, _badges: badges });
+    (row.querySelector(".ntc-attach") as HTMLElement).after(secsRow, se.secs, se.awaitSpin, se.checklist, badges);   // after the attachment, before the note and the buttons
     registerSectionHost(n.itemId, row);   // the item's twin set: a press on the card's toggles or the row's reaches both (card-sections.ts)
   } else if (!want && rowAny._distill) {
-    for (const k of ["_secs", "_checklist", "_badges"]) (rowAny[k] as HTMLElement).remove();
+    for (const k of ["_secs", "_checklist", "_badges", "_awaitSpin"]) (rowAny[k] as HTMLElement).remove();
     (row.querySelector(".ntc-secs-row") as HTMLElement | null)?.remove();
     row.querySelector(".ntc-more")?.remove();   // the line the disclosure rode is gone; the body's own pass remakes it if the body overflows
-    for (const k of ["_bgBtn", "_takeBtn", "_stallBtn", "_subBtn", "_taskBtn", "_taskLbl", "_bgBody", "_distill", "_stallBody", "_secs", "_checklist", "_badges", "_it", "_sectionEnv", "_distillShown"]) delete rowAny[k];
+    for (const k of ["_bgBtn", "_takeBtn", "_stallBtn", "_subBtn", "_taskBtn", "_taskLbl", "_bgBody", "_distill", "_stallBody", "_secs", "_checklist", "_badges", "_awaitSpin", "_awaitWhy", "_it", "_sectionEnv", "_distillShown"]) delete rowAny[k];
     unregisterSectionHost(n.itemId, row);
     const body = row.querySelector<HTMLElement>(".ntc-body"); if (body) body.style.display = "";
   }
@@ -15129,17 +15133,33 @@ function noticeSectionsFor(row: HTMLElement, n: ChatNotice): boolean {
 }
 // the row's LINE, the element the disclosure measures and clamps: the distill line on a row wearing the card's sections, else the markdown body
 function noticeLineOf(row: HTMLElement): HTMLElement | null { return ((row as any)._distill as HTMLElement | undefined) ?? row.querySelector<HTMLElement>(".ntc-body"); }
-// what the chat page hands the shared section builder: no collapsed-by-default preference here, display-only sub-goal rows (the modal's
-// click zones are the feed's), no PR repo for a row's links, static ages, and the page's own way to open a peer's session
-const agoText = (t: number): string => { const d = Math.max(0, Math.floor(Date.now() / 1000) - t); return d < 60 ? "<1m ago" : d < 3600 ? Math.floor(d / 60) + "m ago" : d < 86400 ? Math.floor(d / 3600) + "h ago" : Math.floor(d / 86400) + "d ago"; };
+// what the chat page hands the shared section builder (card-sections.ts SectionEnv): no collapsed-by-default preference here, a sub-goal
+// row's text jumps to the row's work anchor within this page (the modal's other zones are the feed's), no PR repo for a row's links, the
+// page's clock with the card's age words (no recency tint; the live pass below repaints the stamps), the page's own way to open a peer's
+// session, and its landings: a click on the line or a paragraph scrolls this page to the turn where the text was written (the row is the
+// active session's, so the turn is in this page), a line without an anchor says so in the landing toast and files the miss with the shell,
+// and the warning chip opens nothing here (its hover carries the evidence; the feed has the detail overlay)
+const noticeNowSec = (): number => Math.floor(Date.now() / 1000);
 const noticeSectionEnv: SectionEnv = {
   collapsed: () => false,
-  wireNode: () => { /* display-only on the row */ },
+  wireNode: (_it, node, _mark, txt, wire) => {
+    if (!wire || !node.anchorUuid) return;
+    const u = node.anchorUuid; txt.classList.add("nav"); txt.title = "jump to where this was worked on";
+    txt.onclick = (ev: Event) => { ev.stopPropagation(); scrollToAnchor(u); };
+  },
   repoOf: () => null,
-  durNodes: (since) => { if (!since || since <= 0) return []; const sp = el("span", "ntc-age"); sp.textContent = agoText(since); return [" · ", sp]; },
+  durNodes: (since) => { if (!since || since <= 0) return []; const sp = el("span", "ntc-age fask-dur"); stampAgeOnRow(sp, since); return [" · ", sp]; },
   openSession: (sid) => { vscodeApi?.postMessage({ type: "openSession", id: sid }); },
+  nowSec: noticeNowSec, relAge: (sec) => relAge(sec), ageTint: () => "", clockHM: (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+  landing: (_it, target) => { scrollToAnchor(target.anchorUuid); },
+  noAnchor: (it) => {
+    landToast("couldn't locate this in the transcript — no anchor was recorded for this card");
+    try { window.parent?.postMessage({ romp: "notify", kind: "locate", text: "Couldn't jump to this summary: no anchor was recorded for this card", sid: it.sid, itemId: it.itemId }, "*"); } catch { /* no shell */ }
+  },
+  openWarns: () => { /* no warn-detail overlay on the chat page: the chip's hover carries the evidence */ },
 };
-const noticeBadgeEnv = { durNodes: noticeSectionEnv.durNodes, openSession: noticeSectionEnv.openSession, clockHM: (t: number) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) };
+function stampAgeOnRow(sp: HTMLElement, since: number): void { sp.dataset.ageT = String(since); sp.dataset.ageFmt = "dur"; sp.dataset.ageTint = ""; sp.textContent = ""; refreshAges([sp], noticeNowSec(), relAge, () => ""); }
+configureSectionSync({ role: "follower" });   // the chat page FOLLOWS the feed's section choice (card-sections.ts): it says hello and takes the map
 function updateNoticeRow(row: NoticeRowEl, n: ChatNotice, sid: string): void {
   const title = row.querySelector<HTMLElement>(".ntc-title"), body = row.querySelector<HTMLElement>(".ntc-body"), att = row.querySelector<HTMLElement>(".ntc-attach");
   if (title && row._title !== (n.title || "")) { title.textContent = n.title || "Needs you"; row._title = n.title || ""; }
@@ -15152,20 +15172,15 @@ function updateNoticeRow(row: NoticeRowEl, n: ChatNotice, sid: string): void {
   const sections = noticeSectionsFor(row, n);   // a goal row without a fix wears the card's sections and badges; the machinery follows the frame
   const rowAny = row as any; const badgesEl = rowAny._badges as HTMLElement | undefined;
   if (sections) {
-    const it = { ...n, sid } as unknown as SectionItem & BadgeItem;
+    const it = { ...n, sid, text: n.title } as unknown as SectionItem & BadgeItem & SpinFields;
     rowAny._it = it;
     const dCompleted = n.distillState === "completed", dBlocked = n.distillState === "blocked" || (!n.distillState && !!(n.blockSummary || "").trim());
     const shown = applyDistillLine(rowAny._distill as HTMLElement, dCompleted, dBlocked, n.summary, n.blockSummary);
-    if (shown) {
-      const split = distillParas(shown, dCompleted ? n.summaryParts : dBlocked ? n.briefParts : null);
-      if (split.stamps) {
-        const dle = rowAny._distill as HTMLElement; dle.textContent = "";
-        split.paras.forEach((p, i) => { const para = el("div", "fask-para"); para.textContent = p; const st = split.stamps![i]; if (st) { const age = el("span", "fask-para-age"); age.textContent = agoText(st.since || 0); para.append(" ", age); } dle.appendChild(para); });
-      }
-    }
+    applyDistillLanding(rowAny, it, shown, dCompleted, dBlocked, noticeSectionEnv);   // the paragraphs with their stamps and landings, the stale note, the line's link
+    const spin = cardSpin(it, dCompleted, dBlocked, noticeSectionEnv); applySpin(rowAny, it, spin, noticeSectionEnv);   // the card's swirl caption ("Analyzing…" on a re-judging card)
     applySections(rowAny, it, !!shown, noticeSectionEnv);
     if (body) body.style.display = "none";   // the brief rides the distill line now
-    if (badgesEl) { badgesEl.replaceChildren(...stateBadges(it, noticeBadgeEnv)); badgesEl.style.display = badgesEl.childNodes.length ? "" : "none"; }
+    if (badgesEl) { badgesEl.replaceChildren(...stateBadges(it, noticeSectionEnv, spin.caption)); badgesEl.style.display = badgesEl.childNodes.length ? "" : "none"; }
   }
   row.classList.toggle("ntc-open", openFolds.has("notice:" + n.itemId + ":brief"));   // both ways: applyFold only opens, and a closed disclosure must fold the row back
   noticeMoreButton(row, noticeLineOf(row));   // the disclosure past four lines rides the row's line: the distill line on a goal row, else the body
@@ -20125,6 +20140,9 @@ setInterval(() => {
     const since = Number(w.dataset.since);
     if (since > 0) w.textContent = "· " + workingFor(Date.now() / 1000 - since);
   }
+  // the Needs you row's stamped ages (a paragraph's "12m ago", a wait's running duration; feed-age.ts data-age-t, written by the shared
+  // builder): repainted here the way the card's live pass repaints them, writing only what differs
+  refreshAges(document.querySelectorAll<HTMLElement>("#notices [data-age-t]"), noticeNowSec(), relAge, () => "");
   const ct = document.getElementById("cmt-work-timer");
   if (ct) {
     const cur = openCommentThread();

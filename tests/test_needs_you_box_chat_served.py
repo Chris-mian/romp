@@ -44,6 +44,7 @@ API = "dddddddd-1111-2222-3333-444444444444"     # a second session with a quest
 API_Q = "which port should the api listen on in the fixtures?"
 BRIEF = "the suite targets Postgres in CI and SQLite locally; which should the fixtures load into?"
 BACKGROUND = "The suite loads its fixtures through two loaders, one per database, and the CI job runs both in an order nobody wrote down."   # the distiller's re-orientation paragraph, the card's Background section
+TWO_PARA_BRIEF = "The fixtures load into one database and the suite has two.\n\nThe CI job runs both loaders, one per database, in an order nobody wrote down."   # a multi-item brief: one paragraph per part (briefParts), the second part without an event time
 LONG_BRIEF = " ".join("The fixtures load into one database and the suite has two: Postgres in CI and SQLite on a laptop, with different "
                       "date handling, so a fixture written for one fails on the other." for _ in range(30))   # past four lines at any width the lab runs at (CI's browser fit five repetitions in four; the round-fifteen CI red)
 MID = "aaaaaaaa-bbbb-cccc-dddd-000000000301"
@@ -486,6 +487,38 @@ if (fr) {
     out.content.cardAfterRowPress = await readCard(); out.content.rowAfterRowPress = await readRow();
     out.content.cardPressSummary = await pressCard("Summary"); out.content.rowFollowed = await rowPressed("Summary");
     out.content.cardAfterCardPress = await readCard(); out.content.rowAfterCardPress = await readRow();
+    // 6d. THE STAMPS AND THE LANDINGS (round two of the box content PR): the brief becomes two paragraphs with two parts, the second part
+    // without an event time, so the row's second stamp must read the card's static "<1m ago" and never an age counted from the epoch; the
+    // row's line is a link like the card's and its click lands the way this chat page lands: at the turn the kernel's anchor names, or, when
+    // the kernel serves none, in the landing toast that says no anchor was recorded (no goal here can carry a validated citation: the
+    // synthetic transcript ends before every goal, and a goal reaching into it takes the API-error turn and becomes the hard stop)
+    const w6 = await writeStore((st) => { st.nodes[cfg.g6].blockSummary = cfg.twoParaBrief; st.nodes[cfg.g6].briefedMt = briefNow() + 5;
+      st.nodes[cfg.g6].briefParts = [{ id: cfg.g6c, since: Math.floor(Date.now() / 1000) - 120 }, { id: cfg.g6 + ":open" }]; });
+    out.content.stamps = await builtRecord(cfg.g6, w6, cfg.twoParaBrief);
+    const fAfter = await kernelFeed(); out.content.stamps.anchor = ((((fAfter || {}).asks || []).find((a) => a.itemId === cfg.g6) || {}).summaryAnchorUuid) || null;
+    out.content.stamps.cardLanded = await ff.waitForFunction((s) => { const c = document.querySelector(s); const d = c && c.querySelector(".fask-secs > .fask-distill"); return !!d && d.querySelectorAll(".fask-para").length === 2; }, cardSel, { timeout: 30000 }).then(() => true).catch(() => false);
+    out.content.stamps.rowLanded = await fr.waitForFunction((s) => { const r = document.querySelector(s); const d = r && r.querySelector(".ntc-secs > .fask-distill"); return !!d && d.querySelectorAll(".fask-para").length === 2; }, rowSel(cfg.g6), { timeout: 30000 }).then(() => true).catch(() => false);
+    const readLine = (target, sel, lineSel) => target.evaluate((a) => { const r = document.querySelector(a.sel); const d = r && r.querySelector(a.lineSel); if (!d) return null;
+      return { paras: Array.from(d.querySelectorAll(".fask-para")).map((p) => ({ text: (p.textContent || "").trim(), age: ((p.querySelector(".fask-para-age") || {}).textContent || null), link: p.classList.contains("fask-para-link") })),
+               link: d.classList.contains("fask-distill-link"), title: d.getAttribute("title"), text: (d.textContent || "").trim() }; }, { sel, lineSel });
+    out.content.stamps.card = await readLine(ff, cardSel, ".fask-secs > .fask-distill"); out.content.stamps.row = await readLine(fr, rowSel(cfg.g6), ".ntc-secs > .fask-distill");
+    await fr.evaluate((s) => { const r = document.querySelector(s); const d = r && r.querySelector(".ntc-secs > .fask-distill"); if (d) d.click(); }, rowSel(cfg.g6));   // the row's line clicked
+    out.content.stamps.landed = await fr.waitForFunction((u) => { if (u) { const t = document.querySelector('.turn[data-uuid="' + u + '"]'); if (!t) return false; const b = t.getBoundingClientRect(); return b.bottom > 0 && b.top < window.innerHeight; } return !!document.querySelector(".locate-toast"); }, out.content.stamps.anchor, { timeout: 15000 }).then(() => true).catch(() => false);   // the turn on screen (or, with no anchor recorded, the landing toast)
+    // 6e. THE ONE STATE ACROSS A RELOAD: Background picked on the card, the shell reloaded, both frames up again; the feed hydrates its pick
+    // from its view state and the chat page, a follower, takes the map when it says hello, so the row opens what the card opens
+    out.content.reload = { pressed: await pressCard("Background"), cardPressed: await cardPressed("Background") };
+    await shell.reload();
+    let fr2 = null, ff2 = null; for (let i = 0; i < 150 && !(fr2 && ff2); i++) { fr2 = shell.frames().find((f) => /\/chat(\?|$)/.test(f.url())) || null; ff2 = shell.frames().find((f) => /\/feed(\?|$)/.test(f.url())) || null; if (!(fr2 && ff2)) await shell.waitForTimeout(200); }   // loop-ok: bounded
+    out.content.reload.frames = !!(fr2 && ff2);
+    if (fr2 && ff2) {
+      out.content.reload.cardUp = await ff2.waitForSelector(cardSel, { timeout: 60000 }).then(() => true).catch(() => false);
+      out.content.reload.rowUp = await fr2.waitForSelector(rowSel(cfg.g6), { state: "attached", timeout: 60000 }).then(() => true).catch(() => false);
+      await openNeedsBox(fr2, 2);
+      out.content.reload.rowFollowed = await fr2.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && Array.from(r.querySelectorAll(".ntc-secs-row .fask-secbtn")).find((x) => (x.textContent || "").trim() === a.label); return !!b && b.getAttribute("aria-pressed") === "true"; }, { sel: rowSel(cfg.g6), label: "Background" }, { timeout: 15000 }).then(() => true).catch(() => false);
+      const readT = (target, sel, btnSel) => target.evaluate((a) => { const c = document.querySelector(a.sel); if (!c) return null; const vis = (x) => !!x && getComputedStyle(x).display !== "none" && x.getBoundingClientRect().height > 0; return Array.from(c.querySelectorAll(a.btnSel)).filter(vis).map((x) => ({ label: (x.textContent || "").trim(), pressed: x.getAttribute("aria-pressed") })); }, { sel, btnSel });
+      out.content.reload.card = await readT(ff2, cardSel, ".fask-row3 > .fask-secbtn"); out.content.reload.row = await readT(fr2, rowSel(cfg.g6), ".ntc-secs-row .fask-secbtn");
+      await ff2.evaluate((s) => { const c = document.querySelector(s); const b = c && Array.from(c.querySelectorAll(".fask-row3 > .fask-secbtn")).find((x) => (x.textContent || "").trim() === "Summary"); if (b) b.click(); }, cardSel);   // back to the summary on both
+    }
   }
   mark();
 }
@@ -500,7 +533,7 @@ await browser.close();
 """
 
 
-# the driver's budget. Its bounded waits sum to about 2200 s serially (every helper counted PER CALL, the round-one verifier of PR 2105: the
+# the driver's budget. Its bounded waits sum to about 2500 s serially (every helper counted PER CALL, the round-one verifier of PR 2105: the
 # kernel's four 90 s deadlines, the 60 s row, card and credential-row waits, the 30 s and 15 s waits of the brief helpers per call, the fold
 # helper's three 5 s waits per call, the shorter button, dialog, level, settings-card and frame waits, the frame loops), more than any per-test ceiling the runner gives (CI's served-page step runs pytest with --timeout=600, thread method), so
 # the cap cannot be the sum: it is the ceiling less the SETUP the same per-test timer wraps (pytest-timeout's thread method times the first
@@ -644,7 +677,7 @@ class NeedsYouBoxChatServed(unittest.TestCase):
             base = "http://127.0.0.1:%d" % self.port
             with open(cfg, "w") as f:
                 json.dump({"chat": base + "/chat?token=" + self.token, "feed": base + "/feed?token=" + self.token, "feedJson": base + "/feed.json?token=" + self.token, "perf": base + "/perf?token=" + self.token, "sid": SID, "api": API, "g1": self.g[0], "g2": self.g[1], "g3": self.g[2], "g4": self.g[3],
-                           "reply": "Postgres, the same as production", "store": self.store, "brief": BRIEF, "longBrief": LONG_BRIEF, "g5": SID + ":g5", "g5q": "should the fixtures use the production database name or a scratch one?", "g6": SID + ":g6", "g6q": "which of the two fixture loaders should the CI job run first?", "g6c": SID + ":g6c", "g6cText": "run the second loader under the first's fixtures", "background": BACKGROUND, "landing": base + "/?token=" + self.token, "ledger": self.ledger, "order": self.order, "judgeAuth": os.path.join(os.path.dirname(os.path.dirname(self.store)), "judge-auth.json")}, f)
+                           "reply": "Postgres, the same as production", "store": self.store, "brief": BRIEF, "longBrief": LONG_BRIEF, "g5": SID + ":g5", "g5q": "should the fixtures use the production database name or a scratch one?", "g6": SID + ":g6", "g6q": "which of the two fixture loaders should the CI job run first?", "g6c": SID + ":g6c", "g6cText": "run the second loader under the first's fixtures", "background": BACKGROUND, "twoParaBrief": TWO_PARA_BRIEF, "landing": base + "/?token=" + self.token, "ledger": self.ledger, "order": self.order, "judgeAuth": os.path.join(os.path.dirname(os.path.dirname(self.store)), "judge-auth.json")}, f)
             driver = os.path.join(self.lab, "needsbox.mjs")
             Path(driver).write_text(_lab.NEEDS_BOX_OPEN_JS + DRIVER)   # the fold helper the held-mail lab shares
             try:
@@ -991,6 +1024,46 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertEqual(c["rowAfterCardPress"]["toggles"], c["cardAfterCardPress"]["toggles"])
         self.assertEqual([t["pressed"] for t in c["rowAfterCardPress"]["toggles"]], ["false", "true", "false"])
         self.assertEqual(c["rowAfterCardPress"]["bodies"], {"bg": False, "distill": True, "stall": False, "tree": False}); self.assertEqual(c["cardAfterCardPress"]["bodies"], c["rowAfterCardPress"]["bodies"])
+
+    def test_the_rows_paragraph_stamps_read_the_cards_and_a_part_without_a_time_reads_under_a_minute(self):
+        """Round two of the box content PR (the verifier): the row stamped a part with no event time with an age counted from the epoch,
+        where the card renders the static "<1m ago"; the stamp rendering is the shared builder's now (card-sections.ts applyDistillLanding),
+        on each page's clock with the card's age words, so both pages read the same paragraphs, ages and link."""
+        c = self._content(); st = c.get("stamps") or {}
+        self._built(st, "the two-paragraph brief")
+        flat = {k: v for k, v in st.items() if k not in ("card", "row")}
+        self.assertTrue(st.get("cardLanded"), "the card splits the brief into its two stamped paragraphs (the premise): %r" % flat)
+        self.assertTrue(st.get("rowLanded"), "and the row too (before: the row had no line to split): %r" % flat)
+        card, row = st["card"], st["row"]
+        self.assertIsNotNone(row, "the row's line stands: %r" % st)
+        self.assertEqual([q["text"] for q in row["paras"]], [q["text"] for q in card["paras"]], "the same paragraphs with the same ages: %r vs %r" % (row, card))
+        self.assertEqual(row["paras"][1]["age"], "<1m ago", "a part without an event time reads the static chip, never an age counted from the epoch (before: an epoch-sized age on the row): %r" % row)
+        self.assertEqual(row["paras"][0]["age"], card["paras"][0]["age"], "the stamped part: the same words on both pages")
+        self.assertEqual((row["link"], row["title"]), (card["link"], card["title"]), "the line is the same link on both pages: %r vs %r" % (row, card))
+
+    def test_the_rows_line_lands_in_the_chat_page_the_way_the_page_lands(self):
+        """The row's landing affordances are the card's (the verifier, low e): the line is the same link on both pages, and on the chat page
+        its click lands the way the page lands: at the turn the kernel's anchor names (scrollToAnchor), or, when the kernel serves none, in
+        the landing toast that says no anchor was recorded. No goal in this lab can carry a validated citation (the synthetic transcript ends
+        before every goal, and a goal reaching into it takes the API-error turn and becomes the hard stop), so the executed road here is the
+        honest one; the scroll is pinned at the source (ui/webview/card-sections.test.ts, the row's landings)."""
+        c = self._content(); st = c.get("stamps") or {}
+        flat = {k: v for k, v in st.items() if k not in ("card", "row")}
+        self.assertTrue((st.get("card") or {}).get("link"), "the card's line is a link (the premise): %r" % st.get("card"))
+        self.assertEqual(((st.get("row") or {}).get("link"), (st.get("row") or {}).get("title")), (True, st["card"]["title"]), "the row's line is the same link as the card's (before: the row had no line): %r vs %r" % (st.get("row"), st.get("card")))
+        self.assertEqual(st["row"]["title"], "jump to where this was written" if st.get("anchor") else "no anchor recorded for this card", "the link's face says what the click does: %r" % flat)
+        self.assertTrue(st.get("landed"), "the click on the row's line lands: the anchored turn on screen, or the landing toast when the kernel served no anchor: %r" % flat)
+
+    def test_the_open_section_is_one_state_across_a_shell_reload(self):
+        """The verifier's medium (2): three feed-only writers of the section choice never crossed the channel, so after a reload the card opened
+        its persisted pick while the row opened the default. Every write goes through the shared setter now, the feed owns the state and the
+        chat page takes the map when it loads: Background picked on the card, the shell reloaded, the row opens Background too."""
+        c = self._content(); rl = c.get("reload") or {}
+        self.assertTrue(rl.get("pressed") and rl.get("cardPressed"), "Background picked on the card before the reload: %r" % rl)
+        self.assertTrue(rl.get("frames") and rl.get("cardUp") and rl.get("rowUp"), "both frames back with the card and the row: %r" % {k: v for k, v in rl.items() if k not in ("card", "row")})
+        self.assertTrue(rl.get("rowFollowed"), "after the reload the row opens what the card opens: the feed's persisted pick reaches the chat page over the channel (before: the row opened the default): %r" % rl)
+        self.assertEqual(rl["row"], rl["card"], "the same toggles with the same pressed states")
+        self.assertEqual([t["pressed"] for t in rl["row"]], ["true", "false", "false"], "Background open on both: %r" % rl["row"])
 
     def test_the_switch_hides_the_box_and_leaves_the_ring_and_back_on_the_box_returns(self):
         """The user 2026-09-23, who looked for the switch and did not find it: the settings card's own row, under a head named for where the

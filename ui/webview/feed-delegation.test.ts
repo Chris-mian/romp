@@ -11,7 +11,7 @@ const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", 
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.css"), "utf8");   // the badge and paragraph rules moved to the sheet both pages import (plans/needs-you.md)
 
 test("user-facing provenance text says 'delegated', not 'handed off'", () => {
-  assert.match(FEED, /delegated from another session/);
+  assert.match(FEED, /"delegated by " \+ it\.origin\.peer/);   // the badge's own words (card-sections.ts stateBadges; the element's build-time title went with the inline badge)
   assert.doesNotMatch(FEED, /handed off from another session/);
 });
 
@@ -45,7 +45,7 @@ test("a narrow card WRAPS the '↪ from' provenance under the name instead of ov
   // chip. Fix: row2 wraps, and origin is a direct row2 child (sibling of the chips) so it drops to a
   // second line rather than overlapping when name + provenance + chips don't all fit.
   assert.match(CSS, /\.fask-row2 \{[^}]*flex-wrap: wrap/, "the name row wraps so trailing items never overlap");
-  assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge\)/, "origin is a row2 sibling of the chips");
+  assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, badges\)/, "origin is a row2 sibling of the chips");
   assert.doesNotMatch(FEED, /idwrap\.append\(name, origin\)/, "origin is no longer nested in the shrinking idwrap");
   // the old overflow mechanism is gone — flex-grow on idwrap right-aligns it instead of an auto margin
   assert.doesNotMatch(CSS, /\.fask-origin \{[^}]*margin-left: auto/);
@@ -63,7 +63,7 @@ test("the '↪ from' badge is provenance for the card's LIFE: dimmed once absorb
   // closes the sender's entry instantly), so a completed card never showed where its work came from
   // — and a propagated clear read as one card mysteriously taking another with it.
   assert.match(FEED, /live\?: boolean/);
-  assert.match(FEED, /og\.classList\.toggle\("fask-origin-absorbed", it\.origin\.live === false\);/);
+  assert.match(FEED, /el\("a", "fask-origin" \+ \(it\.origin\.live === false \? " fask-origin-absorbed" : ""\)\)/, "the badge is built fresh with its absorbed class on every update (stateBadges)");
   assert.match(FEED, /their linked entry closed with this card/);
   assert.match(FEED, /clearing this card also clears their linked entry/,
     "the standing link is explained before the user discovers it by surprise");

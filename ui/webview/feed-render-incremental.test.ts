@@ -657,7 +657,7 @@ test("the Awaiting-task pill's waited time and the waiting-on chip's elapsed tim
   assert.ok(pillDur, "…with the wait's duration as a stamped element");
   assert.equal(pillDur.dataset.ageFmt, "dur"); assert.equal(pillDur.dataset.ageT, String(kNow - 595));
   assert.equal(pillDur.textContent, "9m"); assert.match(pill.textContent, /^Awaiting .* · 9m$/);
-  const chip = card("g5")._waitOn, chipDur = chip.querySelector(".fask-waiton-dur .fask-dur"), chipName = chip.querySelector(".fask-waiton-name");
+  const chip = card("g5")._badges.querySelector(".fask-waiton"), chipDur = chip.querySelector(".fask-waiton-dur .fask-dur"), chipName = chip.querySelector(".fask-waiton-name");   // the chip is a state badge in the name row's slot (card-sections.ts stateBadges, round two of the box content PR)
   assert.equal(chipDur.textContent, "9m"); assert.equal(chipDur.dataset.ageT, String(kNow - 595));
   assert.equal(chipName.textContent, "web");
   assert.ok(!dur(card("g5")._taskLbl), "no since: no duration node, no guess");

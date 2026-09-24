@@ -27,7 +27,7 @@ import { hostNameNodes, hostPartsNodes, hostIsDown, hostOf, bareId } from "./hos
 import { extHoverMatches } from "./card-key";
 import { provenanceRows, provenanceGroupRows, rootStart, type ProvFmt, type ProvRow } from "./provenance";
 import { ageColorReadable } from "./age-color";
-import { liveNow, liveRefresher, refreshAges, stampAge } from "./feed-age";
+import { liveNow, liveRefresher, refreshAges, stampAge, relAge } from "./feed-age";   // relAge: the age words, shared with the chat page's Needs you row (card-sections.ts stamps through the page's environment)
 import { badgeCardHalf, clearBoundaryNotices, frameCardsUnknown, sdkProblemNotices, syncNotices, type CardsUnknown,
   type ClearNoticeRow, type SdkNoticeRow, type SyncNoticeRow } from "./badge-mirror";
 import { initStrip } from "./strip";
@@ -37,8 +37,9 @@ import { hostsGear, openGear } from "./gear-host";
 import { canPreview } from "./preview";
 import { sanitizeMd } from "./md-sanitize";
 import { noticeBodyNodes, noticeAttachmentNodes } from "./notice-face";   // the one face the feed card, its modal and the chat box share
-import { applySections, resolveSec, stallText, secChoice, cardTreeExpanded, clearedTag, parkedTag, nodeStatusClass, TREE_INDENT_EM, CLEARED_TIP,
-         registerSectionHost, BADGE_WORDS, type AskTreeNode, type NodeLogRow, type SectionEnv } from "./card-sections";   // the card's sections, one builder with the chat box's row (plans/needs-you.md)
+import { applySections, resolveSec, stallText, secChoice, cardTreeExpanded, clearedTag, parkedTag, nodeStatusClass, TREE_INDENT_EM, CLEARED_TIP, registerSectionHost,
+         replaceSectionChoices, configureSectionSync, buildSectionElements, cardSpin, applySpin, applyDistillLanding, stateBadges, DISTILL_FAIL_RE,
+         type AskTreeNode, type NodeLogRow, type SectionEnv, type SecChoice } from "./card-sections";   // the card's sections, one builder with the chat box's row (plans/needs-you.md)
 import { initFileView, setFileViewIdentity, hostStub } from "./file-view";
 import { initFileBrowse, openFileBrowse } from "./file-browse";
 import { VIEW_STATE_KEY, parseViewState, serializeViewState, pruneViewState, capViewState, type FeedViewState, threadKey, threadKeys } from "./feed-view-state";
@@ -1038,7 +1039,7 @@ function feedConfirm(message: string, confirmLabel: string, onConfirm: () => voi
 // Same lightweight overlay pattern as feedConfirm (its own state machine; Esc / backdrop / Close).
 // A warn kind stamped by a GIVEN-UP summarizer line (summary/brief/stall) — these get the "distill
 // failed" chip label and the modal's Try again (the user 2026-08-13); other anomaly kinds stay "warning".
-const DISTILL_FAIL_RE = /^(summary|brief|stall)-failed$/;
+// DISTILL_FAIL_RE (the distiller's own failure kinds) is card-sections.ts's since the box content round: the warning chip reads it there
 
 // Feedback for the modal's Try again (the user 2026-08-13, round 2: the first cut leaned on the card's
 // Distilling… swirl, which only shows where the done-side line is the visible one — on a Working card
@@ -1145,15 +1146,7 @@ function contTitle(latched: boolean, verb: string, at?: number | null): string {
       : "asks the session where each open item stands";
 }
 
-function relAge(sec: number): string {
-  const s = Math.max(0, sec);
-  // Sub-minute ages all read "<1m ago" (the user 2026-07-20): a card the user just acted on stamps t=now,
-  // and a counting "0s ago"/"14s ago" label is churn without information — the tint already says "fresh".
-  if (s < 60) return `<1m ago`;
-  if (s < 3600) return `${Math.round(s / 60)}m ago`;
-  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
-  return `${Math.round(s / 86400)}d ago`;
-}
+// relAge (the age words) lives in feed-age.ts since the box content round: the chat page's Needs you row stamps the same words
 
 // A RUNNING duration as its own stamped element (feed-age.ts fmt "dur"): "42m" / "1h 5m" since an event
 // time, repainted by the 15 s live pass like every other age. Every elapsed label on a card renders through
@@ -1326,65 +1319,13 @@ function makeAskCard(it: AskItem): HTMLElement {
   const row2 = el("div", "fask-row2");
   const idwrap = el("div", "fask-id");
   const name = el("a", "fname"); name.title = "open this session";
-  // ↪ courier handoff provenance: this goal was planted by a peer's message — shows
-  // "↪ from <sender>" beside the owning session, click opens the sender. Hidden unless origin.
-  // It's a DIRECT child of row2 (not nested in idwrap) so that when the name + provenance + the
-  // reopened/Followed-up chips can't all fit, row2 WRAPS it to a new line instead of the provenance
-  // overflowing on top of the chips (the user 2026-06-20). idwrap's flex-grow still right-aligns it
-  // against the chips whenever it does fit on the one line.
-  const origin = el("a", "fask-origin"); origin.style.display = "none";
-  origin.title = "this work was delegated from another session — click to open it";
   idwrap.append(name);
   const actions = el("div", "fask-actions");
-  // (the "reopened" chip was DELETED 2026-07-07: dead since cleared-is-sealed-forever made a follow-up
-  // to a cleared card a FRESH goal (2026-06-22) — the kernel never produced the flag again.)
-  // Now serves ONLY the "↩ re-judging" recheck state — the plain "↻ Followed up" (reopened-to-Working) badge
-  // was removed (the user 2026-07-01: click-to-cite makes follow-up routine, so the ack is noise). updateAskCard
-  // sets the text/title when it shows for recheck.
-  const fupBadge = el("span", "fask-followedup"); fupBadge.textContent = BADGE_WORDS.rejudging.text; fupBadge.title = BADGE_WORDS.rejudging.title;   // the words are card-sections.ts's: the chat box's row wears the same badges fupBadge.style.display = "none";
-  // "done, confirming" (the user 2026-07-24): the done verdict is in; the card holds its Working spot
-  // until the settle event (the session's attention moving on) files it under Completed — moving the
-  // COLUMN at the verdict would flicker it back on any trailing touch, which is the exact flicker the
-  // settle gate exists to prevent. The takeaway is already being distilled during this window.
-  const dcBadge = el("span", "fask-doneconfirming"); dcBadge.textContent = "done, confirming";
-  dcBadge.title = "ruled done — it files under Completed once the session has moved on; a follow-up before then reopens it in place";
-  dcBadge.style.display = "none";
-  // "follow-up failed" (plans/stalled-open-todos-nudge.md): romp asked this stalled goal ONCE and the
-  // response didn't resolve it; per the anti-loop rule it is never re-asked, so the card says so instead.
-  // RENAMED off "stalled" (the user 2026-07-23, superseding their 2026-07-02 label): that word now belongs
-  // exclusively to the yellow Stalled section — romp holding a WORKING card — and this chip means the
-  // opposite (romp already asked; the thread waits on YOU). One word per meaning, user-visible strings only.
-  const nfBadge = el("span", "fask-nudgefailed"); nfBadge.textContent = BADGE_WORDS.nudgeFailed.text;
-  nfBadge.title = BADGE_WORDS.nudgeFailed.title;
-  nfBadge.style.display = "none";
-  // "interrupted" (the user 2026-07-05): the user stopped this session mid-turn and hasn't messaged it
-  // since — its quiet is user-chosen, not a stall. Auto-nudge holds off until their next message, and
-  // the card says why it's sitting still instead of reading like an orphaned working goal.
-  const intBadge = el("span", "fask-interrupted"); intBadge.textContent = BADGE_WORDS.interrupted.text;
-  intBadge.title = BADGE_WORDS.interrupted.title;
-  intBadge.style.display = "none";
-  // "interrupting…" (the user 2026-07-07): a stop is IN FLIGHT — the CLI hasn't reached a stream boundary
-  // yet — so the card holds this steady from the click until the interrupt settles, then swaps to the
-  // past-tense "interrupted" badge. Working-yellow + faded (matches the chat chip's chip-interrupting), so
-  // it reads as "still winding down" rather than a done state.
-  const intingBadge = el("span", "fask-interrupting"); intingBadge.textContent = BADGE_WORDS.interrupting.text;
-  setTip(intingBadge, BADGE_WORDS.interrupting.title);   // styled tip (tip.ts), not a native title
-  intingBadge.style.display = "none";
-  // yellow "warning" chip (the user 2026-07-02): a judge stamped an anomaly on this goal (kernel `warns`,
-  // judge _node_warn — e.g. a distiller cite-miss). Click → the warn-detail overlay: what happened and why
-  // it's unexpected, per warn. A BUTTON (not a span) so it's focusable; the element survives re-renders
-  // (updateAskCard mutates it in place) and reads its data from the card at click time, so it's click-safe.
-  const warnChip = el("button", "fask-warnchip"); warnChip.textContent = "warning";
-  warnChip.style.display = "none";
-  warnChip.onclick = (ev) => {
-    ev.stopPropagation();
-    const ws = (card as any)._warnsData as AskItem["warns"];
-    const wit = (card as any)._it as AskItem | undefined;   // freshest payload → the ids Try again posts with
-    if (ws && ws.length) feedWarnModal((card as any)._title?.textContent || "", ws,
-                                       wit ? { itemId: wit.itemId, sid: wit.sid } : undefined,
-                                       (card as any)._failLog as AskItem["failLog"]);
-  };
-  const waitOnBadge = el("span", "fask-waiton"); waitOnBadge.style.display = "none";   // "Awaiting <peer>" / "Deadlock <peer>", peer name in native colour (the user 2026-06-22)
+  // THE STATE BADGES of the name row (a delegation's origin, "↩ re-judging", "done, confirming", "follow-up failed", "interrupting…",
+  // "interrupted", the "warning" chip, "Awaiting <peer>", "↪ delegated to") are drawn by the shared builder (card-sections.ts stateBadges)
+  // into this one slot on every update, with the card's conditions, precedence and order; the Needs you row draws the same badges from the
+  // same fields. The slot is display: contents, so the badges stay row2's own flex items and wrap with the name as they always did.
+  const badges = el("span", "fask-badges");
   const blkBadge = el("a", "fask-blocked"); blkBadge.style.display = "none";   // ⏸ live permission/picker block → click opens the session
   const apiBadge = el("span", "fask-apierror"); apiBadge.textContent = "⚠ API error"; apiBadge.style.display = "none";   // red: session stopped on an API error
   // filled red (a new chip, deliberately distinct from the outlined api-trouble family): romp's OWN
@@ -1469,7 +1410,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // direct children they render in BOTH modes, count toward row2's grouped-mode liveness, and the
   // API badge stays immediately before its Retry button — one visual unit. idwrap keeps only the
   // name. Placement only; every badge's mint/retire semantics are untouched.
-  row2.append(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge);
+  row2.append(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, badges);
   // the bell BUTTON (the user 2026-07-28): INLINE in row1's metadata cluster, right after the
   // timestamp (the last line's tail), the one spot that never shoves the title — and in-flow, so it
   // cannot overlap the floated Clear. It hides with VISIBILITY, so its slot is reserved whether or
@@ -1493,7 +1434,6 @@ function makeAskCard(it: AskItem): HTMLElement {
   // sessions this ask was handed to — but only while they are LIVE-WORKING on
   // an unfinished branch. Idle or finished recipients disappear; presence on
   // the list therefore always means active, so the dot is always on.
-  const checklist = el("div", "fask-checklist");   // inline sub-goal list (top 2 levels); filled in updateAskCard
   const delegations = el("div", "fask-delegations");
   // The DISTILLER's own line, restored 2026-06-29 (the user: show everything the distiller produces — just NOT
   // the planner's why-created/why-blocked/why-done rationales). One line per card: a completed card shows the
@@ -1514,40 +1454,14 @@ function makeAskCard(it: AskItem): HTMLElement {
   // content — with one clear line between the background part and the summary part; expanding only the
   // summary keeps the buttons side by side with its text below. A pressed toggle wears .on (bright +
   // filled) so what's showing is visible at a glance; clicking again collapses.
-  const secs = el("div", "fask-secs"); secs.style.display = "none";
-  const bgBtn = el("button", "fask-secbtn"); bgBtn.textContent = "Background";
-  const bgBody = el("div", "fask-bg-body");
-  const takeBtn = el("button", "fask-secbtn"); takeBtn.textContent = "Summary";
-  const distill = el("div", "fask-distill");
-  // "Sub-goals" — the THIRD mutually-exclusive section (the user 2026-07-08, moved off the footer): shows/hides
-  // the inline sub-goal tree (the checklist below). Sits right of Summary; hidden when the card has no
-  // sub-goals. Wired in applySections alongside Background/Summary (one open at a time, or none).
-  const subBtn = el("button", "fask-secbtn"); subBtn.textContent = "Sub-goals"; subBtn.style.display = "none";
-  // "Stalled" — the FIFTH mutually-exclusive section (the user 2026-07-23): romp is holding this card and
-  // nothing is moving it. Same press-toggle interaction as Background/Summary, but it keeps the WORKING
-  // colour in both states (see .fask-stallbtn) so it still draws the eye while open — the one section whose
-  // point is that something is wrong. Filled in applySections.
-  const stallBtn = el("button", "fask-secbtn fask-stallbtn"); stallBtn.textContent = "Stalled"; stallBtn.style.display = "none";
-  const stallBody = el("div", "fask-stall-body");
-  // "Awaiting task" — the FOURTH mutually-exclusive section (the user 2026-07-13): a compact pill (with
-  // the mini spinning swirl inside) that replaces the old boxed awaiting caption when live bg TASKS exist;
-  // click expands the task list in the checklist spot, same interaction as Sub-goals. Filled in applySections.
-  const taskBtn = el("button", "fask-secbtn fask-taskbtn"); taskBtn.style.display = "none";
-  const taskGlyph = el("span", "fask-awaiting-swirl"); taskGlyph.setAttribute("aria-hidden", "true");
-  const taskLbl = el("span", "fask-taskbtn-lbl");
-  taskBtn.append(taskGlyph, taskLbl);
-  secs.append(bgBody, distill, stallBody);   // the BODIES only; the toggles ride row3 (below), one body shows at a time
-  // now that the toggles exist, populate row3: Background · Summary · Sub-goals · Waiting-on-task — GROUPED
-  // left, wrapping together as a block (the user 2026-07-08). Retry/Revive (rare) trail on the right (actions).
-  row3.append(bgBtn, takeBtn, stallBtn, subBtn, taskBtn, actions);
-  // ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the SAME body spot the distiller line
-  // will eventually fill — a completed/blocked card shows its takeaway there; a WORKING card that's awaiting
-  // dispatched/delegated work shows the spinning swirl instead, a glanceable "in flight, not stalled" sign.
-  // The "why" rides beside it (it was tooltip-only on the ⏳ badge). Shown only while awaiting; see updateAskCard.
-  const awaitSpin = el("div", "fask-awaiting"); awaitSpin.style.display = "none";
-  const awaitGlyph = el("span", "fask-awaiting-swirl"); awaitGlyph.setAttribute("aria-hidden", "true");
-  const awaitWhy = el("span", "fask-awaiting-why");
-  awaitSpin.append(awaitGlyph, awaitWhy);
+  // the section toggles (Background · Summary · Stalled · Sub-goals · Awaiting task), the bodies they drive, the sub-goal checklist and the
+  // awaiting swirl come from the shared builder (card-sections.ts buildSectionElements), so the Needs you row builds the same elements in
+  // the same order and neither page hand-builds the other's; the toggles ride row3, GROUPED left, wrapping together as a block (the user
+  // 2026-07-08), with Retry/Revive (rare) trailing on the right (actions)
+  const se = buildSectionElements();
+  const { bgBtn, bgBody, takeBtn, distill, subBtn, stallBtn, stallBody, taskBtn, taskLbl, secs, checklist, awaitSpin, awaitWhy } = se;
+  secs.style.display = "none";
+  row3.append(...se.toggles, actions);
   // NOTICE CARD (T370): the producer label beside the session name, then the body, the attachment and the actions, all
   // hidden until updateAskCard finds it.notice. The body is the sanitizer's inert DOM adopted (never innerHTML), the
   // attachment an image the kernel already judged and pinned, the actions buttons the kernel executes (noticeAction).
@@ -1682,15 +1596,9 @@ function makeAskCard(it: AskItem): HTMLElement {
   });
 
   const a = card as any;
-  a._title = title; a._name = name; a._time = time; a._followedup = fupBadge;
+  a._title = title; a._name = name; a._time = time; a._badges = badges;
   a._bell = bellBtn;
   a._row1 = row1; a._row2 = row2;   // grouped mode re-homes Clear between these (the user 2026-07-13)
-  a._doneConfirming = dcBadge;
-  a._nudgeFailed = nfBadge;
-  a._interrupting = intingBadge;
-  a._interrupted = intBadge;
-  a._warnChip = warnChip;
-  a._waitOn = waitOnBadge;
   a._blocked = blkBadge;
   a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._apiLogin = apiLogin; a._retryBadge = retryBadge; a._revive = revive; a._clr = clr;
   a._capLine = capLine; a._capBtn = capBtn;
@@ -1704,7 +1612,6 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._stallBtn = stallBtn; a._stallBody = stallBody;
   a._taskBtn = taskBtn; a._taskLbl = taskLbl;
   a._awaitSpin = awaitSpin; a._awaitWhy = awaitWhy;
-  a._origin = origin;
   return card;
 }
 
@@ -1867,7 +1774,7 @@ function setActiveBoard(id: string): void {
 (function hydrateViewState() {
   let st;
   try { st = parseViewState(localStorage.getItem(VIEW_STATE_KEY)); } catch { return; }   // private mode / blocked storage → run without it
-  for (const [k, v] of Object.entries(st.sec)) secChoice.set(k, v as ReturnType<typeof resolveSec>);
+  replaceSectionChoices(Object.entries(st.sec) as [string, SecChoice][], { quiet: true });   // through the shared setter: the chat page's row hears it (card-sections.ts); no host exists yet
   for (const k of st.tree) cardTreeExpanded.add(k);
   for (const k of st.nodes) collapsedNodes.add(k);
   for (const k of st.logs) nodeLogOpen.add(k);
@@ -1881,6 +1788,9 @@ function setActiveBoard(id: string): void {
   for (const k of st.focusCols) collapsedFocusCols.add(k);
   focusFolded = st.focusFolded;   // the section's fold (T410b); a blob saved before it reads unfolded
   activeBoardId = st.board;   // the board pick (phase four); a blob saved before it, or naming the feed, reads as the feed
+  // the feed OWNS the section choice (card-sections.ts): it posts its hydrated map for a chat page already up and answers a later hello,
+  // and a pick that arrives from the chat page's row is persisted here like the card's own
+  configureSectionSync({ role: "owner", onChange: () => persistViewState() });
 })();
 
 function currentViewState(): FeedViewState {
@@ -1909,8 +1819,7 @@ function persistViewState(): void {
 function pruneViewStateTo(live: Set<string>): void {
   const kept = pruneViewState(currentViewState(), live);
   const keep = (s: Set<string>, xs: string[]) => { s.clear(); for (const k of xs) s.add(k); };
-  secChoice.clear();
-  for (const [k, v] of Object.entries(kept.sec)) secChoice.set(k, v as ReturnType<typeof resolveSec>);
+  replaceSectionChoices(Object.entries(kept.sec) as [string, SecChoice][], { quiet: true });   // through the shared setter, so the chat page's row drops the same; this render applies every card next
   keep(cardTreeExpanded, kept.tree);
   keep(collapsedNodes, kept.nodes);
   keep(nodeLogOpen, kept.logs);
@@ -1996,6 +1905,17 @@ const sectionEnv: SectionEnv = {
   repoOf: (sid) => prRepoOf(sid),
   durNodes: (since) => durNodes(since),
   openSession: (sid) => { vscodeApi?.postMessage({ type: "openSession", id: sid }); },
+  nowSec: () => nowSec(), relAge: (sec) => relAge(sec), ageTint: (sec) => ageColorReadable(sec), clockHM: (t) => clockHM(t),
+  // a landing: the timeline (the chat pane in the shell, the timeline view in VS Code) shows the turn; focusEcho first, as every card link
+  landing: (it, target) => { focusEcho(it.sid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: target.anchor, anchorUuid: target.anchorUuid, quote: target.quote }); },
+  // Toast AND file it in the error center (the user 2026-07-28): a transient pop-up left no trace of a click that couldn't do anything, so
+  // the failure was unreportable a minute later. The entry carries the card so clicking it jumps back here.
+  noAnchor: (it) => {
+    feedToast("couldn't locate this in the transcript — no anchor was recorded for this card");
+    try { window.parent?.postMessage({ romp: "notify", kind: "locate", text: "Couldn't jump to this summary: no anchor was recorded for this card", sid: it.sid, itemId: it.itemId }, "*"); } catch { /* no shell (VS Code view) */ }
+  },
+  openWarns: (it, title) => { if (it.warns && it.warns.length) feedWarnModal(title, it.warns, { itemId: it.itemId, sid: it.sid }, it.failLog); },   // the warn-detail overlay: what happened and why
+  workDot: (peer, name) => setWorkDot(peer, dotFor(name)),   // the board's live working/awaiting dot before a tracked recipient's name
 };
 function updateAskCard(card: HTMLElement, it: AskItem) {
   const a = card as any;
@@ -2046,180 +1966,16 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     if (it.color) a._name.style.color = it.color.bg;
     setWorkDot(a._name, dotFor(it.name));   // working/awaiting dot before the session name
   }
-  // ↪ courier handoff: planted by a peer's message → "↪ from <sender>", click opens the sender
-  const og = a._origin as HTMLElement;
-  if (it.origin && it.origin.peer) {
-    og.style.display = "";
-    // "↪ from" in dim gray (the Clear-button gray), the peer name in the bold session-name style next to
-    // it — its own identity colour, like every other session name in this row (the user 2026-06-16).
-    og.replaceChildren();
-    og.style.color = "";
-    const pre = el("span", "fask-origin-pre"); pre.textContent = "↪ from ";
-    // A federated sender wears the same quiet "host:" prefix as remote session names on the
-    // timeline/tabs (.host-prefix keeps its own dim color under the peer's identity color).
-    const peer = el("span", "fask-origin-peer");
-    peer.replaceChildren(...hostPartsNodes(it.origin.peerHost, it.origin.peer));
-    if (it.origin.color) peer.style.color = it.origin.color.bg;
-    og.append(pre, peer);
-    // absorbed (the sender's linked entry closed — usually because THIS card completed and the
-    // link-back checked it off): same badge, dimmed — provenance, not an active handoff. The title
-    // also warns that a clear takes the linked entry with it (the user 2026-08-16, who watched that
-    // happen with no visible cause).
-    og.classList.toggle("fask-origin-absorbed", it.origin.live === false);
-    og.title = (it.origin.live === false
-      ? "delegated by " + it.origin.peer + "; their linked entry closed with this card"
-      : "delegated by " + it.origin.peer + " — clearing this card also clears their linked entry")
-      + " · click opens the session";
-    og.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.origin!.peerSid }); };
-  } else {
-    og.style.display = "none";
-  }
-  // ↪ sender-side handoff provenance (the user 2026-08-24): a TOP-LEVEL "↪ delegated to <peer>"
-  // tracking node wore its provenance as the card TITLE, arrow and all. The kernel now titles the
-  // card with the WORK and ships the delegation here — the mirror of ↪ from above: identity color,
-  // quiet host: prefix for a federated recipient, click opens the recipient session. STACKS after
-  // an ↪ from badge rather than replacing it (origin and this are different facts about one card —
-  // the same rule the 2026-08-24 review pinned on this slot).
-  if (it.handoffTo && it.handoffTo.peerSid) {
-    const hadOrigin = !!(it.origin && it.origin.peer);
-    og.style.display = "";
-    if (!hadOrigin) {
-      og.replaceChildren(); og.style.color = ""; og.classList.remove("fask-origin-absorbed");
-      og.title = "delegated to " + it.handoffTo.peer + "; their result checks this card off · click opens the session";
-      og.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.handoffTo!.peerSid }); };
-    }
-    const pre = el("span", "fask-origin-pre"); pre.textContent = (hadOrigin ? " · " : "") + "↪ delegated to ";
-    const peer = el("span", "fask-origin-peer");
-    peer.replaceChildren(...hostPartsNodes(it.handoffTo.peerHost, it.handoffTo.peer));
-    if (it.handoffTo.color) peer.style.color = it.handoffTo.color.bg;
-    peer.title = "delegated to " + it.handoffTo.peer + "; their result checks this card off · click opens the session";
-    peer.style.cursor = "pointer";
-    peer.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.handoffTo!.peerSid }); };
-    og.append(pre, peer);
-  }
-  // tracked delegation PRIMARY (the user 2026-08-24): the ONE card, homed here under the delegator —
-  // it names the recipient(s) in their identity colors with the board's own live dot
-  // (working/awaiting/idle), so the manager reads the worker's state without leaving this card.
-  // STACKS after an ↪ from badge rather than replacing it (review 2026-08-24: an else-if hid a
-  // middleman's own tracked handoff — origin and delegTracked are different facts about one card);
-  // each recipient span carries its own click, so the ↪ from click keeps opening the sender.
-  if (it.delegTracked && it.delegTracked.length) {
-    const hadOrigin = !!(it.origin && it.origin.peer);
-    og.style.display = "";
-    if (!hadOrigin) {
-      og.replaceChildren(); og.style.color = ""; og.classList.remove("fask-origin-absorbed");
-      og.title = "a tracked handoff: the work runs with " + it.delegTracked.map((d) => d.name).join(", ")
-        + " and reports back to this card";
-      og.onclick = null;
-    }
-    const pre = el("span", "fask-origin-pre"); pre.textContent = (hadOrigin ? " · " : "") + "↪ delegated to ";
-    og.append(pre);
-    it.delegTracked.forEach((d, i) => {
-      if (i) og.append(", ");
-      const peer = el("span", "fask-origin-peer");
-      peer.replaceChildren(...hostPartsNodes(d.host, d.name));
-      if (d.color && d.color.bg) peer.style.color = d.color.bg;
-      setWorkDot(peer, dotFor(d.name));
-      peer.title = "a tracked handoff: the work runs with " + d.name + " and reports back to this card · click opens the session";
-      peer.style.cursor = "pointer";
-      peer.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: d.sid }); };
-      og.append(peer);
-    });
-  }
+  // ↪ from <sender> and ↪ delegated to <peer>: state badges, drawn below with the rest (stateBadges) once the swirl caption is known
+  // a tracked delegation's recipients: a state badge too (stateBadges), with this page's live dot before each name (sectionEnv.workDot)
   stampAge(a._time, it.t, "plain", false, nowSec(), relAge, ageColorReadable);   // stamped: the 15 s live pass moves it
   // hover the stamp for provenance (the user 2026-07-27): the age marks the NEWEST event (a done card's
   // age is its completion), so the popover tells where the thread came from — started when, each sub +
   // its time, what the stamp marks.
   wireAgeTip(a._time, () => provenanceRows(it, hostNow, PROV_FMT));
-  // RE-CHECK chip (the user 2026-06-27): a soft-block you answered with a TARGETED follow-up (kernel `recheck`).
-  // Reads "↩ re-judging" so you know it registered and isn't on you, pending the judge's verdict. (A PLAIN reply
-  // is `rejudging`, not `recheck`, and gets no chip: since 2026-07-02 it ALSO moves to Working while the reply
-  // is in flight, and its "Analyzing…" swirl carries the same message — the chip would just double it up. The
-  // swirl is therefore the ONLY cue on a rejudging card, which is why it must never be suppressed.)
-  // The plain "↻ Followed up" chip (followupPending → reopened to Working) was REMOVED (the user 2026-07-01):
-  // click-to-cite makes following up routine, so acknowledging it on the card is now noise — the card just
-  // silently returns to Working. (followupPending still drives that column move; only its badge is gone.)
-  if (it.recheck) {
-    a._followedup.style.display = "";
-    a._followedup.textContent = "↩ re-judging";
-    a._followedup.title = BADGE_WORDS.rejudging.title;
-  } else {
-    a._followedup.style.display = "none";
-  }
-  // "done, confirming" — the done verdict is in, settle pending; the card stays put in Working with this
-  // steady cue instead of moving columns early (the user 2026-07-24: an indicator, never a column flicker).
-  (a._doneConfirming as HTMLElement).style.display = it.doneConfirming ? "" : "none";
-  // "follow-up failed" chip (plans/stalled-open-todos-nudge.md): the one auto-nudge didn't resolve the
-  // stall and it is never re-asked — the card says so. The failure also records a BLOCK verdict (2026-07-07),
-  // so the card reaches Needs-you via the normal ladder; this chip rides along as the explanation.
-  a._nudgeFailed.style.display = it.nudgeFailed ? "" : "none";
-  // "interrupting…" — a stop is IN FLIGHT (the user 2026-07-07): steady from the click until the interrupt
-  // settles, at which point the kernel drops `interrupting` and (if still quiet) sets `interrupted`. The
-  // follow-up-failed chip still outranks it; the two interrupt badges are mutually exclusive by construction
-  // (the kernel never sets both), and we hide the past-tense one while interrupting for belt-and-suspenders.
-  (a._interrupting as HTMLElement).style.display =
-    (it.interrupting && !it.nudgeFailed) ? "" : "none";
-  // "interrupted" — the user stopped this session and hasn't re-engaged; quiet is user-chosen (the
-  // user 2026-07-05). The follow-up-failed chip outranks it: it carries a romp-ask outcome, while
-  // this only explains silence — never show both; nor alongside the in-flight "interrupting…" badge.
-  (a._interrupted as HTMLElement).style.display =
-    (it.interrupted && !it.interrupting && !it.nudgeFailed) ? "" : "none";
-  // the chip label says "follow-up failed"; its tooltip carries the EVIDENCE — romp did follow up, and
-  // when (the user 2026-07-02: the bare label read like a state romp observed, not a nudge outcome)
-  a._nudgeFailed.title = it.nudged && it.nudged.times.length
-    ? `romp followed up ${it.nudged.count}× (${it.nudged.times.map(clockHM).join(", ")}); the response didn't resolve it and it won't be re-asked — it's waiting on you`
-    : BADGE_WORDS.nudgeFailed.title;
-  // "warning" chip: a judge stamped an anomaly on this goal — show the latest msg on hover, detail on click.
-  // Data rides the card element so the click handler (wired once in build) always reads the current push.
-  // When the warns are all GIVEN-UP summarizer lines, the chip SAYS so — "distill failed" (the user
-  // 2026-08-13, who read the generic label as a mystery) — and its modal carries the Try again.
-  a._warnsData = it.warns || null;
-  a._failLog = it.failLog || null;
-  if (it.warns && it.warns.length) {
-    const allDistill = it.warns.every((w) => DISTILL_FAIL_RE.test(w.kind));
-    const lbl = allDistill ? "distill failed" : "warning";
-    a._warnChip.style.display = "";
-    a._warnChip.textContent = it.warns.length > 1 ? `${lbl} ×${it.warns.length}` : lbl;
-    // hover = the attempt history when one exists (the user 2026-08-18: "tried opus — 529" ×3 says
-    // what the prose can't — that ONE model keeps failing and switching it would fix this)
-    a._warnChip.title = (it.failLog && it.failLog.length
-      ? it.failLog.map((f) => `${clockHM(f.t)} tried ${f.model} — ${f.note}`).join("\n")
-      : it.warns[it.warns.length - 1].msg) + "\n— click for what happened and why";
-  } else {
-    a._warnChip.style.display = "none";
-  }
-  // "Awaiting <peer>" / "Handed off to <peer>" — this session has an unanswered message out to a live peer
-  // (kernel _wait_for_graph): held in Working, not stalled, so auto-nudge skips it. A DELEGATE handoff wears
-  // "Handed off to" (the peer owns the work now; the user 2026-07-25 — a handoff is not "awaiting background
-  // agents"); a question keeps "Awaiting". The peer NAME renders in its NATIVE identity colour (like the
-  // "↪ from" provenance), no emoji prefix (the user 2026-06-22). A mutual-wait CYCLE keeps the red styling +
-  // a "Deadlock" label over both.
-  const wo = it.waitingOn;
-  if (wo) {
-    a._waitOn.replaceChildren();
-    const woPre = el("span", "fask-waiton-pre");
-    woPre.textContent = wo.inCycle ? "Deadlock " : wo.kind === "delegate" ? "Handed off to " : "Awaiting ";
-    const woName = el("span", "fask-waiton-name"); woName.textContent = wo.name;
-    if (wo.color && wo.color.bg) woName.style.color = wo.color.bg;   // the peer's own identity colour
-    a._waitOn.append(woPre, woName);
-    // elapsed since the unanswered ask went out (kernel _wait_for_graph's since) — the same readout the
-    // working narration and awaiting box wear, so a wait stuck for hours is glanceable (the user 2026-08-23)
-    const woDur = durNodes(wo.since);
-    if (woDur.length) {
-      const woWrap = el("span", "fask-waiton-dur"); woWrap.append(...woDur);
-      a._waitOn.append(woWrap);
-    }
-    a._waitOn.title = wo.inCycle
-      ? "MUTUAL WAIT — this session and " + wo.name + " are each waiting on the other (a deadlock); auto-nudge surfaces it instead of nudging"
-      : wo.kind === "delegate"
-        ? "this session handed work to " + wo.name + " and acts when the result comes back — not stalled, so auto-nudge skips it"
-        : "this session has an unanswered message out to " + wo.name + " — waiting on its reply, not stalled, so auto-nudge skips it";
-    a._waitOn.className = "fask-waiton" + (wo.inCycle ? " fask-waiton-cycle" : "");
-    a._waitOn.style.display = "";
-  } else {
-    a._waitOn.replaceChildren();
-    a._waitOn.style.display = "none";
-  }
+  // the name row's state badges (re-judging, done confirming, follow-up failed, the interrupt words, the warning chip, the peer wait, the
+  // delegation's origin and handoff) are drawn below, after the swirl's caption is known, by the shared builder (stateBadges)
+  a._clr.style.display = it.provisional ? "none" : "";   // a placeholder has nothing to curate — no Clear
   a._clr.style.display = it.provisional ? "none" : "";   // a placeholder has nothing to curate — no Clear
   // (The card-face "Status?" sweep was removed 2026-07-21 — see the comment where it used to be declared.)
   // ⏳ awaiting: held in Working, waiting on work it dispatched/delegated (agents, a subagent, a build). The
@@ -2239,50 +1995,12 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // A NOTICE card never wears the distiller's placeholder (the user 2026-09-19: an empty card posted from the command line has
   // nothing to distill): its body IS its text and no judge ever reads it, so a null summary on a completed notice (the row
   // stamps summary and blockSummary null) is not a takeaway on its way; the spinner is the goal kind's.
-  const spin = spinFor(it, !it.notice && distillPending(dCompleted, dBlocked, it.summary, it.blockSummary, !!it.blocked),
-                       dCompleted, nowSec());
-  const spinCaption = spin.caption, spinTip = spin.tip, awaitingBg = spin.awaitingBg;
-  a._awaitSpin.style.display = spinCaption ? "" : "none";
-  // The AWAITING case gets a rounded box (its distinct read); the swirl spins in every case now —
-  // except the at-rest floor (`still`): quiet/unknown keep the glyph as the state anchor, stilled,
-  // because spin reads as in-flight and nothing is (the user 2026-08-14).
-  a._awaitSpin.classList.toggle("await-paused", awaitingBg);
-  a._awaitSpin.classList.toggle("await-still", !!spin.still);
-  if (spinCaption) {
-    // a DELEGATION wait names its peers the way the "↪ from" line does (the user 2026-08-23): the
-    // quiet host: prefix + the peer's identity colour, never a colourless "Awaiting peer". The
-    // ladder's caption stays the fallback (older kernel payloads carry no peers).
-    const awPeers = (awaitingBg && it.awaiting && it.awaiting.peers) || [];
-    if (awPeers.length) {
-      a._awaitWhy.replaceChildren();
-      a._awaitWhy.append("Awaiting ");
-      awPeers.forEach((p, i) => {
-        if (i) a._awaitWhy.append(", ");
-        const nm = el("span", "fask-waiton-name");
-        nm.replaceChildren(...hostPartsNodes(p.host, p.name));
-        if (p.color && p.color.bg) nm.style.color = p.color.bg;
-        if (p.sid) {
-          // the standard session-chip gesture (the handoffTo idiom above): click opens the session
-          nm.title = "waiting on " + p.name + " — click opens the session";
-          nm.style.cursor = "pointer";
-          nm.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: p.sid }); };
-        }
-        a._awaitWhy.appendChild(nm);
-      });
-      a._awaitWhy.append(...durNodes(it.awaiting && it.awaiting.since));
-    } else if (spin.dur) a._awaitWhy.replaceChildren(spin.dur.text, durSpan(spin.dur.since));   // the caption's running duration, live
-    else a._awaitWhy.textContent = spinCaption;
-    a._awaitSpin.title = spinTip || spinCaption;
-    // HONEST fallback (the user 2026-08-26): a peer-kind wait with no named session says WHY the
-    // name is missing, instead of presenting "peer" as a style — identity is only truly unknowable
-    // when the record predates identity capture or an older/offline kernel shipped the payload.
-    if (awaitingBg && !awPeers.length && it.awaiting && it.awaiting.kind === "peer")
-      a._awaitSpin.title += " (No session is named in this wait's record — it predates identity capture, or an older kernel shipped it.)";
-  }
-  // The swirl's "Analyzing…" caption + tooltip REPLACES the separate "↩ re-judging" chip (the user
-  // 2026-06-29: don't show both) — drop the chip the recheck branch set above when the swirl is saying it.
-  // ("Analyzing…" is the user-facing label for the re-judging spin, the user 2026-07-08.)
-  if (spinCaption === "Analyzing…") a._followedup.style.display = "none";
+  const spin = cardSpin(it, dCompleted, dBlocked, sectionEnv);   // the swirl ladder over the item's fields (card-sections.ts): one rule with the Needs you row
+  applySpin(a, it, spin, sectionEnv);
+  const spinCaption = spin.caption;
+  // THE STATE BADGES, drawn into the name row's slot with the card's conditions, precedence and order (card-sections.ts stateBadges):
+  // "↩ re-judging" on recheck only, and never while the swirl's "Analyzing…" caption already says it (the user 2026-06-29: don't show both)
+  a._badges.replaceChildren(...stateBadges(it, sectionEnv, spinCaption));
   // ⏸ live block badge: the session is stopped mid-turn on a permission prompt /
   // picker FOR THIS CARD's work — the card files under BLOCKED while it lasts
   const isApiErr = it.blocked?.state === "apiError";
@@ -2317,115 +2035,10 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     dle.textContent = it.blocked.what || "";
     dle.style.display = it.blocked.what ? "" : "none";
   }
-  // PER-PARAGRAPH ages (the user 2026-07-24): a MULTI-item decision brief writes one paragraph per
-  // owed item IN ORDER (judge BLOCK_BRIEF_SYS 2026-07-21 + briefParts), so each paragraph can wear
-  // the age of ITS OWN ask — the exact block-event time — and a stale re-surfaced ask shows its real
-  // age at a glance (the incident: a card re-displayed a brief whose go-ahead was given two hours
-  // earlier). The DONE side mirrors it: a takeaway the distiller split by <completed-items> ships
-  // summaryParts, each paragraph stamped with its own done-event time. Deliberate gates: the parts
-  // must belong to the STATE being shown (briefParts ↔ blocked brief, summaryParts ↔ takeaway),
-  // multi-item only (a single ask keeps just the card header's age — the user's rule), and the
-  // paragraph count must MATCH briefParts (the model may merge items; a missing stamp beats a wrong
-  // one — then the plain applyDistillLine text above stands untouched). Rebuilt every push, so the
-  // ages tick live like every other relAge on the card.
-  //
-  // ONE EXTRA TRAILING PARAGRAPH is allowed and left UNSTAMPED (the user 2026-07-29): all three judge
-  // prompts now put whatever is still open in a last paragraph of its own, and that paragraph belongs to
-  // no item, so it carries no item's age. Without this the count-match gate saw items+1 paragraphs on
-  // every multi-item card that had a leftover and dropped every stamp. Exactly one extra, always the
-  // last: a bigger surplus means the model split some other way and the mapping can no longer be trusted,
-  // so the gate falls through to the plain text as before.
-  const bp = dCompleted ? it.summaryParts : dBlocked ? it.briefParts : null;
-  // Paragraph SPLIT fires for a stamped parts-takeaway (T153) OR for per-paragraph citations (T220,
-  // the user's ruling: each paragraph of a multi-topic summary is independently clickable, hover
-  // highlighting exactly the paragraph under the pointer). Anchor precedence per paragraph: the
-  // model's OWN citation (it names what the paragraph was written from) beats the T153 tree-row
-  // mapping; a paragraph with neither keeps the whole-summary landing via the card-level link.
-  const pAnchors = (distillShown && it.summaryAnchorsPara) || null;
-  if (distillShown && ((bp && bp.length > 1) || (pAnchors && pAnchors.some(Boolean)))) {
-    const split = distillParas(distillShown, bp);   // the shared split and stamp gate (distiller-line.ts): the chat box's row splits the same way
-    const paras = split.paras;
-    const stampOk = split.stamps !== null;
-    const anchOk = !!(pAnchors && paras.length === pAnchors.length);   // count drift → drop, never mis-map
-    if (stampOk || anchOk) {
-      const dle = a._distill as HTMLElement;
-      dle.textContent = "";
-      const nowS = nowSec();
-      paras.forEach((p, i) => {
-        const para = el("div", "fask-para");
-        para.textContent = p;
-        if (stampOk && i < bp!.length) {
-          const age = el("span", "fask-para-age");
-          if (bp![i].since) stampAge(age, bp![i].since, "plain", false, nowS, relAge, ageColorReadable);   // stamped: the live pass moves it
-          else age.textContent = relAge(0);   // no event time → the static "<1m ago" this chip always showed; nothing to count from
-          para.append(" ", age);
-        }
-        // T220 first: the paragraph's own citation, with its located span riding the landing
-        const cited = anchOk ? pAnchors![i] : null;
-        let au: string | null = null, aq: string | undefined;
-        if (cited && cited.u) { au = cited.u; aq = cited.q; }
-        else if (stampOk && i < bp!.length) {
-          // T153: the item's tree row carries its WORK anchor
-          const pid = bp![i].id;
-          const prow = pid ? (it.tree || []).find((r) => r.id === pid) : undefined;
-          if (prow && prow.anchorUuid) au = prow.anchorUuid;
-        }
-        if (au) {
-          const u = au;
-          para.classList.add("fask-para-link");
-          para.title = "jump to where this piece resolved";
-          para.onclick = (ev: Event) => {
-            ev.stopPropagation(); focusEcho(it.sid);
-            vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid,
-                                     t: it.t, anchor: "work", anchorUuid: u, quote: aq });
-          };
-        }
-        dle.append(para);
-      });
-    }
-  }
-  // The distiller line is a LINK: clicking it jumps to where the takeaway/brief was actually written — the
-  // biggest contiguous assistant-text block in the goal's work span (it.summaryAnchorUuid; kernel
-  // _seg_best_text). This was lost when the line was restored via applyDistillLine (which only sets text), so
-  // the summary read like plain text with no affordance (the user 2026-06-29). stopPropagation so it doesn't
-  // also open the modal (the card-body click). Falls back to non-clickable when there's no anchor.
-  // STALE-takeaway note (the user 2026-08-19): the rule lives in ./distiller-line so the test EXECUTES
-  // it. Prepended after the parts-split (which rewrites the element), so it survives either rendering.
-  const staleNote = distillStaleNote(!!it.summaryStale, dCompleted, distillShown);
-  if (staleNote) {
-    const sn = el("div", "fsum-stale");
-    sn.textContent = staleNote;
-    (a._distill as HTMLElement).prepend(sn);
-  }
-  const dl = a._distill as HTMLElement;
-  if (distillShown && it.summaryAnchorUuid) {
-    dl.classList.add("fask-distill-link");
-    dl.title = "jump to where this was written";
-    dl.onclick = (ev: Event) => { ev.stopPropagation(); focusEcho(it.sid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "work", anchorUuid: it.summaryAnchorUuid, quote: it.summaryAnchorQuote || undefined }); };
-  } else if (distillShown) {
-    // No anchor recorded (a card minted from a postal delegate, a completion turn not yet landed) — the
-    // line must still ACKNOWLEDGE the click instead of rendering as silently dead text (the user
-    // 2026-07-20: hovering the federation card offered nothing, with no error anywhere). Same
-    // affordance, honest outcome: the click says why the jump can't happen.
-    dl.classList.add("fask-distill-link");
-    dl.title = "no anchor recorded for this card";
-    // Toast AND file it in the error center (the user 2026-07-28): a transient pop-up left no trace of a
-    // click that couldn't do anything, so the failure was unreportable a minute later. The entry carries
-    // the card so clicking it jumps back here.
-    dl.onclick = (ev: Event) => {
-      ev.stopPropagation();
-      feedToast("couldn't locate this in the transcript — no anchor was recorded for this card");
-      try {
-        window.parent?.postMessage({ romp: "notify", kind: "locate",
-          text: "Couldn't jump to this summary: no anchor was recorded for this card",
-          sid: it.sid, itemId: it.itemId }, "*");
-      } catch { /* no shell (VS Code view) */ }
-    };
-  } else {
-    dl.classList.remove("fask-distill-link");
-    dl.onclick = null;
-    dl.removeAttribute("title");
-  }
+  // the line's paragraphs, their per-item ages and their landings (T220 citations first, then the tree row's work anchor), the stale note and
+  // the whole line's link to where it was written: the shared builder (card-sections.ts applyDistillLanding), one rule with the Needs you
+  // row; this page's landings post showOnTimeline (sectionEnv.landing) and its no-anchor click toasts and files the miss (sectionEnv.noAnchor)
+  applyDistillLanding(a, it, distillShown, dCompleted, dBlocked, sectionEnv);
   // TWO collapsible distiller sections (the user 2026-07-02): BACKGROUND (re-orientation for a reader who
   // forgot the thread, collapsed by default) above the takeaway (expanded by default), each with a +/−.
   applySections(a, it, !!distillShown, sectionEnv);   // bg/summary/sub-goals (mutually exclusive): applyDistillLine returns the line's TEXT (string), coerce to "has content"
@@ -2669,7 +2282,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   const gmode = feedPrefs().grouped;
   ((a._name as HTMLElement).parentElement as HTMLElement).style.display = gmode ? "none" : "";
   const r2 = a._row2 as HTMLElement;
-  const r2live = (Array.from(r2.children) as HTMLElement[]).some((c) => c.style.display !== "none");
+  const r2live = (Array.from(r2.children) as HTMLElement[]).some((c) => c.style.display !== "none" && !(c.classList.contains("fask-badges") && c.childElementCount === 0));   // the badge slot counts only when it holds a badge (display: contents, never hidden itself)
   r2.style.display = gmode && !r2live ? "none" : "";
 
   // (bg / summary / sub-goals are wired above in applySections — one mutually-exclusive selection.)
@@ -5914,7 +5527,7 @@ window.addEventListener("blur", () => { if (kbMode) kbExit(); });   // shell mov
 let lastCollapsedPref = feedPrefs().collapsed;
 function onSettingsChanged(): void {
   const p = feedPrefs();
-  if (p.collapsed !== lastCollapsedPref) { lastCollapsedPref = p.collapsed; secChoice.clear(); }
+  if (p.collapsed !== lastCollapsedPref) { lastCollapsedPref = p.collapsed; replaceSectionChoices([], { quiet: true }); }   // through the shared setter: the row's default follows too; the render below applies every card
   applyStacked(p.stacked);
   if (viewMenuEl) paintViewMenu(viewMenuEl);   // an open view menu re-reads the prefs it shows
   render();

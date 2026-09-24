@@ -26,7 +26,7 @@ test("the span rides the payload only while it was located IN the landing atom",
   assert.match(KERNEL, /u, q = _summary_text_anchor\(seg_turn\.get\(sk\), line, memo_key=\(fsid, nid, sk\)\)/,
     "the only writer of the quote inside it is the tier that located the span in the atom it returns");
   assert.match(FEED, /summaryAnchorQuote\?: string \| null;/);
-  assert.match(FEED, /anchorUuid: it\.summaryAnchorUuid, quote: it\.summaryAnchorQuote \|\| undefined/,
+  assert.match(FEED, /const u = it\.summaryAnchorUuid, q = it\.summaryAnchorQuote \|\| undefined;\s*\n\s*dle\.onclick = \(ev: Event\) => \{ ev\.stopPropagation\(\); env\.landing\(it, \{ anchorUuid: u, quote: q, anchor: "work" \}\); \};/,
     "the click carries the span");
   assert.match(KERNEL, /f\["anchorQuote"\] = str\(msg\["quote"\]\)\[:300\]/, "the focus frame passes it through");
 });
