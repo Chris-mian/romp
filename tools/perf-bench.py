@@ -453,8 +453,8 @@ class SubprocessTripwire:
     """Stands in for the `subprocess` module inside the loaded romp modules: constants and helpers pass
     through; every spawn raises, except the kernel's read-only local git queries — `git rev-parse` and
     `git ls-files` (the chat build's path-link pass), `git rev-list` (the PR chip's ahead-of counts) and
-    the pair `git remote get-url` (the file-link route and the chip's repo; the get-url pair only, never
-    `git remote` at large, whose add/set-url/remove forms rewrite config). Those are counted. With no_git
+    the pairs `git remote get-url` (the file-link route) and `git config --get-regexp` (the chip's remotes;
+    only these pairs, never `git remote` or `git config` at large, whose other forms rewrite config). Those are counted. With no_git
     they are answered as failures (the "no git on this box" shape) instead of run, so a strict zero-exec
     run is possible without replacing any kernel function.
 
@@ -462,7 +462,7 @@ class SubprocessTripwire:
     down is gp._kick in install_guards, where the rest of the background threads are neutralized."""
     _SPAWN = ("Popen", "run", "call", "check_call", "check_output", "getoutput", "getstatusoutput")
     _GIT_READ_ONLY = ("rev-parse", "ls-files", "rev-list")   # single-word queries admitted by their subcommand
-    _GIT_READ_ONLY_PAIRS = (("remote", "get-url"),)      # two-word queries admitted only as the whole pair
+    _GIT_READ_ONLY_PAIRS = (("remote", "get-url"), ("config", "--get-regexp"))   # two-word queries admitted only as the whole pair
 
     def __init__(self, real, log, no_git=False):
         self._real, self._log, self._no_git = real, log, no_git
@@ -470,8 +470,8 @@ class SubprocessTripwire:
 
     @classmethod
     def _git_query(cls, argv):
-        """The read-only git query `argv` spells — "rev-parse", "ls-files" or "remote get-url" (the
-        counter's key) — or None for anything else, `git remote set-url` included."""
+        """The read-only git query `argv` spells — "rev-parse", "ls-files", "remote get-url" or "config
+        --get-regexp" (the counter's key) — or None for anything else, `git remote set-url` included."""
         if not (isinstance(argv, (list, tuple)) and argv and argv[0] == "git"):
             return None
         i = 1
@@ -532,7 +532,7 @@ def install_guards(km, sbmod, shadow, rec, no_git=False):
     if gp is not None:
         if not hasattr(gp, "_kick"):
             raise BenchError("this kernel's PR module has no _kick; the harness's guard list needs adjusting for this revision")
-        gp._kick = lambda repo, nums=(): rec["gh_kicks"].append(repo)
+        gp._kick = lambda repo: rec["gh_kicks"].append(repo)
         names.append("gp._kick (counted)")
     stub("_system_notify", lambda t, b, *a, **k: rec["notifications"].append(("system", t)))
     stub("_push_notify", lambda t, b, *a, **k: rec["notifications"].append(("push", t)))

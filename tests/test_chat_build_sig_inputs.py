@@ -34,6 +34,8 @@ import itertools
 import json
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 import textwrap
 import time
@@ -136,7 +138,7 @@ CENSUS = {
     "_postal_card_deps": ("sig", "postal"),
     "_postal_index": ("sig", "postal", "memoized on the log's identity"),
     "_pr_note_push": ("out", "the PR cache's push event: writes _pr_push_seen and pokes gitpr, reading the transcript's pushCount (transcript)"),
-    "_pr_work_dir": ("pure", "over the transcript's session meta (lastEditPath) and the registry cwd (transcript, cwd)"),
+    "_pr_repo_of": ("sig", "cwd", "the base repo of the session's checkout (lastEditPath's tree, else its cwd), which the rows' PR refs are filtered to; the signature folds the same call"),
     "_queue_recallable": ("sig", "backend"),
     "_queued_romp_flags": ("pure", "over a queued text"),
     "_read_task_store": ("sig", "tasks"),
@@ -214,7 +216,6 @@ DOTTED = {
     "_cbe.pending_queued_meta": ("sig", "backend", "each queued copy's (qid, qts) beside its text, folded as _qmeta where the backend keeps them"),
     "be.qids_for_landing": ("sig", "live", "the queued-copy ids a landed record pairs with: a landing is a transcript record (transcript) or a live-tail change (live), and the fed ledger it reads fills with the feed that bumps live_rev"),
     "_be_fk.fork_children": ("sig", "fork"),
-    "gp.repo_of": ("const", "the work dir's GitHub origin: a property of the checkout, not of the session's state"),
     "os.path.exists": ("sig", "transcript", "whether the transcript exists yet"),
     "os.path.realpath": ("sig", "cwd", "the two tree tops compared through the filesystem"),
     "os.path.expanduser": ("const", "the home directory"),
@@ -249,7 +250,6 @@ GLOBALS = {
     "_parse_mode": ("memo", "see _parse_mode.get"),
     "_pending_ops": ("sig", "ops"),
     "bisect": ("const", "a module"), "cm": ("const", "a module"), "em": ("const", "a module"),
-    "gp": ("const", "a module"),
     "jd": ("const", "a module"), "json": ("const", "a module"), "os": ("const", "a module"),
     "re": ("const", "a module"), "sb": ("const", "a module"), "sys": ("const", "a module"),
     "traceback": ("const", "a module"),
@@ -1192,6 +1192,21 @@ class Differential(_World):
         moved = self.moved(b, self.sig())
         self.assertIn("cwd", moved)
         self.assertLessEqual(set(moved), {"cwd", "claudemd", "names"})
+
+    def test_the_pr_repo_the_rows_are_filtered_to_moves_cwd(self):
+        """A second remote gh reads first (upstream) changes the rows' PR repo with origin unchanged."""
+        if not shutil.which("git"):
+            self.skipTest("no git")
+        run = lambda *a: subprocess.run(["git", "-C", str(self.cdir)] + list(a), check=True, capture_output=True)
+        run("init", "-q")
+        run("remote", "add", "origin", "https://github.com/notes-api-dev/notes-api.git")
+        a = self.sig()
+        self.assertEqual(km._pr_repo_of(SID, str(self.tpath)), "notes-api-dev/notes-api")
+        run("remote", "add", "upstream", "https://github.com/notes-api-org/notes-api.git")
+        cfg = self.cdir / ".git" / "config"
+        os.utime(cfg, ns=(cfg.stat().st_atime_ns, cfg.stat().st_mtime_ns + 10 ** 9))   # a clock that did not tick
+        self.assertEqual(km._pr_repo_of(SID, str(self.tpath)), "notes-api-org/notes-api")
+        self.assertEqual(self.moved(a, self.sig()), ("cwd",))
 
     def test_the_handed_liveness_map_is_served_to_every_nested_read(self):
         """_chat_build_sig serves the map it was handed (_serve_live) to the reads beneath it, so the bg

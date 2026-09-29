@@ -176,7 +176,8 @@ def _drain():
 
 
 def _reset():
-    for memo in (gp._CACHE, gp._GEN, gp._WANTED, gp._BRANCHES, gp._TRIED, gp._POLLED, gp._FULL, gp._POLL_BACKOFF):
+    for memo in (gp._CACHE, gp._GEN, gp._WANTED, gp._BRANCHES, gp._TRIED, gp._POLLED, gp._FULL, gp._POLL_BACKOFF,
+                 gp._SESSION_BRANCH, gp._EXPECT, gp._FAILING):
         memo.clear()
 
 
@@ -399,15 +400,20 @@ def test_unknown_is_distinct_from_none():
     assert gp.normalize(dict(OPEN_PASSING, statusCheckRollup=[]))["checksState"] == "none"
 
 
-def test_needs_poll_only_while_a_check_runs(monkeypatch):
+def test_needs_poll_only_while_a_watched_check_runs(monkeypatch):
     _reset()
     running = dict(OPEN_PASSING, statusCheckRollup=[{"name": "pytest", "conclusion": None,
                                                     "status": "IN_PROGRESS"}])
     monkeypatch.setattr(gp, "hydrate", lambda repo: {12: gp.normalize(running)})
+    monkeypatch.setattr(gp, "_gh_json", lambda args, what: {"number": 12, "statusCheckRollup": RUNNING})
     gp.repo_prs(REPO); _drain()
+    assert gp.needs_poll(REPO) is False, "nobody cites 12 or is on its branch: its CI is not ours to wait on"
+    gp.repo_prs(REPO, nums=[12]); _drain()
     assert gp.needs_poll(REPO) is True
 
     monkeypatch.setattr(gp, "hydrate", lambda repo: {12: gp.normalize(OPEN_PASSING)})
+    monkeypatch.setattr(gp, "_gh_json", lambda args, what: {"number": 12,
+                                                            "statusCheckRollup": OPEN_PASSING["statusCheckRollup"]})
     gp.invalidate(REPO)
     gp.repo_prs(REPO); _drain()
     assert gp.needs_poll(REPO) is False, "a terminal check must end the poll"
@@ -497,8 +503,8 @@ def test_a_branch_pr_outside_the_list_window_is_fetched_by_head(monkeypatch):
     _reset()
     monkeypatch.setattr(gp, "hydrate", lambda repo: {12: _bare(OPEN_PASSING)})
     heads = []
-    monkeypatch.setattr(gp, "hydrate_head", lambda repo, b: (heads.append(b),
-                                                             gp.normalize(dict(MERGED, number=3, headRefName=b)))[1])
+    monkeypatch.setattr(gp, "hydrate_head", lambda repo, b, owner="": (heads.append(b),
+                                                                       gp.normalize(dict(MERGED, number=3, headRefName=b)))[1])
     _checks_stub(monkeypatch)
     gp.repo_prs(REPO, branch="dev/old-work"); _drain()
     prs, err = gp.repo_prs(REPO)
@@ -509,14 +515,14 @@ def test_the_current_branch_outranks_old_ones_and_terminal_prs_come_last():
     prs = {n: {"branch": "dev/n%d" % n, "state": "merged"} for n in range(100, 114)}
     prs[50] = {"branch": "dev/now", "state": "open"}
     prs[20] = {"branch": "dev/cited", "state": "open"}
-    order = gp._check_order(prs, ["dev/now", "dev/n113"], {20, 100})
+    order = gp._check_order(prs, [("dev/now", ""), ("dev/n113", "")], {20, 100})
     assert order == [50, 113, 20, 100]
 
 
 def test_a_branch_nobody_asked_about_lately_is_not_current():
     _reset()
-    gp._BRANCHES[REPO] = {"dev/old": 0.0, "dev/now": 1000.0}
-    assert gp._current_branches(REPO, 1000.0 + 1) == ["dev/now"]
+    gp._BRANCHES[REPO] = {"dev/old": (0.0, ""), "dev/now": (1000.0, "")}
+    assert gp._current_branches(REPO, 1000.0 + 1) == [("dev/now", "")]
 
 
 def test_a_transient_single_fetch_failure_is_shown_and_retried(monkeypatch):
@@ -547,3 +553,507 @@ def test_a_failed_checks_fetch_is_shown(monkeypatch):
     monkeypatch.setattr(gp, "_gh_json", boom)
     gp.repo_prs(REPO, nums=[12]); _drain()
     assert "checks for #12" in gp.repo_prs(REPO)[1]
+
+
+# ── what a poll reads ────────────────────────────────────────────────────────────────────────────────
+
+def _row(n, branch=None, state="OPEN", **kw):
+    """A list row for PR `n`, no rollup."""
+    return dict({k: v for k, v in OPEN_PASSING.items() if k != "statusCheckRollup"}, number=n,
+                headRefName=branch or "dev/n%d" % n, state=state, **kw)
+
+
+def _gh_script(monkeypatch, rows, checks, fail=None):
+    """Stub gh. `rows` is the list; `checks(n, count)` answers PR n's checks read; `fail(args)` may raise.
+    Returns the per-number checks-read counts and the list count."""
+    seen = {"list": 0, "views": {}}
+
+    def fake(args, what):
+        if fail:
+            fail(args)
+        if args[1] == "list":
+            seen["list"] += 1
+            return [dict(r) for r in rows]
+        n = int(args[2])
+        if "statusCheckRollup" not in args[-1]:
+            return next((dict(r) for r in rows if r["number"] == n), None)
+        seen["views"][n] = seen["views"].get(n, 0) + 1
+        return {"number": n, "statusCheckRollup": checks(n, seen["views"][n])}
+
+    monkeypatch.setattr(gp, "_gh_json", fake)
+    return seen
+
+
+def _polls(seconds, step=STEP, start=0.0):
+    """Drive poll_due and repo_prs the way the build pass does; returns the polls that fired."""
+    now, fired = start, []
+    while now < start + seconds:
+        now += step
+        if gp.poll_due(REPO, now):
+            fired.append(now)
+        gp.repo_prs(REPO)
+        _drain()
+    return fired
+
+
+def test_a_poll_reads_only_the_prs_a_session_cites_or_is_on(monkeypatch):
+    """Uncited open PRs with running CI above the session's own: the poll re-reads the branch PR and the
+    cited one only, and stops once they settle."""
+    _reset()
+    rows = [_row(n) for n in range(40, 60)] + [_row(12, branch="dev/mine"), _row(15)]
+    done_at = {12: 3, 15: 2}
+    seen = _gh_script(monkeypatch, rows, lambda n, k: RUNNING if k < done_at.get(n, 10 ** 6) else
+                      OPEN_PASSING["statusCheckRollup"])
+    gp.repo_prs(REPO, nums=[15], branch="dev/mine"); _drain()
+    fired = _polls(HOUR)
+    assert set(seen["views"]) == {12, 15}, "no uncited PR's checks are read"
+    assert gp.needs_poll(REPO) is False and len(fired) == 2, fired
+
+
+def test_the_session_s_pr_is_not_starved_by_newer_running_ones(monkeypatch):
+    _reset()
+    rows = [_row(n) for n in range(100, 130)] + [_row(12, branch="dev/mine")]
+    seen = _gh_script(monkeypatch, rows, lambda n, k: RUNNING if (n != 12 or k < 2) else [])
+    gp.repo_prs(REPO, branch="dev/mine"); _drain()
+    _polls(STEP * 2)
+    assert gp.repo_prs(REPO)[0][12]["checksState"] == "none"
+    assert gp.needs_poll(REPO) is False
+
+
+def test_the_branch_pr_s_checks_are_read_ahead_of_a_full_budget_of_cited_ones(monkeypatch):
+    """More cited running PRs than one read's checks budget: the branch's own PR is read first, every time."""
+    _reset()
+    cited = list(range(100, 100 + gp._MAX_CHECK_FETCHES + 2))
+    rows = [_row(n) for n in cited] + [_row(12, branch="dev/mine")]
+    seen = _gh_script(monkeypatch, rows, lambda n, k: RUNNING)
+    gp.repo_prs(REPO, nums=cited, branch="dev/mine"); _drain()
+    assert seen["views"].get(12) == 1, "the full read reached it"
+    gp.poll_due(REPO, 10 ** 6); gp.repo_prs(REPO); _drain()
+    assert seen["views"][12] == 2, "and so did the poll"
+
+
+def test_the_poll_re_reads_a_watched_pr_whose_checks_were_never_read(monkeypatch):
+    """"unknown" is unsettled: a watched open PR the last read could not reach is read by the next poll."""
+    _reset()
+    rows = [_row(12, branch="dev/mine"), _row(15)]
+    seen = _gh_script(monkeypatch, rows, lambda n, k: RUNNING)
+    gp.repo_prs(REPO, nums=[15], branch="dev/mine"); _drain()
+    cached = gp._CACHE[REPO]
+    prs = dict(cached["prs"])
+    prs[15] = dict(prs[15], checksState="unknown")
+    gp._CACHE[REPO] = dict(cached, prs=prs)
+    before = dict(seen["views"])
+    gp.poll_due(REPO, 10 ** 6); gp.repo_prs(REPO); _drain()
+    assert seen["views"][15] == before[15] + 1
+
+
+def test_a_poll_never_changes_the_dict_a_reader_holds(monkeypatch):
+    _reset()
+    _gh_script(monkeypatch, [_row(12, branch="dev/mine")], lambda n, k: RUNNING if k < 2 else [])
+    gp.repo_prs(REPO, branch="dev/mine"); _drain()
+    held = gp.repo_prs(REPO)[0]
+    snapshot = {n: dict(pr) for n, pr in held.items()}
+    gp.poll_due(REPO, 10 ** 6); gp.repo_prs(REPO); _drain()
+    assert held == snapshot and gp.repo_prs(REPO)[0][12]["checksState"] == "none"
+
+
+def test_a_check_that_passes_on_its_third_read_ends_the_poll(monkeypatch):
+    """Through repo_prs, as the build pass reaches it: the poll's invalidation is what makes the next build
+    re-read."""
+    _reset()
+    _gh_script(monkeypatch, [_row(12, branch="dev/mine")], lambda n, k: RUNNING if k < 3 else [])
+    gp.repo_prs(REPO, branch="dev/mine"); _drain()
+    fired = _polls(STEP * 10)
+    assert len(fired) == 2 and gp.needs_poll(REPO) is False, fired
+
+
+def test_a_closed_pr_with_a_pending_status_does_not_keep_the_poll(monkeypatch):
+    _reset()
+    monkeypatch.setattr(gp, "hydrate", lambda repo: {9: gp.normalize(dict(MERGED, state="CLOSED",
+                                                                            statusCheckRollup=RUNNING))})
+    monkeypatch.setattr(gp, "_gh_json", lambda args, what: {"number": 9, "statusCheckRollup": RUNNING})
+    gp.repo_prs(REPO, nums=[9]); _drain()
+    assert gp.needs_poll(REPO) is False
+
+
+def test_a_running_check_costs_exactly_one_checks_read_per_poll(monkeypatch):
+    _reset()
+    calls = _gh_counter(monkeypatch)
+    gp.repo_prs(REPO, nums=[12, 9]); _drain()
+    polls = _an_hour_of_polls()
+    assert polls == HOUR // STEP and calls["list"] == 1
+    assert calls["view"] == 2 + polls
+
+
+def test_a_failing_read_polls_exactly_seven_times_an_hour(monkeypatch):
+    _reset()
+    _gh_counter(monkeypatch, fail=True)
+    gp.repo_prs(REPO); _drain()
+    assert _an_hour_of_polls() == 7, "30, 60, 120, 240, 480 s, then the 900 s ceiling"
+
+
+def test_a_clean_read_resets_the_backoff(monkeypatch):
+    """A failure, a clean read while a check runs, then a new failure: the new one starts again from 30 s."""
+    _reset()
+    state = {"fail": True}
+
+    def fail(args):
+        if state["fail"]:
+            raise gp.GitPrError("HTTP 502")
+
+    _gh_script(monkeypatch, [_row(12, branch="dev/mine")], lambda n, k: RUNNING, fail=fail)
+    gp.repo_prs(REPO, branch="dev/mine"); _drain()
+    _polls(STEP * 8)
+    assert gp._POLL_BACKOFF[REPO] > gp._POLL_SECS * 2
+    state["fail"] = False
+    _polls(STEP * 30, start=10 ** 5)                   # the next due poll reads cleanly
+    assert REPO not in gp._POLL_BACKOFF
+    state["fail"] = True
+    fired = _polls(STEP * 3, start=2 * 10 ** 5)
+    assert fired[1] - fired[0] == gp._POLL_SECS, fired
+
+
+# ── an error the poll must retry, not clear ──────────────────────────────────────────────────────────
+
+def _flaky(first_failures, match):
+    """A fail() that raises for calls whose args satisfy `match`, the first `first_failures` times."""
+    left = {"n": first_failures}
+
+    def fail(args):
+        if match(args) and left["n"] > 0:
+            left["n"] -= 1
+            raise gp.GitPrError("HTTP 502: 502 Bad Gateway")
+
+    return fail
+
+
+def test_a_cited_pr_outside_the_window_arrives_once_gh_recovers(monkeypatch):
+    _reset()
+    _gh_script(monkeypatch, [], lambda n, k: [])
+    left = {"n": 1}
+
+    def one(repo, n):
+        if left["n"]:
+            left["n"] -= 1
+            raise gp.GitPrError("HTTP 502: 502 Bad Gateway")
+        return gp.normalize(_row(n, state="MERGED"))
+
+    monkeypatch.setattr(gp, "hydrate_one", one)
+    gp.repo_prs(REPO, nums=[7]); _drain()
+    assert "502" in gp.repo_prs(REPO)[1]
+    _polls(STEP * 2)
+    prs, err = gp.repo_prs(REPO)
+    assert 7 in prs and err == ""
+
+
+def test_a_branch_lookup_arrives_once_gh_recovers(monkeypatch):
+    _reset()
+    _gh_script(monkeypatch, [], lambda n, k: [])
+    left = {"n": 1}
+
+    def head(repo, b, owner=""):
+        if left["n"]:
+            left["n"] -= 1
+            raise gp.GitPrError("HTTP 502: 502 Bad Gateway")
+        return gp.normalize(_row(3, branch=b, state="MERGED"))
+
+    monkeypatch.setattr(gp, "hydrate_head", head)
+    gp.repo_prs(REPO, branch="dev/old-work"); _drain()
+    assert "502" in gp.repo_prs(REPO)[1]
+    _polls(STEP * 2)
+    prs, err = gp.repo_prs(REPO)
+    assert gp.branch_pr(prs, "dev/old-work") == 3 and err == ""
+
+
+def test_a_merged_pr_s_checks_read_is_retried(monkeypatch):
+    _reset()
+    rows = [_row(9, state="MERGED")]
+    _gh_script(monkeypatch, rows, lambda n, k: [], fail=_flaky(1, lambda a: a[1] == "view"))
+    gp.repo_prs(REPO, nums=[9]); _drain()
+    assert "checks for #9" in gp.repo_prs(REPO)[1]
+    _polls(STEP * 2)
+    prs, err = gp.repo_prs(REPO)
+    assert prs[9]["checksState"] == "none" and err == ""
+
+
+def test_a_failure_gh_never_recovers_from_stays_up_all_hour(monkeypatch):
+    _reset()
+    _gh_script(monkeypatch, [], lambda n, k: [])
+    monkeypatch.setattr(gp, "hydrate_one", lambda repo, n: (_ for _ in ()).throw(gp.GitPrError("HTTP 403")))
+    gp.repo_prs(REPO, nums=[7]); _drain()
+    for _ in range(HOUR // STEP):
+        _polls(STEP, start=_ * STEP)
+        assert "403" in gp.repo_prs(REPO)[1]
+
+
+def test_a_malformed_row_is_an_error_and_the_next_read_is_full(monkeypatch):
+    _reset()
+    monkeypatch.setattr(gp, "hydrate", lambda repo: {12: gp.normalize(OPEN_PASSING)})
+    gp.repo_prs(REPO); _drain()
+    monkeypatch.setattr(gp, "hydrate", lambda repo: {12: gp.normalize({"number": "twelve"})})
+    gp.invalidate(REPO)
+    gp.repo_prs(REPO); _drain()
+    prs, err = gp.repo_prs(REPO)
+    assert "ValueError" in err and sorted(prs) == [12], "the old snapshot beside the error, never a fresh read"
+    assert gp._CACHE[REPO]["fullErr"] is True
+
+
+def test_a_thread_that_cannot_start_clears_its_in_flight_mark(monkeypatch):
+    _reset()
+
+    class NoThread:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(gp.threading, "Thread", NoThread)
+    try:
+        gp._kick(REPO)
+    except RuntimeError:
+        pass
+    assert REPO not in gp._INFLIGHT
+
+
+# ── what a full read keeps ───────────────────────────────────────────────────────────────────────────
+
+def test_a_full_read_keeps_only_merged_prs_someone_cites_or_is_on(monkeypatch):
+    _reset()
+    first = {9: gp.normalize(MERGED), 30: gp.normalize(dict(MERGED, number=30, headRefName="dev/mine")),
+             31: gp.normalize(dict(MERGED, number=31, headRefName="dev/other"))}
+    monkeypatch.setattr(gp, "hydrate", lambda repo: dict(first))
+    _checks_stub(monkeypatch)
+    gp.repo_prs(REPO, nums=[9], branch="dev/mine"); _drain()
+    monkeypatch.setattr(gp, "hydrate", lambda repo: {})
+    fetched = []
+    monkeypatch.setattr(gp, "hydrate_one", lambda repo, n: fetched.append(n))
+    gp.invalidate(REPO)
+    gp.repo_prs(REPO); _drain()
+    assert sorted(gp.repo_prs(REPO)[0]) == [9, 30], "the uncited merged one goes"
+    assert fetched == [], "a kept merged PR is not fetched again"
+
+
+def test_a_fetched_open_single_is_kept_and_read_again(monkeypatch):
+    _reset()
+    monkeypatch.setattr(gp, "hydrate", lambda repo: {})
+    _checks_stub(monkeypatch)
+    asked = []
+    monkeypatch.setattr(gp, "hydrate_one", lambda repo, n: (asked.append(n), gp.normalize(_row(n)))[1])
+    gp.repo_prs(REPO, nums=[4]); _drain()
+    monkeypatch.setattr(gp, "hydrate_one", lambda repo, n: (asked.append(n),
+                                                            (_ for _ in ()).throw(gp.GitPrError("HTTP 502")))[1])
+    gp.invalidate(REPO)
+    gp.repo_prs(REPO); _drain()
+    assert asked == [4, 4] and 4 in gp.repo_prs(REPO)[0], "re-read, and kept when the re-read fails"
+
+
+def test_heads_are_asked_before_cited_numbers_and_the_rest_follow_on_the_next_read(monkeypatch):
+    _reset()
+    monkeypatch.setattr(gp, "hydrate", lambda repo: {})
+    _checks_stub(monkeypatch)
+    order = []
+    monkeypatch.setattr(gp, "hydrate_one", lambda repo, n: (order.append(n), gp.normalize(_row(n, state="MERGED")))[1])
+    monkeypatch.setattr(gp, "hydrate_head", lambda repo, b, owner="": (order.append(b),
+                                                                       gp.normalize(_row(99, branch=b)))[1])
+    cited = list(range(1, 21))
+    gp.repo_prs(REPO, nums=cited, branch="dev/mine"); _drain()
+    assert order[0] == "dev/mine" and len(order) == gp._MAX_SINGLE_FETCHES
+    assert gp._CACHE[REPO]["fresh"] is False, "numbers still unasked: the next build reads again"
+    gp.repo_prs(REPO); _drain()
+    assert set(cited) <= set(gp.repo_prs(REPO)[0])
+
+
+def test_a_failed_checks_read_keeps_the_last_known_verdict(monkeypatch):
+    _reset()
+    monkeypatch.setattr(gp, "hydrate", lambda repo: {12: _bare(OPEN_PASSING)})
+    _checks_stub(monkeypatch, conclusion="FAILURE")
+    gp.repo_prs(REPO, nums=[12]); _drain()
+    assert gp.repo_prs(REPO)[0][12]["checksState"] == "fail"
+    monkeypatch.setattr(gp, "_gh_json", lambda args, what: (_ for _ in ()).throw(gp.GitPrError("rate limit")))
+    gp.note_push_turn(REPO)
+    gp.repo_prs(REPO); _drain()
+    prs, err = gp.repo_prs(REPO)
+    assert prs[12]["checksState"] == "fail" and prs[12]["checksFailing"] == ["pytest"] and "rate limit" in err
+
+
+# ── branches ─────────────────────────────────────────────────────────────────────────────────────────
+
+def test_a_new_branch_with_no_cached_pr_asks_again(monkeypatch):
+    _reset()
+    monkeypatch.setattr(gp, "hydrate", lambda repo: {})
+    heads = []
+    monkeypatch.setattr(gp, "hydrate_head", lambda repo, b, owner="": heads.append(b))
+    gp.repo_prs(REPO, branch="dev/a", sid="s1"); _drain()
+    assert gp._CACHE[REPO]["fresh"] is True
+    gp.repo_prs(REPO, branch="dev/b", sid="s2"); _drain()
+    assert heads == ["dev/a", "dev/b"]
+
+
+def test_a_session_that_leaves_a_branch_takes_it_out_of_the_current_set():
+    _reset()
+    gp._want(REPO, (), "dev/a", sid="s1")
+    gp._want(REPO, (), "dev/shared", sid="s2")
+    gp._want(REPO, (), "dev/shared", sid="s3")
+    gp._want(REPO, (), "dev/b", sid="s1")
+    gp._want(REPO, (), "dev/c", sid="s2")
+    assert {b for b, _o in gp._current_branches(REPO, time.monotonic())} == {"dev/b", "dev/c", "dev/shared"}
+
+
+def test_a_same_named_branch_on_another_fork_is_not_this_session_s():
+    prs = {40: {"branch": "main", "state": "closed", "headOwner": "stranger"},
+           12: {"branch": "main", "state": "open", "headOwner": "notes-api-org"}}
+    assert gp.branch_pr(prs, "main", "notes-api-org") == 12
+    assert gp.branch_pr({40: prs[40]}, "main", "notes-api-org") is None
+    assert gp.branch_pr({40: prs[40]}, "main") == 40, "no owner known: as before"
+
+
+def test_the_head_lookup_passes_over_another_fork_s_newer_pr(monkeypatch):
+    _gh_script(monkeypatch, [_row(40, branch="main", headRepositoryOwner={"login": "Stranger"}),
+                             _row(12, branch="main", headRepositoryOwner={"login": "Notes-API-Org"})],
+               lambda n, k: [])
+    assert gp.hydrate_head(REPO, "main", "notes-api-org")["num"] == 12
+
+
+# ── a pushed head GitHub has not shown yet ───────────────────────────────────────────────────────────
+
+def test_the_poll_waits_for_a_pushed_head_to_reach_its_pr(monkeypatch):
+    _reset()
+    heads = iter(["old", "old", "new"])
+    rows = [_row(12, branch="dev/mine", headRefOid="old")]
+
+    def fake(args, what):
+        if args[1] == "list":
+            return [dict(r) for r in rows]
+        return {"number": 12, "headRefOid": next(heads, "new"), "statusCheckRollup": []}
+
+    monkeypatch.setattr(gp, "_gh_json", fake)
+    monkeypatch.setattr(gp, "local_state_ex", lambda cwd: ("dev/mine", 0, True, "origin", "new"))
+    monkeypatch.setattr(gp, "head_owner", lambda cwd, remote: "")
+    gp.note_local_state("/nonexistent", REPO)
+    gp.repo_prs(REPO, branch="dev/mine"); _drain()
+    assert gp.needs_poll(REPO) is True, "the checks read settled, but on the old head"
+    fired = _polls(STEP * 10)
+    assert len(fired) == 2 and gp.needs_poll(REPO) is False, fired
+
+
+def test_a_pushed_head_that_never_arrives_stops_the_wait(monkeypatch):
+    _reset()
+    rows = [_row(12, branch="dev/mine", headRefOid="theirs")]
+    monkeypatch.setattr(gp, "_gh_json", lambda args, what: [dict(r) for r in rows] if args[1] == "list" else
+                        {"number": 12, "headRefOid": "theirs", "statusCheckRollup": []})
+    monkeypatch.setattr(gp, "local_state_ex", lambda cwd: ("dev/mine", 0, True, "origin", "ours"))
+    monkeypatch.setattr(gp, "head_owner", lambda cwd, remote: "")
+    gp.note_local_state("/nonexistent", REPO)
+    gp.repo_prs(REPO, branch="dev/mine"); _drain()
+    fired = _polls(HOUR)
+    assert len(fired) == gp._HEAD_WAIT_POLLS and gp.needs_poll(REPO) is False
+
+
+def test_a_moved_ref_invalidates_and_a_still_one_does_not(monkeypatch):
+    _reset()
+    monkeypatch.setattr(gp, "hydrate", lambda repo: {})
+    gp.repo_prs(REPO); _drain()
+    monkeypatch.setattr(gp, "head_owner", lambda cwd, remote: "")
+    monkeypatch.setattr(gp, "local_state_ex", lambda cwd: ("dev/mine", 1, False, "origin", "a"))
+    gp.note_local_state("/nonexistent", REPO)
+    assert gp._CACHE[REPO]["fresh"] is True
+    monkeypatch.setattr(gp, "local_state_ex", lambda cwd: ("dev/mine", 0, True, "origin", "b"))
+    gp.note_local_state("/nonexistent", REPO)
+    assert gp._CACHE[REPO]["fresh"] is False
+
+
+# ── the refresh in flight ────────────────────────────────────────────────────────────────────────────
+
+def test_a_reader_mid_refresh_sees_the_old_entry_whole(monkeypatch):
+    """The list read lands, then the singles and checks are fetched: until the refresh publishes, a reader
+    sees the previous entry, never the new list half assembled (the #1982 shape)."""
+    _reset()
+    monkeypatch.setattr(gp, "hydrate", lambda repo: {12: _bare(OPEN_PASSING)})
+    _checks_stub(monkeypatch)
+    gp.repo_prs(REPO, nums=[12]); _drain()
+    old = gp._CACHE[REPO]
+    entered, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(gp, "hydrate", lambda repo: {12: _bare(OPEN_PASSING), 15: _bare(DRAFT_FAILING)})
+
+    def slow_one(repo, n):
+        entered.set()
+        release.wait(2)
+        return gp.normalize(dict(MERGED, number=n))
+
+    monkeypatch.setattr(gp, "hydrate_one", slow_one)
+    gp.repo_prs(REPO, nums=[3]); assert entered.wait(2)
+    assert gp._CACHE[REPO]["prs"] is old["prs"] and sorted(gp._CACHE[REPO]["prs"]) == [12]
+    release.set(); _drain()
+    assert sorted(gp.repo_prs(REPO)[0]) == [3, 12, 15]
+
+
+def test_an_invalidation_after_the_read_began_is_not_lost(monkeypatch):
+    """Deterministic: the push lands once the list read has started, never before it."""
+    _reset()
+    calls, entered, gate = [], threading.Event(), threading.Event()
+
+    def slow(repo):
+        calls.append(repo)
+        entered.set()
+        gate.wait(2)
+        return {12: gp.normalize(OPEN_PASSING)}
+
+    monkeypatch.setattr(gp, "hydrate", slow)
+    gp.repo_prs(REPO)
+    assert entered.wait(2)
+    gp.note_push_turn(REPO)
+    gate.set(); _drain()
+    assert gp._CACHE[REPO]["fresh"] is False
+    gp.repo_prs(REPO); _drain()
+    assert len(calls) == 2 and gp._CACHE[REPO]["fresh"] is True
+
+
+# ── what a failure says ──────────────────────────────────────────────────────────────────────────────
+
+def test_a_status_and_a_check_of_one_name_list_it_once():
+    both = [{"name": "ci", "conclusion": "FAILURE", "status": "COMPLETED"},
+            {"__typename": "StatusContext", "context": "ci", "state": "FAILURE"}]
+    assert gp._checks(both) == ("fail", ["ci"])
+
+
+def test_gh_s_whole_stderr_is_kept(monkeypatch):
+    _stub_gh(monkeypatch, "", code=4, stderr="To get started with GitHub CLI, please run:  gh auth login\n"
+                                            "Alternatively, populate the GH_TOKEN environment variable.\n")
+    try:
+        gp.hydrate(REPO)
+    except gp.GitPrError as e:
+        assert "gh auth login" in str(e) and "GH_TOKEN" in str(e)
+    else:
+        raise AssertionError("expected GitPrError")
+
+
+def test_a_timeout_says_it_timed_out(monkeypatch):
+    def slow(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
+
+    monkeypatch.setattr(gp.subprocess, "run", slow)
+    try:
+        gp.hydrate(REPO + "-" + "x" * 400)
+    except gp.GitPrError as e:
+        assert "timed out" in str(e)
+    else:
+        raise AssertionError("expected GitPrError")
+
+
+def test_failure_and_recovery_are_each_logged_once(monkeypatch, capsys):
+    _reset()
+    state = {"fail": True}
+
+    def fail(args):
+        if state["fail"]:
+            raise gp.GitPrError("HTTP 502")
+
+    _gh_script(monkeypatch, [_row(12, branch="dev/mine")], lambda n, k: RUNNING, fail=fail)
+    gp.repo_prs(REPO, branch="dev/mine"); _drain()
+    _polls(HOUR)
+    state["fail"] = False
+    _polls(HOUR, start=10 ** 5)
+    err = capsys.readouterr().err
+    assert err.count("could not be read") == 1 and err.count("reads again") == 1
+    assert err.count("retries every %d s" % gp._POLL_MAX_SECS) == 1

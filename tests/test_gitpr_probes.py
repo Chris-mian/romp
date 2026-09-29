@@ -45,7 +45,7 @@ def test_repo_of_an_https_remote(tmp_path):
 
 def test_repo_of_with_pr_status_off_reads_no_remote(tmp_path, monkeypatch):
     d = str(_repo(tmp_path))
-    monkeypatch.setattr(gp, "PR_STATUS_OFF", True)
+    monkeypatch.setattr(gp, "_ENABLED", [False])
     monkeypatch.setattr(gp, "_git", lambda *a, **k: (_ for _ in ()).throw(AssertionError("a git read ran")))
     assert gp.repo_of(d) == ""
 
@@ -146,13 +146,62 @@ def test_local_state_in_a_worktree(tmp_path):
     assert gp.local_state(str(wt))[:2] == ("dev/op-values", 0), "no upstream yet"
 
 
-def test_local_state_counts_unpushed_commits_and_reports_the_move(tmp_path):
+def test_local_state_counts_unpushed_commits_without_calling_them_a_move(tmp_path):
+    """A local commit changes nothing on GitHub: `ahead` is recounted, but no re-read of the repo's PRs."""
     _up, clone = _clone(tmp_path)
     assert gp.local_state(str(clone)) == ("main", 0, False), "first sight is history, not a move"
     _commit(clone, "a")
     _commit(clone, "b")
-    assert gp.local_state(str(clone)) == ("main", 2, True)
     assert gp.local_state(str(clone)) == ("main", 2, False)
+    _run(clone, "git", "commit", "-q", "--amend", "-m", "b2")
+    assert gp.local_state(str(clone)) == ("main", 2, False), "an amend is local too"
+
+
+def test_a_push_is_a_move_and_clears_ahead(tmp_path):
+    _up, clone = _clone(tmp_path)
+    _run(clone, "git", "checkout", "-q", "-b", "dev/x")
+    _commit(clone, "a")
+    _run(clone, "git", "push", "-q", "-u", "origin", "dev/x")
+    assert gp.local_state(str(clone)) == ("dev/x", 0, False)
+    _commit(clone, "b")
+    assert gp.local_state(str(clone)) == ("dev/x", 1, False)
+    _run(clone, "git", "push", "-q")
+    assert gp.local_state(str(clone)) == ("dev/x", 0, True)
+
+
+def test_a_branch_pushed_without_u_counts_against_its_own_remote_ref(tmp_path):
+    """Cut from origin/main, its upstream is main; once pushed, what it lacks is measured on origin/<branch>."""
+    _up, clone = _clone(tmp_path)
+    _run(clone, "git", "checkout", "-q", "-b", "dev/y", "--track", "origin/main")
+    _commit(clone, "a")
+    assert gp.local_state(str(clone))[:2] == ("dev/y", 1)
+    _run(clone, "git", "push", "-q", "origin", "dev/y")
+    assert gp.local_state(str(clone)) == ("dev/y", 0, True)
+
+
+def test_a_packed_tracking_ref_reads_the_same(tmp_path):
+    _up, clone = _clone(tmp_path)
+    _commit(clone, "a")
+    assert gp.local_state(str(clone)) == ("main", 1, False)
+    track = subprocess.run(["git", "rev-parse", "origin/main"], cwd=str(clone), capture_output=True,
+                           text=True, check=True).stdout.strip()
+    assert gp.local_state_ex(str(clone))[4] == track
+    _run(clone, "git", "pack-refs", "--all")
+    assert gp.local_state(str(clone)) == ("main", 1, False), "packing moves no ref"
+    for loose in (clone / ".git" / "refs" / "remotes" / "origin").glob("main"):
+        loose.unlink()                                     # clone may leave it loose; packed-refs alone holds it now
+    gp._LOCAL.clear()
+    assert gp.local_state_ex(str(clone))[4] == track, "the sha read out of packed-refs"
+
+
+def test_a_git_read_that_did_not_answer_is_not_memoized(tmp_path, monkeypatch):
+    d = str(_repo(tmp_path))
+    real = gp._git
+    monkeypatch.setattr(gp, "_git", lambda *a, **k: (False, "", False))
+    assert gp.repo_of(d) == ""
+    assert gp.local_state(d)[:2] == ("main", 0)
+    monkeypatch.setattr(gp, "_git", real)
+    assert gp.repo_of(d) == "notes-api-org/notes-api", "the timeout was no verdict"
 
 
 def test_local_state_sees_the_upstream_move(tmp_path):
@@ -215,6 +264,28 @@ def test_repo_of_a_fork_clone_reads_upstream(tmp_path):
     d = _repo(tmp_path, remote="git@github.com:someone/notes-api.git")
     _run(d, "git", "remote", "add", "upstream", "https://github.com/notes-api-org/notes-api.git")
     assert gp.repo_of(str(d)) == "notes-api-org/notes-api"
+
+
+def test_repo_of_follows_gh_s_default_before_its_remote_order(tmp_path):
+    """`gh repo set-default` records the repo a bare `gh pr` command acts on; with none, gh ranks upstream,
+    github, then origin, and so does the chip."""
+    d = _repo(tmp_path, remote="git@github.com:someone/notes-api.git")
+    _run(d, "git", "remote", "add", "github", "https://github.com/mirror-org/notes-api.git")
+    assert gp.repo_of(str(d)) == "mirror-org/notes-api"
+    _run(d, "git", "remote", "add", "upstream", "https://github.com/notes-api-org/notes-api.git")
+    assert gp.repo_of(str(d)) == "notes-api-org/notes-api"
+    _run(d, "git", "config", "remote.origin.gh-resolved", "base")
+    assert gp.repo_of(str(d)) == "someone/notes-api", "the default gh was told to use"
+    _run(d, "git", "config", "remote.origin.gh-resolved", "Notes-API-Org/notes-api")
+    assert gp.same_repo(gp.repo_of(str(d)), "notes-api-org/notes-api"), "a default named by its slug"
+
+
+def test_head_owner_is_the_owner_of_the_remote_a_branch_pushes_to(tmp_path):
+    d = _repo(tmp_path, remote="git@github.com:Someone/notes-api.git")
+    _run(d, "git", "remote", "add", "upstream", "https://github.com/notes-api-org/notes-api.git")
+    assert gp.head_owner(str(d), "origin") == "someone"
+    assert gp.head_owner(str(d), "") == "someone", "no tracking remote reads origin"
+    assert gp.head_owner(str(d), "upstream") == "notes-api-org"
 
 
 def test_the_push_matcher_reads_past_wrappers_and_global_options():

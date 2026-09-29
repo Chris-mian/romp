@@ -126,7 +126,7 @@ def test_a_reused_branch_shows_its_open_pr_and_only_that_one_is_live():
 
 def test_no_repo_yields_an_empty_slice():
     assert km._session_pr_slice(repo="", branch="", ahead=0, prs={}, err="", node_nums=set()) == \
-        {"branch": "", "prNum": None, "prs": None, "prError": None}
+        {"branch": "", "prNum": None, "prs": None, "prError": None, "prErrorRetry": True}
 
 
 def test_a_detached_head_has_no_current_pr_but_still_ships_the_goals():
@@ -169,12 +169,12 @@ def test_pr_work_dir_prefers_the_edited_tree_over_the_registered_dir(monkeypatch
     assert km._pr_work_dir("s1", "/t.jsonl") == "/w/notes-api-web"
 
 
-def test_pr_work_dir_falls_back_to_the_registered_dir(monkeypatch):
-    """Nothing edited yet — the registered dir is all we know, and it is better than nothing."""
-    monkeypatch.setattr(km, "_session_meta", lambda p: {"lastEditPath": ""})
+def test_pr_work_dir_falls_back_to_the_session_s_own_dir(monkeypatch):
+    """Nothing edited yet: the session's dir (the registry's, else the transcript's stamp), the row's `cwd`."""
+    monkeypatch.setattr(km, "_session_meta", lambda p: {"lastEditPath": "", "cwd": "/w/notes-api-discovered"})
     monkeypatch.setattr(km, "_tree_of", lambda d: ("", ""))
-    monkeypatch.setattr(km, "_cwd_of", lambda sid: "/w/notes-api")
-    assert km._pr_work_dir("s1", "/t.jsonl") == "/w/notes-api"
+    monkeypatch.setattr(km, "_cwd_of", lambda sid: "")
+    assert km._pr_work_dir("s1", "/t.jsonl") == "/w/notes-api-discovered", "a session the registry never saw"
 
 
 def test_session_pr_payload_uses_the_detected_worktree(monkeypatch):
@@ -184,12 +184,13 @@ def test_session_pr_payload_uses_the_detected_worktree(monkeypatch):
     assert seen == [os.path.expanduser("~/notes-api-web")], "the ~ form must be expanded before git sees it"
 
 
-def test_session_pr_payload_without_a_worktree_uses_the_registered_dir(monkeypatch):
+def test_session_pr_payload_without_a_worktree_uses_the_row_s_cwd(monkeypatch):
+    """The same checkout the row filter reads (_pr_work_dir), not the registry alone."""
     seen = []
     monkeypatch.setattr(km.gp, "repo_of", lambda cwd: (seen.append(cwd), "")[1])
-    monkeypatch.setattr(km, "_cwd_of", lambda sid: "/w/notes-api")
-    km._session_pr_payload("s1", None, None)
-    assert seen == ["/w/notes-api"]
+    monkeypatch.setattr(km, "_cwd_of", lambda sid: "")
+    km._session_pr_payload("s1", None, None, "~/w/notes-api")
+    assert seen == [os.path.expanduser("~/w/notes-api")]
 
 
 def test_an_empty_owner_ref_belongs_to_this_session_s_repo():
@@ -242,11 +243,10 @@ def test_session_pr_payload_reads_a_real_checkout(tmp_path, monkeypatch):
     work = _checkout(tmp_path)
     asked = []
     prs = {7: _pr(7, "dev/notes-index"), 12: _pr(12, "dev/other")}
-    monkeypatch.setattr(km.gp, "repo_prs", lambda repo, nums=(), branch="": (asked.append((repo, set(nums), branch)),
-                                                                           (prs, ""))[1])
-    monkeypatch.setattr(km, "_cwd_of", lambda sid: str(work))
+    monkeypatch.setattr(km.gp, "repo_prs", lambda repo, nums=(), branch="", owner="", sid="":
+                        (asked.append((repo, set(nums), branch)), (prs, ""))[1])
     ledger = {"tree": [{"prNums": [12]}, {"prNums": None}]}
-    out = km._session_pr_payload("s-real", ledger, None)
+    out = km._session_pr_payload("s-real", ledger, None, str(work))
     assert asked == [(REPO, {12}, "dev/notes-index")]
     assert out["branch"] == "dev/notes-index" and out["prNum"] == 7
     assert out["prs"]["7"]["live"] is True, "one commit ahead of its upstream"
@@ -255,7 +255,7 @@ def test_session_pr_payload_reads_a_real_checkout(tmp_path, monkeypatch):
 
 
 def test_the_off_switch_skips_every_read(monkeypatch):
-    monkeypatch.setattr(km.gp, "PR_STATUS_OFF", True)
+    monkeypatch.setattr(km.gp, "_ENABLED", [False])
     monkeypatch.setattr(km.gp, "repo_of", lambda cwd: (_ for _ in ()).throw(AssertionError("read")))
     assert km._session_pr_payload("s1", None, None) == km._NO_PR_PAYLOAD
 
@@ -269,6 +269,7 @@ def test_one_session_s_failure_costs_only_its_chips(monkeypatch):
     got = km._safe_pr_payload("s1", None, None)
     assert {k: got[k] for k in ("branch", "prNum", "prs")} == {"branch": "", "prNum": None, "prs": None}
     assert got["prError"] == "PR status could not be built: RuntimeError", "said, never read as no PR"
+    assert got["prErrorRetry"] is False, "a build failure recurs on every push: no retry to offer"
 
 
 def test_the_error_chip_retries_the_session_s_repo(monkeypatch):
@@ -278,3 +279,77 @@ def test_the_error_chip_retries_the_session_s_repo(monkeypatch):
     assert km._pr_retry("s-retry") is True
     assert retried == [REPO]
     assert km._pr_retry("s-unknown") is False, "a session with no repo has nothing to retry"
+
+
+def test_a_build_failure_is_said_again_after_a_clean_build(monkeypatch, capsys):
+    state = {"fail": True}
+
+    def maybe(*a, **k):
+        if state["fail"]:
+            raise RuntimeError("torn")
+        return dict(km._NO_PR_PAYLOAD)
+
+    monkeypatch.setattr(km, "_session_pr_payload", maybe)
+    km._pr_payload_failed.discard("s-rearm")
+    km._safe_pr_payload("s-rearm", None); km._safe_pr_payload("s-rearm", None)
+    state["fail"] = False
+    km._safe_pr_payload("s-rearm", None)
+    state["fail"] = True
+    km._safe_pr_payload("s-rearm", None)
+    assert capsys.readouterr().err.count("pr payload for s-rearm failed") == 2
+
+
+def test_a_row_for_a_push_no_outline_reads_runs_no_pr_read(monkeypatch):
+    monkeypatch.setattr(km, "_safe_pr_payload", lambda *a, **k: (_ for _ in ()).throw(AssertionError("read")))
+    monkeypatch.setattr(km, "_fleet_archived_tops", lambda sid: [])
+    m = {"id": "s1", "name": "web", "ledger": None, "workTree": None, "cwd": "~/w"}
+    row = km._outline_ledger_row(m, pr_status=False)
+    assert row["prs"] is None and row["prError"] is None
+    assert set(km._OUTLINE_APPS) == {"feed", "fleet"}, "the apps that read the rows"
+    assert km._outline_ledger_row.__defaults__ == (True,)
+
+
+def test_repo_names_compare_without_case():
+    assert km._node_pr_nums({"prRefs": [["Notes-API-Org/Notes-API", 12]]}, REPO) == [12]
+
+
+def test_the_slice_passes_over_another_fork_s_pr_on_the_same_branch():
+    prs = {40: _pr(40, "main", headOwner="stranger"), 12: _pr(12, "main", headOwner="notes-api-org", state="closed")}
+    out = km._session_pr_slice(repo=REPO, branch="main", ahead=0, prs=prs, err="", node_nums=set(),
+                               owner="notes-api-org")
+    assert out["prNum"] == 12
+
+
+def test_the_meta_keeps_the_cwd_each_push_ran_in():
+    meta = km._session_meta_fresh()
+    rec = {"type": "assistant", "cwd": "/w/notes-api-web",
+           "message": {"content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash",
+                                    "input": {"command": "gh pr merge 12"}},
+                                   {"type": "tool_use", "id": "toolu_2", "name": "Bash",
+                                    "input": {"command": "ls"}}]}}
+    km._session_meta_step(meta, rec)
+    assert meta["pushCwd"] == {"toolu_1": "/w/notes-api-web"}, "only the calls that act on a PR"
+    for i in range(km.PUSH_CWD_CAP + 5):
+        km._session_meta_step(meta, dict(rec, message={"content": [dict(rec["message"]["content"][0], id="t%d" % i)]}))
+    assert len(meta["pushCwd"]) == km.PUSH_CWD_CAP and "t%d" % (km.PUSH_CWD_CAP + 4) in meta["pushCwd"]
+
+
+def test_the_judge_s_call_repos_read_the_meta_and_a_removed_tree_is_unknown(tmp_path, monkeypatch):
+    work = _checkout(tmp_path)
+    key = str(tmp_path / "t.jsonl")
+    monkeypatch.setitem(km._session_meta_cache, key, (1, 0, {"pushCwd": {"a": str(work),
+                                                                        "b": str(tmp_path / "gone")}}))
+    repo_of_call = km._pr_call_repos(key)
+    assert repo_of_call("a") == REPO
+    assert repo_of_call("b") is None and repo_of_call("unseen") is None
+    assert km.jd.PR_CALL_REPO is km._pr_call_repos
+
+
+def test_the_payload_runs_the_poll_clock_for_its_repo(monkeypatch):
+    polled = []
+    monkeypatch.setattr(km.gp, "repo_of", lambda cwd: REPO)
+    monkeypatch.setattr(km.gp, "note_local_state", lambda cwd, repo: ("main", 0, "notes-api-org"))
+    monkeypatch.setattr(km.gp, "poll_due", lambda repo, now: polled.append(repo))
+    monkeypatch.setattr(km.gp, "repo_prs", lambda *a, **k: ({}, ""))
+    km._session_pr_payload("s1", None, None, "/w/notes-api")
+    assert polled == [REPO], "no other event re-reads a running check"

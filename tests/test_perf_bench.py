@@ -1017,9 +1017,10 @@ class Recorders(unittest.TestCase):
                          [("push", "api: done"), ("push", "api: done"), ("push", "web finished a turn"), ("push", "tests: done"),
                           ("push", "later"), ("system", "romp: api"), ("forward", 1), ("badge", 3)])
         self.assertEqual(len(rec["warm_calls"]), 1, "the background-parse call is counted, not run")
-        km.gp._kick("owner/repo")                       # the chip's two shapes: the repo alone, and with the numbers to check
-        km.gp._kick("owner/repo", (7, 9))
-        self.assertEqual(rec["gh_kicks"], ["owner/repo", "owner/repo"], "the gh refresh is counted, not started")
+        km.gp._kick("owner/repo")                       # the chip's one shape: the repo alone
+        self.assertEqual(rec["gh_kicks"], ["owner/repo"], "the gh refresh is counted, not started")
+        src = open(os.path.join(ROOT, "kernel", "gitpr.py")).read()
+        self.assertEqual(re.findall(r"\b_kick\(([^)]*)\)", src), ["repo", "repo"], "every call and the def take the repo alone")
         # threads started after the guards are counted (the real _warm_fleet_bg would start one per call)
         self.assertEqual(rec["thread_starts"], 0)
         t = threading.Thread(target=lambda: None)

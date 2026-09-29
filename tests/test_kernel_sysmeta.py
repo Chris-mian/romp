@@ -96,7 +96,7 @@ class SessionMeta(unittest.TestCase):
     def test_missing_file_is_empty_not_an_error(self):
         meta = km._session_meta("/no/such/transcript.jsonl")
         self.assertEqual(meta, {"cwd": "", "gitBranch": "", "version": "", "permissionMode": "",
-                                "lastEditPath": "", "pushCount": 0, "pushPending": []})
+                                "lastEditPath": "", "pushCount": 0, "pushPending": [], "pushCwd": {}})
 
     def test_cache_keys_on_mtime_size(self):
         with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:

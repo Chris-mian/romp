@@ -38,7 +38,7 @@ class LedgerRow(unittest.TestCase):
 
     def test_the_row_carries_the_pr_slice(self):
         slice_ = {"branch": "dev/notes-index", "prNum": 7, "prs": {"7": {"num": 7}}, "prError": None}
-        with mock.patch.object(km, "_session_pr_payload", lambda sid, ledger, wt: dict(slice_)), \
+        with mock.patch.object(km, "_session_pr_payload", lambda sid, ledger, wt, cwd: dict(slice_)), \
                 mock.patch.object(km, "_mail_off_fields", lambda sid: {}), \
                 mock.patch.object(km, "_fleet_archived_tops", lambda sid: []):
             row = km._outline_ledger_row({"id": SID, "name": "web", "ledger": {"tree": []}})
@@ -57,7 +57,9 @@ class LedgerRow(unittest.TestCase):
         self.assertEqual(row["name"], "web")
 
     def test_the_push_builds_its_rows_through_it(self):
-        self.assertIn('feed["ledgers"] = [_outline_ledger_row(m) for m in chat_sessions]', inspect.getsource(km._push))
+        src = inspect.getsource(km._push)
+        self.assertIn('feed["ledgers"] = [_outline_ledger_row(m, pr_status=_rows_read) for m in chat_sessions]', src)
+        self.assertIn('_rows_read = any(c["app"] in _OUTLINE_APPS for c in targets)', src)
 
 
 class CloserStamps(unittest.TestCase):
@@ -95,12 +97,47 @@ class CloserStamps(unittest.TestCase):
         Path(path).write_text("\n".join(json.dumps(r) for r in recs) + "\n")
         calls = []
         real = jd._record_pr_refs
-        with mock.patch.object(jd, "_record_pr_refs", lambda st, segs: (calls.append((st, segs)), real(st, segs))[1]):
+        with mock.patch.object(jd, "_record_pr_refs", lambda st, segs, call_repo=None: (calls.append((st, segs)), real(st, segs, call_repo))[1]):
             jd._close_session(SID, path, T0 + 5000)
         self.assertEqual(len(calls), 1)
         st, segs = calls[0]
         self.assertIn(SID + ":g1", st["nodes"], "the session's own store")
         self.assertTrue(segs, "the parse's segments, not None: a turn was judged")
+
+
+    def test_a_real_parse_of_a_pr_create_turn_stamps_the_saved_store(self):
+        """No stub between the transcript and the store: the closer's own parse, the stamp, then save_goals."""
+        nid = SID + ":g1"
+        store = {"rompUuid": SID, "seq": 0, "placementsV": jd.PLACEMENTS_V, "status": {}, "placements": {},
+                 "nodes": {nid: {"id": nid, "text": "Ship the notes-api index", "parentId": None,
+                                 "nodeComplete": False, "blocked": False, "cleared": False,
+                                 "trail": [], "t": T0, "log": []}}}
+        cmd = "gh pr create --title 'Notes index' --body 'Adds the index.'"
+        recs = [{"type": "user", "timestamp": _iso(T0), "uuid": "u1", "parentUuid": None, "promptSource": "typed",
+                 "message": {"role": "user", "content": "open the index PR"}},
+                {"type": "assistant", "timestamp": _iso(T0 + 10), "uuid": "a1", "parentUuid": "u1",
+                 "message": {"role": "assistant", "content": [
+                     {"type": "tool_use", "id": "toolu_wire1", "name": "Bash", "input": {"command": cmd}}]}},
+                {"type": "user", "timestamp": _iso(T0 + 20), "uuid": "r1", "parentUuid": "a1",
+                 "message": {"role": "user", "content": [
+                     {"type": "tool_result", "tool_use_id": "toolu_wire1",
+                      "content": "https://github.com/%s/pull/7" % REPO}]}},
+                {"type": "assistant", "timestamp": _iso(T0 + 30), "uuid": "a2", "parentUuid": "r1",
+                 "message": {"role": "assistant", "content": [{"type": "text", "text": "Opened."}],
+                             "stop_reason": "end_turn"}}]
+        path = os.path.join(self.td, SID + ".jsonl")
+        Path(path).write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        session = jd.parsed_session(SID, [path], T0 + 5000)
+        store["nodes"][nid]["trail"] = [seg["id"] for t in session["turns"] for seg in jd._segs(t, store)]
+        self.assertTrue(store["nodes"][nid]["trail"], "the parse found the turn's segments")
+        jd.save_goals(SID, store)
+        on = jd.gp.enabled()
+        jd.gp.set_enabled(True)
+        try:
+            jd._close_session(SID, path, T0 + 5000)
+        finally:
+            jd.gp.set_enabled(on)
+        self.assertEqual(jd.load_goals(SID)["nodes"][nid].get("prRefs"), [[REPO, 7]])
 
 
 class ErrorChipRetry(unittest.TestCase):
