@@ -262,7 +262,8 @@ class FingerprintMemoTest(unittest.TestCase):
                        {"transcriptPath": str(Path(self._td) / "pro\x00jects" / (SID + ".jsonl"))}):
             with self.subTest(record=record):
                 (jd.SDKDIR / (SID + ".json")).write_text(json.dumps(record))
-                jd._namefp_memo.clear()
+                for memo in (jd._namefp_memo, jd._lastsid_memo, jd._recpath_memo):
+                    memo.clear()   # the registry memos key on mtime alone; two writes can share one tick
                 self.assertIn(SID, [row[0] for row in jd.discover(int(time.time()))])
 
     def test_an_append_inside_the_window_still_serves_the_cache(self):
