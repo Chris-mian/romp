@@ -16,7 +16,8 @@ import { fleetVisibleRoots } from "./fleet-roots";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { hostPrefix } from "./host-prefix";
 import { ageColorReadable } from "./age-color";
-import { prChipParts, rollupParts, prDetailLines, prMatches, sessionPrs, goalChip, headChip, prErrTitle, PR } from "./pr-chip";
+import { prChipParts, rollupParts, prDetailLines, prMatches, sessionPrs, goalChip, headChip, prErrTitle, headOnlyShown,
+  markRetry, retryPending, settleRetries, RetryPending, PR } from "./pr-chip";
 import { liveNow } from "./feed-age";
 import { TIP_GRACE_MS } from "./tip";
 import { perfFrameHandler } from "./perf-telemetry";
@@ -48,7 +49,8 @@ interface FleetSession { sid: string; name: string; color: Color; status?: { sta
                          // the session's PR slice (kernel _session_pr_payload): its branch, that branch's PR,
                          // every PR its goals reference, and the reason when gh could not answer — rendered,
                          // never swallowed, since a blank chip would read as "no PR"
-                         branch?: string; prNum?: number | null; prs?: Record<string, PR> | null; prError?: string | null; }
+                         branch?: string; prNum?: number | null; prs?: Record<string, PR> | null; prError?: string | null;
+                         prErrorRetry?: boolean; }   // false: a failure a re-read cannot fix, so the error chip offers no retry
 
 const vscodeApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
@@ -141,7 +143,8 @@ function fmtAge(s: number): string {
   if (s < 86400) return Math.round(s / 3600) + "h";
   return Math.round(s / 86400) + "d";
 }
-// The AGE (secs) of a session's OLDEST currently-eligible TOP goal (respecting Show-completed), or 0 if none.
+// The AGE (secs) of a session's OLDEST currently-eligible TOP goal (respecting Show-completed); with none, its open
+// branch PR's age (headPrAge), or 0.
 // The slider's adaptive right end takes the max of this across the fleet, so tightening the window can reach an
 // old COMPLETED top even in an otherwise-active session — the per-TOP basis the cutoff filter also uses (NOT the
 // session's single newest activity, which stayed ≈ now for any live session and made the slider a no-op).
@@ -152,7 +155,12 @@ function sessionOldestTopAge(s: FleetSession, now: number): number {
   const roots = tree.filter((n) => n.depth === 0);
   let age = 0;
   for (const r of fleetVisibleRoots(roots, archRoots, showDone())) { const rec = nodeRecency(r); if (rec) age = Math.max(age, now - rec); }
-  return age;
+  return age || headPrAge(s, now);   // a head shown alone is gated on its PR's age, so the far end must reach it
+}
+// The age of the session's open branch PR, which the slider gates a head shown alone on (0 when none).
+function headPrAge(s: FleetSession, now: number): number {
+  const pr = headChip(s).pr;
+  return pr && pr.state === "open" && pr.updatedT ? now - pr.updatedT : 0;
 }
 const folded = new Set<string>(), expanded = new Set<string>();   // fold state, keyed "sid\0nodeId"
 const fkey = (sid: string, id: string) => sid + "\0" + id;
@@ -308,7 +316,9 @@ function stampSubtreeRecency(tree: LedgerNode[], cur: { t?: number } | null): vo
 interface SessCtx { s: FleetSession; byId: Map<string, LedgerNode>; curT?: number;
   // SEARCH (the user 2026-06-29): subtreeHit(id) = this node OR any descendant matches the query → used to
   // FORCE-EXPAND collapsed branches that contain a match so the hit is revealed. null when not searching.
-  subtreeHit?: (id: string) => boolean; }
+  subtreeHit?: (id: string) => boolean;
+  // FLAT view: the session's PR error chip rides its first row only, so one failed read reads once.
+  errShown?: boolean; }
 let curSearch = "";   // the active query (lowercased), snapshot per render() for highlighting + fold override
 
 // Paint `text` into `elm`, wrapping every case-insensitive occurrence of `q` in a .fl-hit highlight span (no
@@ -391,29 +401,31 @@ function prRollup(sid: string, nid: string, prs: PR[]): HTMLElement {
 }
 
 // gh could not answer. Rendered rather than swallowed: a blank chip would claim "no PR" when the truth is
-// "we could not look" (CLAUDE.md ## Authoritative sources). A click asks the kernel to re-read now.
-function prErrChip(sid: string, reason: string): HTMLElement {
-  const bad = el("span", "fl-pr err");
-  bad.textContent = PR_RETRY_LABEL;
-  bad.title = prErrTitle(reason);
-  bad.dataset.act = "prretry"; bad.dataset.sid = sid;
+// "we could not look" (CLAUDE.md ## Authoritative sources). A click asks the kernel to re-read now, unless
+// the kernel says a re-read cannot help; then the chip only names the error.
+function prErrChip(s: FleetSession): HTMLElement {
+  const hc = headChip(s);
+  const bad = el("span", "fl-pr err" + (hc.retry ? "" : " noretry"));
+  bad.title = prErrTitle(hc.err, hc.snapshot, hc.retry);
+  if (!hc.retry) { bad.textContent = PR_RETRY_LABEL; return bad; }
+  bad.dataset.act = "prretry"; bad.dataset.sid = s.sid; bad.dataset.err = hc.err;
+  const busy = retryPending(prRetryPending, s.sid, hc.err, Date.now());
+  if (busy) { bad.dataset.busy = "1"; bad.setAttribute("aria-disabled", "true"); }
+  bad.textContent = busy ? PR_RETRYING_LABEL : PR_RETRY_LABEL;
   return bad;
 }
 
 const PR_RETRY_LABEL = "⚠ PR status";
 const PR_RETRYING_LABEL = "↻ Retrying…";
-const PR_RETRY_RESTORE_MS = 8000;   // a re-read that lands re-renders the chip sooner; this is the backstop
+const PR_RETRY_RESTORE_MS = 8000;   // a payload with a new reason (or none) settles it sooner; this is the backstop
+const prRetryPending: RetryPending = new Map();   // sid → the retried reason: every render reads it, so the chip stays disabled
 
-// The retry posts and waits, so the chip disables and relabels itself until the answer re-renders it.
-function markPrRetrying(chip: HTMLElement): void {
-  chip.dataset.busy = "1";
-  chip.setAttribute("aria-disabled", "true");
-  chip.textContent = PR_RETRYING_LABEL;
-  setTimeout(() => {
-    delete chip.dataset.busy;
-    chip.removeAttribute("aria-disabled");
-    chip.textContent = PR_RETRY_LABEL;
-  }, PR_RETRY_RESTORE_MS);
+// The retry posts and waits, so the chip disables and relabels itself until the answer re-renders it. The
+// state lives in prRetryPending, not on the node; the timer repaints once the backstop has passed.
+function markPrRetrying(sid: string, reason: string): void {
+  markRetry(prRetryPending, sid, reason, Date.now() + PR_RETRY_RESTORE_MS);
+  render();
+  setTimeout(render, PR_RETRY_RESTORE_MS);
 }
 
 // The one-click-deeper body: the same lines the hover card shows, plus the actions.
@@ -519,6 +531,8 @@ function renderFleetNode(ctx: SessCtx, n: LedgerNode, depth: number, container: 
     if (s.color?.bg) tnm.style.color = s.color.bg;
     tag.appendChild(tnm);
     tag.title = "this goal belongs to “" + s.name + "” — click to open it";
+    // the flat list has no session head, so the session's failed PR read sits beside its name instead
+    if (s.prError && !ctx.errShown) { ctx.errShown = true; row.appendChild(prErrChip(s)); }
     row.appendChild(tag);
   }
   row.dataset.act = "open"; row.dataset.sid = s.sid;   // click-safe: action lives on the #fleet-list delegate
@@ -716,19 +730,20 @@ function render() {
       // the session's in-window tops; a CONTENT match keeps just the tops whose subtree hits.)
       const base = fleetVisibleRoots(roots, archRoots, sd).filter((r) => (now - nodeRecency(r)) <= cutoff);
       visibleRoots = s.name.toLowerCase().includes(sq) ? base : base.filter((r) => subtreeHit(r.id));
-      if (!visibleRoots.length) continue;                // no in-window name/content match → drop the session
     } else {
-      visibleRoots = fleetVisibleRoots(roots, archRoots, sd);
-      if (!visibleRoots.length) continue;                // nothing to show for this session → skip
       // recency cutoff (the user 2026-06-30): filter INDIVIDUAL top goals by recency — not just whole sessions.
       // Before, a session was kept whole if its NEWEST activity was recent, so an active session's old COMPLETED
       // tops always rode along and the slider looked dead. Now each top is gated on its own subtree-rolled-up
       // recency (_rec, stamped above): a live/in-progress top stays (≈ now), an old completed one drops as you
-      // tighten the window. If nothing's left in-window, the session header is skipped too.
+      // tighten the window.
+      visibleRoots = fleetVisibleRoots(roots, archRoots, sd);
       visibleRoots = visibleRoots.filter((r) => (now - nodeRecency(r)) <= cutoff);
-      if (!visibleRoots.length) continue;
     }
-    survivors.push({ ctx: { s, byId, curT: s.ledger?.current?.t, subtreeHit: sq ? subtreeHit : undefined }, visibleRoots });
+    const ctx: SessCtx = { s, byId, curT: s.ledger?.current?.t, subtreeHit: sq ? subtreeHit : undefined };
+    // no top goal left, but the head has news (an open branch PR, a failed read): the grouped view draws it alone
+    if (!visibleRoots.length && grouped && headOnlyShown(s, now, cutoff, sq)) { survivors.push({ ctx, visibleRoots }); continue; }
+    if (!visibleRoots.length) continue;                  // nothing in the window, no head to show → drop the session
+    survivors.push({ ctx, visibleRoots });
   }
   // SEARCH also filters the provisional ("about to appear") rows: keep one only if its session name or its
   // live gist matches the query (the user 2026-06-29).
@@ -748,9 +763,11 @@ function render() {
       // session — only a click on the name/rest of the head (data-act="open") jumps in.
       const sfolded = curFoldMode === "collapse" ? true : curFoldMode === "expand" ? false : sessFolded.has(s.sid);
       const caret = el("span", "fl-caret");
-      caret.textContent = sfolded ? "▶" : "▼";
-      caret.title = sfolded ? "expand this session's tasks" : "collapse this session's tasks";
-      caret.dataset.act = "sessfold"; caret.dataset.sid = s.sid;
+      if (visibleRoots.length || provBySid.has(s.sid)) {   // a head shown alone has nothing to fold: the caret keeps its width only
+        caret.textContent = sfolded ? "▶" : "▼";
+        caret.title = sfolded ? "expand this session's tasks" : "collapse this session's tasks";
+        caret.dataset.act = "sessfold"; caret.dataset.sid = s.sid;
+      }
       caret.style.cssText = "flex:0 0 auto;cursor:pointer;color:var(--vscode-descriptionForeground,#9a9a9a);"
         + "font-size:9px;width:13px;text-align:center;user-select:none";
       head.appendChild(caret);
@@ -776,7 +793,7 @@ function render() {
       // (the user 2026-08-17). Nothing when the branch has no PR.
       const hc = headChip(s);
       if (hc.pr) head.appendChild(prChip(s.sid, "", hc.pr));
-      if (hc.err) head.appendChild(prErrChip(s.sid, hc.err));
+      if (hc.err) head.appendChild(prErrChip(s));
       head.tabIndex = 0; head.setAttribute("role", "button");   // focusable: Enter opens, the menu key or Shift+F10 opens the row's menu (2026-09-16)
       sec.appendChild(head);
       if (hc.pr && prOpen.has(prKey(s.sid, ""))) sec.appendChild(prDetail([hc.pr], now, HEAD_DETAIL_INDENT_PX));   // the head chip's own detail row
@@ -985,6 +1002,7 @@ listenForFrames(perfFrameHandler("fleet", (m) => vscodeApi?.postMessage(m), (e: 
   if (!Array.isArray(m.ledgers)) return;
   loaded = true;
   sessions = m.ledgers as FleetSession[];
+  settleRetries(prRetryPending, sessions, Date.now());   // a new reason, or none, is the retry's answer
   provCards = (Array.isArray(m.asks) ? m.asks : [])
     .filter((a: any) => a && a.provisional && a.sid)
     .map((a: any) => ({ sid: a.sid, name: a.name || "", color: a.color || null, text: a.text || "Working…" }));
@@ -1165,7 +1183,7 @@ function confirmEndSession(sid: string): void {
       render();
     },
     propen: (el) => { if (el.dataset.url) openExternalUrl(el.dataset.url); },   // the NUMBER → the PR itself
-    prretry: (el) => { if (el.dataset.sid && !el.dataset.busy) { markPrRetrying(el); vscodeApi?.postMessage({ type: "prRetry", id: el.dataset.sid }); } },   // the error chip → re-read now
+    prretry: (el) => { if (el.dataset.sid && !el.dataset.busy) { markPrRetrying(el.dataset.sid, el.dataset.err || ""); vscodeApi?.postMessage({ type: "prRetry", id: el.dataset.sid }); } },   // the error chip → re-read now
     prcopy: (el) => { try { navigator.clipboard?.writeText("#" + el.dataset.num); } catch { /* ignore */ } },
   });
 })();

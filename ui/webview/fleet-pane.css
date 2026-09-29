@@ -101,26 +101,29 @@ color:var(--vscode-descriptionForeground,#9a9a9a);font-size:12px;user-select:non
    #number · state · checks · review, in that fixed order, so the eye lands in the same place on every
    row. The chip never shrinks — the goal TITLE ellipsizes instead (a truncated title is recoverable from
    the hover card, a truncated PR state is not). Colours are tokens with a value per theme: the romp
-   accent for live, the working yellow for pending, --pr-open / --pr-merged for the state glyphs; the
-   red stays a literal. */
+   accent for live, the accent's text ink for the numbers, the working yellow for pending, --pr-open /
+   --pr-merged for the state glyphs, and the editor's error ink for every red (closed, failing, the error
+   chip): 6.08:1 on the chip dark, 5.56:1 light, where the old #e5484d read 3.82 and 3.31. */
 .fl-pr{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;margin-left:8px;padding:0 6px;height:17px;
   border-radius:9px;border:1px solid var(--vscode-editorHoverWidget-border,rgba(255,255,255,0.12));
   background:rgba(255,255,255,0.04);color:var(--vscode-descriptionForeground,#9a9a9a);
   font-size:0.82em;font-variant-numeric:tabular-nums;white-space:nowrap;cursor:pointer}
 .fl-pr:hover{background:rgba(255,255,255,0.09);color:var(--vscode-foreground,#cccccc)}
-.fl-pr-num{color:var(--accent);font-weight:500}
+.fl-pr-num{color:var(--accent-ink);font-weight:500}
 .fl-pr.st-open .fl-pr-state{color:var(--pr-open,#54b204)}
 .fl-pr.st-draft .fl-pr-state{color:var(--vscode-descriptionForeground,#9a9a9a)}
 .fl-pr.st-merged .fl-pr-state{color:var(--pr-merged,#b48ce0)}
-.fl-pr.st-closed .fl-pr-state{color:#e5484d}
+.fl-pr.st-closed .fl-pr-state{color:var(--vscode-errorForeground,#f48771)}
 .fl-pr.ck-pass .fl-pr-ck{color:var(--pr-open,#54b204)}
-.fl-pr.ck-fail .fl-pr-ck{color:#e5484d}
+.fl-pr.ck-fail .fl-pr-ck{color:var(--vscode-errorForeground,#f48771)}
 .fl-pr.ck-running .fl-pr-ck{color:var(--st-working-bg,#e0b020)}
 .fl-pr .fl-pr-rv{color:var(--st-working-bg,#e0b020)}
 .fl-pr.roll{border-style:none;background:transparent;padding:0 3px}
 .fl-pr.roll:hover{background:rgba(255,255,255,0.07)}
-.fl-pr.roll.w-fail .fl-pr-ck{color:#e5484d}
-.fl-pr.err{color:#e5484d;border-color:rgba(229,72,77,0.45)}
+.fl-pr.roll.w-fail .fl-pr-ck{color:var(--vscode-errorForeground,#f48771)}
+.fl-pr.err{color:var(--vscode-errorForeground,#f48771);border-color:var(--vscode-errorForeground,#f48771)}
+/* a failure a re-read cannot fix: the chip names it and is not a control */
+.fl-pr.err.noretry,.fl-pr.err.noretry:hover{cursor:default;background:rgba(255,255,255,0.04)}
 /* live = this session's branch AND unpushed work: the romp accent, same blue as the in-progress dots */
 .fl-pr.live{border-color:var(--accent);background:var(--accent-wash);color:var(--vscode-foreground,#cccccc)}
 .fl-pr-pulse{flex:0 0 auto;width:6px;height:6px;border-radius:50%;background:var(--accent);
@@ -134,7 +137,7 @@ color:var(--vscode-descriptionForeground,#9a9a9a);font-size:12px;user-select:non
   border-left:2px solid var(--vscode-editorHoverWidget-border,rgba(255,255,255,0.12));
   background:rgba(255,255,255,0.03);border-radius:0 4px 4px 0;
   color:var(--vscode-descriptionForeground,#9a9a9a)}
-.fl-prdet-num{color:var(--accent);font-weight:500;cursor:pointer;margin-top:4px}
+.fl-prdet-num{color:var(--accent-ink);font-weight:500;cursor:pointer;margin-top:4px}
 .fl-prdet-line:first-child{color:var(--vscode-foreground,#cccccc)}
 .fl-prdet-acts{margin-top:5px;display:flex;gap:7px}
 .fl-prdet-acts button{background:var(--overlay-05);color:var(--vscode-foreground,#cccccc);border-radius:4px;

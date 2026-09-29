@@ -149,16 +149,55 @@ export function goalChip(prs: PrMap, byId: Map<string, PrNode>, n: PrNode): Goal
   return roll.length ? { kind: "rollup", prs: roll } : { kind: "none", prs: [] };
 }
 
-export interface HeadChip { pr: PR | null; err: string }
+export interface HeadSource { prNum?: number | null; prs?: PrMap; prError?: string | null; prErrorRetry?: boolean }
+
+// `snapshot`: an earlier read left PR state on screen beside the error. `retry`: a re-read can help; the
+// kernel sends false for a failure of its own that recurs on every read, so the chip offers no retry.
+export interface HeadChip { pr: PR | null; err: string; snapshot: boolean; retry: boolean }
 
 // The session head: the PR on its current branch, and, independently, the reason the last read failed.
 // Both can show at once: a failed re-read keeps the last snapshot beside the error.
-export function headChip(s: { prNum?: number | null; prs?: PrMap; prError?: string | null }): HeadChip {
+export function headChip(s: HeadSource): HeadChip {
   const pr = s.prNum ? s.prs?.[String(s.prNum)] || null : null;
-  return { pr, err: s.prError || "" };
+  const snapshot = !!s.prNum || Object.keys(s.prs || {}).length > 0;
+  return { pr, err: s.prError || "", snapshot, retry: s.prErrorRetry !== false };
 }
 
-// The error chip's hover text: the reason, and what the click does.
-export function prErrTitle(reason: string): string {
-  return "Could not read PR status: " + reason + ". Showing the last known state; click to retry now.";
+// The error chip's hover text: the reason, whether older state is still showing, and what a click does.
+export function prErrTitle(reason: string, snapshot: boolean, retry: boolean): string {
+  return "Could not read PR status: " + reason + "."
+    + (snapshot ? " Showing the last known state." : "")
+    + (retry ? " Click to retry now." : "");
+}
+
+// A session with no visible top goal still shows its head, alone, when the head has news: its branch's PR
+// is open (a draft is open too), or the last read failed. It passes the search box on its name or that PR,
+// and the recency slider on the PR's last update; a failed read is news as of now.
+export function headOnlyShown(s: HeadSource & { name: string }, now: number, cutoff: number, q: string): boolean {
+  const hc = headChip(s);
+  const openPr = hc.pr && hc.pr.state === "open" ? hc.pr : null;
+  if (!openPr && !hc.err) return false;
+  if (q && !s.name.toLowerCase().includes(q) && !(openPr && prMatches(openPr, q))) return false;
+  return hc.err ? true : now - (openPr!.updatedT || now) <= cutoff;
+}
+
+// ── the retry chip's pending state ─────────────────────────────────────────────────────────────────
+// Held outside the DOM, keyed by session id: every render rebuilds the chip, so state kept on the node came
+// back enabled on the next frame, before the retry had answered. `err` is the reason that was retried;
+// `until` is the backstop for an answer that carries the same reason again, which no payload can tell apart.
+export type RetryPending = Map<string, { err: string; until: number }>;
+
+export function markRetry(m: RetryPending, sid: string, err: string, until: number): void {
+  m.set(sid, { err, until });
+}
+
+export function retryPending(m: RetryPending, sid: string, err: string, nowMs: number): boolean {
+  const p = m.get(sid);
+  return !!p && p.err === err && nowMs < p.until;
+}
+
+// A payload answers a pending retry when its session's reason differs from the one retried, or is gone.
+export function settleRetries(m: RetryPending, rows: { sid: string; prError?: string | null }[], nowMs: number): void {
+  const reasons = new Map(rows.map((r) => [r.sid, r.prError || ""] as const));
+  for (const [sid, p] of m) if ((reasons.get(sid) ?? "") !== p.err || nowMs >= p.until) m.delete(sid);
 }

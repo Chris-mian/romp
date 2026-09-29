@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import { prChipParts, worstOf, rollupParts, prDetailLines, prMatches, sessionPrs, subtreePrs, goalChip, headChip,
-  prErrTitle, PR, PrNode } from "./pr-chip";
+  prErrTitle, headOnlyShown, markRetry, retryPending, settleRetries, RetryPending, PR, PrNode } from "./pr-chip";
 
 const base: PR = {
   num: 12, url: "https://github.com/notes-api-org/notes-api/pull/12", title: "notes: index rebuild",
@@ -195,14 +195,91 @@ test("no PR anywhere: no chip", () => {
 
 test("the session head carries its branch's PR and, independently, the failed read's reason", () => {
   const prs = { "12": pr(12) };
-  assert.deepEqual(headChip({ prNum: 12, prs, prError: null }), { pr: prs["12"], err: "" });
-  assert.deepEqual(headChip({ prNum: 12, prs, prError: "HTTP 502" }), { pr: prs["12"], err: "HTTP 502" },
+  assert.deepEqual(headChip({ prNum: 12, prs, prError: null }), { pr: prs["12"], err: "", snapshot: true, retry: true });
+  assert.deepEqual(headChip({ prNum: 12, prs, prError: "HTTP 502" }), { pr: prs["12"], err: "HTTP 502", snapshot: true, retry: true },
     "a failed re-read keeps the snapshot beside the error");
-  assert.deepEqual(headChip({ prNum: null, prs: null, prError: "gh auth login" }), { pr: null, err: "gh auth login" });
-  assert.deepEqual(headChip({}), { pr: null, err: "" });
+  assert.deepEqual(headChip({ prNum: null, prs: null, prError: "gh auth login" }),
+    { pr: null, err: "gh auth login", snapshot: false, retry: true });
+  assert.deepEqual(headChip({}), { pr: null, err: "", snapshot: false, retry: true });
+});
+
+test("the head has a snapshot when any PR state is on screen: its branch's number or a goal's PR", () => {
+  assert.equal(headChip({ prNum: 12, prs: null, prError: "HTTP 502" }).snapshot, true);
+  assert.equal(headChip({ prNum: null, prs: { "15": pr(15) }, prError: "HTTP 502" }).snapshot, true);
+  assert.equal(headChip({ prNum: null, prs: {}, prError: "HTTP 502" }).snapshot, false, "an empty map is no snapshot");
 });
 
 test("the error chip's title names the reason and the click", () => {
-  const t = prErrTitle("gh auth login");
-  assert.ok(t.includes("gh auth login") && t.includes("click to retry"));
+  const t = prErrTitle("gh auth login", true, true);
+  assert.ok(t.includes("gh auth login") && t.includes("Click to retry"));
+});
+
+test("the error chip's title promises the last known state only when there is one", () => {
+  assert.ok(prErrTitle("HTTP 502", true, true).includes("last known state"));
+  const bare = prErrTitle("HTTP 502", false, true);
+  assert.ok(!bare.includes("last known state"), bare);
+  assert.ok(bare.startsWith("Could not read PR status: HTTP 502."), bare);
+});
+
+test("a failure the kernel says a re-read cannot fix offers no retry: the title only names the error", () => {
+  assert.equal(headChip({ prError: "PR status could not be built: KeyError", prErrorRetry: false }).retry, false);
+  assert.equal(headChip({ prError: "HTTP 502", prErrorRetry: true }).retry, true);
+  assert.equal(headChip({ prError: "HTTP 502" }).retry, true, "absent keeps the retry");
+  const t = prErrTitle("PR status could not be built: KeyError", false, false);
+  assert.equal(t, "Could not read PR status: PR status could not be built: KeyError.");
+  assert.ok(!/retry|click/i.test(t), t);
+});
+
+// ── a session shown by its head alone ─────────────────────────────────────────────────────────────
+
+const NOW = 100000, WIDE = 1e9;
+const sess = (over: Record<string, unknown> = {}) => ({ name: "api", prNum: 12, prs: { "12": pr(12, { updatedT: NOW - 60 }) },
+  prError: null, ...over }) as Parameters<typeof headOnlyShown>[0];
+
+test("a head with an open or draft branch PR, or a failed read, is shown alone", () => {
+  assert.equal(headOnlyShown(sess(), NOW, WIDE, ""), true, "open");
+  assert.equal(headOnlyShown(sess({ prs: { "12": pr(12, { draft: true, updatedT: NOW }) } }), NOW, WIDE, ""), true, "draft");
+  assert.equal(headOnlyShown(sess({ prNum: null, prs: null, prError: "gh auth login" }), NOW, WIDE, ""), true, "error, no PR");
+  assert.equal(headOnlyShown(sess({ prs: { "12": pr(12, { state: "merged" }) } }), NOW, WIDE, ""), false, "merged is not news");
+  assert.equal(headOnlyShown(sess({ prs: { "12": pr(12, { state: "closed" }) } }), NOW, WIDE, ""), false, "closed is not news");
+  assert.equal(headOnlyShown(sess({ prNum: null, prs: null }), NOW, WIDE, ""), false, "nothing at all");
+});
+
+test("a head shown alone passes the search box on its name or its PR, and the slider on the PR's age", () => {
+  assert.equal(headOnlyShown(sess(), NOW, WIDE, "api"), true, "name");
+  assert.equal(headOnlyShown(sess(), NOW, WIDE, "#12"), true, "the PR number");
+  assert.equal(headOnlyShown(sess(), NOW, WIDE, "unrelated"), false, "no match");
+  assert.equal(headOnlyShown(sess({ prError: "HTTP 502" }), NOW, WIDE, "unrelated"), false, "an error does not bypass the search");
+  assert.equal(headOnlyShown(sess(), NOW, 30, ""), false, "updated 60s ago, window 30s");
+  assert.equal(headOnlyShown(sess(), NOW, 120, ""), true, "inside a 120s window");
+  assert.equal(headOnlyShown(sess({ prError: "HTTP 502" }), NOW, 30, ""), true, "a failed read is news as of now");
+});
+
+// ── the retry chip's pending state ───────────────────────────────────────────────────────────────
+
+test("a pending retry holds across renders until a payload brings a different reason or none", () => {
+  const m: RetryPending = new Map();
+  markRetry(m, "s1", "HTTP 502", 1000);
+  assert.equal(retryPending(m, "s1", "HTTP 502", 10), true, "every render before the answer reads it disabled");
+  assert.equal(retryPending(m, "s1", "HTTP 502", 20), true);
+  settleRetries(m, [{ sid: "s1", prError: "HTTP 502" }], 30);
+  assert.equal(retryPending(m, "s1", "HTTP 502", 40), true, "the same reason is not yet an answer");
+  settleRetries(m, [{ sid: "s1", prError: "gh auth login" }], 50);
+  assert.equal(m.has("s1"), false, "a new reason settles it");
+  markRetry(m, "s1", "HTTP 502", 1000);
+  settleRetries(m, [{ sid: "s1", prError: null }], 60);
+  assert.equal(m.has("s1"), false, "a cleared error settles it");
+});
+
+test("a pending retry is per session, per reason, and lifts at its backstop", () => {
+  const m: RetryPending = new Map();
+  markRetry(m, "s1", "HTTP 502", 1000);
+  assert.equal(retryPending(m, "s2", "HTTP 502", 10), false, "another session's chip stays enabled");
+  assert.equal(retryPending(m, "s1", "gh auth login", 10), false, "a different reason on screen is a new chip");
+  assert.equal(retryPending(m, "s1", "HTTP 502", 1000), false, "the backstop re-enables it");
+  settleRetries(m, [{ sid: "s1", prError: "HTTP 502" }], 1000);
+  assert.equal(m.has("s1"), false, "and a payload past it drops the entry");
+  markRetry(m, "s3", "HTTP 502", 1000);
+  settleRetries(m, [], 10);
+  assert.equal(m.has("s3"), false, "a session gone from the payload drops its entry");
 });
