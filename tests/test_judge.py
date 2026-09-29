@@ -5506,7 +5506,7 @@ class DistillArtifacts(unittest.TestCase):
                                                 "nodeComplete": True, "blocked": False, "cleared": False,
                                                 "artifacts": ["/tmp/out/spec.md"],   # an earlier distill saw it
                                                 "trail": [s1], "t": T0, "mt": T0 + 10}}})
-            jd.distill_llm = lambda g, w, dw="", prior_summary="", items=None: "TAKEAWAY: The doc reads better."
+            jd.distill_llm = lambda g, w, dw="", prior_summary="", items=None, frame=None, user_ask=None: "TAKEAWAY: The doc reads better."
             self.assertEqual(jd.run_distill(now=now), 1)
             self.assertEqual(jd.load_goals(SID)["nodes"][gid]["artifacts"], ["/tmp/out/spec.md"],
                              "a silent second pass must not erase what the first one recorded")
@@ -5528,7 +5528,7 @@ class DistillArtifacts(unittest.TestCase):
                                 "nodes": {gid: {"id": gid, "text": "Plot the results", "parentId": None,
                                                 "nodeComplete": True, "blocked": False, "cleared": False,
                                                 "trail": [s1], "t": T0, "mt": T0 + 10}}})
-            jd.distill_llm = lambda g, w, dw="", prior_summary="", items=None: ("BACKGROUND: You asked for a results plot.\n"
+            jd.distill_llm = lambda g, w, dw="", prior_summary="", items=None, frame=None, user_ask=None: ("BACKGROUND: You asked for a results plot.\n"
                                                   "TAKEAWAY: The plot is saved and ready.\n"
                                                   "ARTIFACTS: /tmp/out/plot.png\nSOURCE: m1")
             self.assertEqual(jd.run_distill(now=now), 1)
@@ -5552,7 +5552,7 @@ class DistillArtifacts(unittest.TestCase):
                                 "nodes": {gid: {"id": gid, "text": "Do it", "parentId": None,
                                                 "nodeComplete": True, "blocked": False, "cleared": False,
                                                 "trail": [s1], "t": T0, "mt": T0 + 10}}})
-            jd.distill_llm = lambda g, w, dw="", prior_summary="", items=None: "TAKEAWAY: Delivered."
+            jd.distill_llm = lambda g, w, dw="", prior_summary="", items=None, frame=None, user_ask=None: "TAKEAWAY: Delivered."
             self.assertEqual(jd.run_distill(now=now), 1)
             self.assertIsNone(jd.load_goals(SID)["nodes"][gid]["artifacts"])
         finally:

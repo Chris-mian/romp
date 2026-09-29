@@ -169,6 +169,7 @@ HELPERS = {
     "_open_leaves": ("sig", ("store",)),
     "_parked_rows": ("sig", ("store",)),
     "_session_started_face": ("sig", ("store",)),
+    "_subtree_artifacts": ("sig", ("store",)),   # the ARTIFACTS paths recorded under a card, read off the store's nodes
     "jd._done_since": ("sig", ("store",)),
     "jd.review_boundary": ("sig", ("store",)),
     "_handoff_card_fields": ("sig", ("store", "peers")),
