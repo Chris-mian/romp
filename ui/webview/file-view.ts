@@ -486,13 +486,12 @@ registerFileViewAction(githubLinkAction);
 // the selection posts in the editorSelection shape to the composer's window — this document's, or
 // the shell's chat pane (composerWindow below) — so render.ts's existing handler owns the chip end
 // to end (no import cycle — the browseFiles precedent), labeled path:line via quoteSrcLabel. From
-// there the flow is the chat's own: type a note (or none), Stage, keep going, send once. This
-// REPLACED the viewer's separate review layer — the per-file comment store (romp:fileviewComments),
-// the painted marks, and the one-shot Submit that assembled a message — because batching notes for
-// one hand-off is exactly what quote chips + ⌘⏎ staging already do, and "comment" now means only
-// the transcript's live threads.
+// there the flow is the chat's own: type a note (or none), Stage, keep going, send once. Beside the
+// chip, a right-click on a selection opens the viewer's own box (openCommentBox below): Stage in a
+// pane with a composer, where the note joins the staged run and the bar's Submit sends it; Comment in
+// the feed pane, where it opens a thread. The older per-file store (romp:fileviewComments) is gone.
 
-// The retired store's data would otherwise sit in localStorage forever on every browser that
+// The old store's data would otherwise sit in localStorage forever on every browser that
 // ever commented — sweep it on load.
 try { localStorage.removeItem("romp:fileviewComments"); } catch { /* storage may be denied */ }
 
@@ -515,6 +514,13 @@ function composerWindow(): Window | null {
 function dropCommentOverlays(): void {
   closeContextMenu();                                  // through the builder, so its Escape listener goes too
   document.querySelectorAll?.(".fileview-cmt").forEach((n) => n.remove());
+}
+
+/** Whether the caret sits in another field: a verdict for one box must not pull it out of the one being typed in. */
+function typingElsewhere(own: HTMLElement): boolean {
+  const at = document.activeElement as HTMLElement | null;
+  if (!at || at === own || typeof at.tagName !== "string") return false;
+  return at.tagName === "TEXTAREA" || at.tagName === "INPUT" || at.isContentEditable === true;
 }
 
 /** Every box still waiting on the host hears the same verdict: a host drop or a socket drop fails them all. */
@@ -1064,9 +1070,19 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
   // chip lands in the session the file was opened FOR even if the active tab changed while the
   // modal was up (the 2026-08-19 routing rule: the gesture's session, never activeId-at-gesture).
   let seedSeq = 0;                                 // last gesture wins if two fresh reads race
+  // The file as it is on disk now, falling back to what the viewer shows when the read fails.
+  const freshText = (): Promise<string | null> =>
+    fetch(fileUrl(path, sid), { cache: "no-store" })
+      .then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
+      .catch(() => viewText());
+  // A Mac Ctrl+click fires its contextmenu between its mousedown and its mouseup, and that mouseup must not
+  // re-seed the chip; a Ctrl release anywhere else (the add-another-quote modifier off a Mac) still seeds.
+  let menuRelease = false;
+  box.addEventListener("mousedown", () => { menuRelease = false; });
   box.addEventListener("mouseup", (ev) => {
     if (editing) return;   // CodeMirror selections are edit gestures, not quotes
-    if (ev.button > 0 || ev.ctrlKey) return;   // the right-click (or a Mac Ctrl+click) that opens the menu re-seeds nothing
+    if (ev.button > 0) return;   // the right-click that opens the menu re-seeds nothing
+    if (menuRelease) { menuRelease = false; return; }
     // A press on a title-bar CONTROL (A−, A+, the readout, Raw, Copy path, the GitHub link) settles no
     // selection: the mouseup lands on the button while a passage may still stand selected in the body,
     // and the seed below would re-read the file and re-seed the quote chip on every step of the text
@@ -1096,9 +1112,7 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
     // blob and `text` stays null in media mode. quoteSrcLabel itself degrades to the bare path
     // when the passage cannot be honestly found in whichever bytes it gets.
     const seq = ++seedSeq;
-    fetch(fileUrl(path, sid), { cache: "no-store" })
-      .then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
-      .catch(() => viewText())
+    freshText()
       .then((doc) => {
         if (seq !== seedSeq) return;
         try { seedTarget.postMessage({ type: "editorSelection", text: picked, sid: sid || undefined, src: quoteSrcLabel(path, doc, picked) }, "*"); }
@@ -1109,6 +1123,7 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
   // Comment on a passage, owned by the viewer so every pane that mounts it gets the affordance — the
   // chat bundle and the feed bundle both bind `post`. Routes to the sid the file was opened for.
   box.addEventListener("contextmenu", (ev: MouseEvent) => {
+    menuRelease = true;
     if (editing || !sid) return;
     const sel = window.getSelection();
     const picked = sel && !sel.isCollapsed && sel.anchorNode && box.contains(sel.anchorNode)
@@ -1173,6 +1188,11 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
     err.hidden = !why;
     err.textContent = why;
     ta.value = draft;
+    // Labelled from what the viewer shows, then from the file as it is now once that read lands: the chip
+    // seeded on mouseup reads fresh, and the box's label must name the same line. The send never waits on
+    // the read, so a close mid-send cannot drop the words.
+    let src = quoteSrcLabel(path, viewText(), picked);
+    void freshText().then((doc) => { src = quoteSrcLabel(path, doc, picked); });
     const close = () => pop.remove();   // a send in flight still settles by its createId
     cancel.addEventListener("click", close);
     send.addEventListener("click", () => {
@@ -1210,12 +1230,9 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
           send.disabled = false; send.textContent = verb;
           err.textContent = why;
           err.hidden = false;
-          ta.focus();
+          if (!typingElsewhere(ta)) ta.focus();
         },
       });
-      // Labelled from what the viewer shows, and sent at once: a fresh read here would hold the send open
-      // on the network, and a close in that window would drop the words.
-      const src = quoteSrcLabel(path, viewText(), picked);
       if (hasComposer) {
         toHost({ romp: "stageNote", sid: s, text: body, exact: picked, src, createId });
       } else {

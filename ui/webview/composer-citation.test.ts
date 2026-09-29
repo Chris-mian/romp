@@ -306,15 +306,17 @@ test("the FILE VIEWER owns its own selection menu, so every pane that mounts it 
   assert.match(FILEVIEW, /if \(editing \|\| !sid\) return;/, "an edit gesture, or no session to hang a thread on");
   // routed to the sid the file was opened FOR, matching the quote chip's rule — never the active tab
   assert.match(FILEVIEW, /toHost\(\{ romp: "stageNote", sid: s, text: body, exact: picked, src, createId \}\);/);
-  // the label comes from what the viewer shows and the send goes at once: a close can't strand the words
-  assert.match(FILEVIEW, /const src = quoteSrcLabel\(path, viewText\(\), picked\);\n\s*if \(hasComposer\) \{\n\s*toHost\(\{ romp: "stageNote"/);
+  // the label starts from what the viewer shows and follows a fresh read; the send never waits on it
+  assert.match(FILEVIEW, /let src = quoteSrcLabel\(path, viewText\(\), picked\);\n\s*void freshText\(\)\.then\(\(doc\) => \{ src = quoteSrcLabel\(path, doc, picked\); \}\);/);
+  assert.match(FILEVIEW, /if \(hasComposer\) \{\n\s*toHost\(\{ romp: "stageNote", sid: s, text: body, exact: picked, src, createId \}\);/);
   assert.doesNotMatch(FILEVIEW, /if \(!cmtHooks\.has\(createId\)\) return;/);
   // the box paints only on the answer, never on the post
   assert.doesNotMatch(FILEVIEW, /romp: "stageNote"[\s\S]{0,400}?send\.textContent = "Saved";/);
   // the composer-less pane keeps the kernel path: a thread is the only place a note can land there
   assert.match(FILEVIEW, /post\(\{ type: "commentCreate", id: s, uuid: "", exact: picked, text: body, src, createId \}\);/);
   assert.match(FILEVIEW, /const createId = mintCreateId\(\);/, "one id per send, echoed back to settle this box");
-  assert.match(FILEVIEW, /if \(ev\.button > 0 \|\| ev\.ctrlKey\) return;/, "the right-click's release seeds no quote chip");
+  assert.match(FILEVIEW, /if \(ev\.button > 0\) return;/, "the right-click's release seeds no quote chip");
+  assert.doesNotMatch(FILEVIEW, /ev\.button > 0 \|\| ev\.ctrlKey/, "a Ctrl release off a Mac still seeds (file-view-comment.test.ts runs it)");
   // the chat bundle keeps the TRANSCRIPT menu and nothing else — one owner per surface, no duplicate
   assert.doesNotMatch(RENDER, /fileViewSelection/);
   assert.match(RENDER, /if \(!content \|\| !sel \|\| !sel\.anchorNode \|\| !content\.contains\(sel\.anchorNode\) \|\| !text\.trim\(\)\) return;/);
@@ -390,6 +392,8 @@ test("the viewer's menu and comment box outrank the viewer they open over", () =
   }
   // the warn toast too: a refusal raised by a gesture INSIDE the viewer is the case that needs reading
   assert.ok(zIndexOf(CSS, "#warn-toasts") > zIndexOf(CSS, "#romp-fileview"));
+  // ...and off the bar's top right while the viewer is up, where Submit and the close sit
+  assert.match(CSS, /body\.fileview-open #warn-toasts \{ top: auto; bottom: 14px; \}/);
 });
 
 // ── select → TYPE → ⌘⏎ (the user 2026-09-02): typing needs no click into the box ─────────────────

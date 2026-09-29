@@ -17513,7 +17513,9 @@ function submitComposerPending(sid: string): number {
 function flushStaged(sid: string, typed?: { text: string; cites?: Citation[]; imgPaths?: string[]; paths?: string[] }): number {
   const run = stagedMsgs.takeAll(sid);
   for (const p of stagedPosts(run, typed)) routeUserMessage(sid, p.text, p.cites as Citation[] | undefined, p.imgPaths, p.paths);
-  if (run.length) { persistDrafts(); renderStagedStrip(sid); }
+  // the strip shows the active tab's run: a flush for another tab (a viewer's Submit left open across a tab
+  // switch) must not repaint it with that tab's empty stack
+  if (run.length) { persistDrafts(); if (sid === activeId) renderStagedStrip(sid); }
   return run.length;
 }
 
