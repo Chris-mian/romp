@@ -12,7 +12,7 @@ export type CommentThread = {
   mailOff?: boolean;
   /** why, when it is off: "thread" (not yet broken out), "isolation" (the lane's mailbox toggle), "master" (the master default), "unreadable" (its record cannot be read) */
   mailOffWhy?: string;
-  /** messages waiting in its postal box (they land when it is broken out) */
+  /** messages waiting in its postal box (they land once it is broken out and its mail is on) */
   heldMail?: number;
   tid: string;
   name?: string;              // the thread's editable name (<session>-comment-<N> by default)

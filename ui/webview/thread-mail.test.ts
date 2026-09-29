@@ -18,7 +18,8 @@ test("the popover says the thread's mail is off, and the promoted view says it i
   assert.match(COMMENTS, /mailOff\?: boolean;/, "the frame's field on the thread type");
   // the user's ruling (2026-09-11, 3:05 PM PT): the comment box says nothing about mail being off; a line only for held mail
   assert.doesNotMatch(RENDER, /Mail off: this thread neither sends nor receives peer mail/);
-  assert.match(RENDER, /if \(th && th\.mailOff && \(th\.heldMail \|\| 0\) > 0\) \{[\s\S]{0,700}?mail\.textContent = held \+ \(held === 1 \? " message waits in its box and lands" : " messages wait in its box and land"\) \+ " at the break-out\.";/);
+  assert.match(RENDER, /if \(th && th\.mailOff && \(th\.heldMail \|\| 0\) > 0\) \{[\s\S]{0,700}?mail\.textContent = held \+ \(held === 1 \? " message waits in its box and lands" : " messages wait in its box and land"\) \+ " once it is broken out and its mail is on\.";/);
+  assert.doesNotMatch(RENDER, /" at the break-out\."/, "under an isolating master the broken-out session's mail stays off, and so does the held mail");
   assert.match(RENDER, /note\.textContent = "The discussion continues there\.";\s*\n\s*pop\.appendChild\(note\);[\s\S]{0,600}mailOn\.textContent = !th\.mailOff[\s\S]{0,80}\? "Its mail is on now: peers can reach it and it can send\."/,
                "said once, in the promoted view, from the effective state");
   assert.match(CSS, /\.cmt-note\.cmt-mail \{ opacity: 0\.6; font-size: 0\.86em; \}/);
@@ -47,28 +48,41 @@ test("the tab hover and the Sessions pane show a session's mail state", () => {
   assert.match(RENDER, /mailOffWhy: \("mailOffWhy" in msg\) \? String\(msg\.mailOffWhy \|\| ""\) : \(prev \? prev\.mailOffWhy : undefined\),/, "the reason rides the session frame");
   assert.match(FLEET, /mo\.textContent = \(s\.mailOffWhy === "unreadable" \|\| s\.mailOffWhy === "flags"\) \? "mail held" : "mail off";/, "the Sessions pane tag says held for an unreadable record and for the unreadable settings file");
   assert.match(FLEET, /postalServiceOff\?: boolean;/, "the Sessions pane row type carries it");
-  assert.match(FLEET, /if \(s\.postalServiceOff && s\.mailOffWhy !== "master"\) \{[\s\S]*?const mo = el\("span", "fl-mail-off"\);\s*\n\s*mo\.textContent = \(s\.mailOffWhy === "unreadable" \|\| s\.mailOffWhy === "flags"\) \? "mail held" : "mail off";/);
+  assert.match(FLEET, /if \(s\.postalServiceOff && s\.mailOffWhy !== MAIL_WHY_MASTER\) \{[\s\S]*?const mo = el\("span", "fl-mail-off"\);\s*\n\s*mo\.textContent = \(s\.mailOffWhy === "unreadable" \|\| s\.mailOffWhy === "flags"\) \? "mail held" : "mail off";/);
   assert.match(CSS, /\.fl-mail-off \{/);
 });
 
-test("the master's sessions share one pane note, and it names the master and the way out", () => {
-  assert.match(FLEET, /const masterNote = masterMailNote\(sessions\);\s*\n\s*if \(masterNote\) list\.appendChild\(masterNote\);/,
-               "one note above the list, in both views");
-  assert.match(FLEET, /const n = all\.filter\(\(s\) => s\.mailOffWhy === "master"\)\.length;\s*\n\s*if \(!n\) return null;/,
-               "no note without a master-isolated session");
-  assert.match(FLEET, /MASTER_MAIL_TIP = "its mail is off by the master default \(the \* key in session-flags\.json\): the lane's mailbox toggle opts it back in, or clear the master/);
+test("the master's sessions share one pane note, counted over the rows shown and marked on each", () => {
+  // the note counts the rows this render shows (the survivors of Show completed, the cutoff, search and the lens),
+  // never every session in the payload; the executed twin is in fleet-live-clock.test.ts
+  assert.match(FLEET, /const masterNote = masterMailNote\(survivors\.map\(\(x\) => x\.ctx\.s\)\);[^\n]*\n\s*if \(masterNote\) list\.appendChild\(masterNote\);/,
+               "one note above the list, in both views, over the shown rows");
+  assert.doesNotMatch(FLEET, /masterMailNote\(sessions\)/, "not over every session");
+  assert.match(FLEET, /const n = shown\.filter\(mailOffByMaster\)\.length;\s*\n\s*if \(!n\) return null;/,
+               "no note without a shown master-isolated row");
+  assert.match(FLEET, /const MAIL_WHY_MASTER = "master";/);
+  assert.match(FLEET, /return !!s\.postalServiceOff && s\.mailOffWhy === MAIL_WHY_MASTER;/);
+  // each counted row wears the note's mark, in both views: the grouped head and the flat view's session label
+  assert.match(FLEET, /const mm = masterMailMark\(s\); if \(mm\) head\.appendChild\(mm\);/);
+  assert.match(FLEET, /const mm = masterMailMark\(s\); if \(mm\) tag\.appendChild\(mm\);/);
+  assert.match(FLEET, /const badge = el\("span", "fl-mail-master"\);\s*\n\s*badge\.textContent = MASTER_MAIL_MARK;\s*\n\s*badge\.title = MASTER_MAIL_ROW_TIP;/);
+  assert.match(FLEET, /MASTER_MAIL_ROW_TIP = "mail off by the master default: listed for peers, but not reachable";/);
+  assert.match(FLEET, /note\.textContent = MASTER_MAIL_MARK \+ " Mail off by the master default for " \+ n/);
+  assert.match(CSS, /\.fl-mail-master \{/);
+  // the tip names the master and the opt-in, and no control that does not exist
+  assert.match(FLEET, /MASTER_MAIL_TIP = "these sessions' mail is off by the master default \(the \* key in session-flags\.json\): peers still see them listed but cannot reach them; a lane's mailbox toggle opts one back in";/);
+  assert.doesNotMatch(FLEET, /clear the master/);
 });
 
 test("the kernel and the bus derive the same default from the thread's reg and the fresh key", () => {
-  assert.match(KERNEL, /def _thread_mail_off\(sid\):[\s\S]*?if not sid or not _thread_reg\(sid\)\.get\("threadOf"\):\s*\n\s*return False\s*\n\s*f = _session_flags\(\)\.get\(sid\)\s*\n\s*return not \(isinstance\(f, dict\) and f\.get\("threadMail"\) is True\)/,
+  assert.match(KERNEL, /def _thread_mail_off\(sid, flags=None\):[\s\S]*?if not sid or not _thread_reg\(sid\)\.get\("threadOf"\):\s*\n\s*return False\s*\n\s*f = \(_session_flags\(\) if flags is None else flags\)\.get\(sid\)\s*\n\s*return not \(isinstance\(f, dict\) and f\.get\("threadMail"\) is True\)/,
                "literal True only (the flip-a-default rule)");
-  assert.match(KERNEL, /def _mail_off_why_k\(sid\):[\s\S]*?if _reg_unreadable\(sid\):\s*\n\s*return "unreadable"\s*\n\s*if _thread_mail_off\(sid\):\s*\n\s*return "thread"\s*\n\s*iso = _postal_isolation_flag\(sid\)[^\n]*\n\s*if _flags_unknown_cold\(\):\s*\n\s*return "flags"[^\n]*\n\s*if not iso:\s*\n\s*return ""\s*\n\s*return "isolation" if _postal_own_flag\(sid\) is not None else "master"/,
+  assert.match(KERNEL, /def _mail_off_why_k\(sid\):[\s\S]*?if _reg_unreadable\(sid\):\s*\n\s*return "unreadable"\s*\n\s*flags = _session_flags\(\)[^\n]*\n\s*if _thread_mail_off\(sid, flags\):\s*\n\s*return "thread"\s*\n\s*if _flags_unknown_cold\(\):\s*\n\s*return "flags"[^\n]*\n\s*return _postal_isolation_why\(flags, sid\)/,
                "the kernel's reasons: unreadable first (the bus holds everything for it), then the thread default, then the mailbox flag, read before the flags-unknown door closes (2026-09-14)");
   assert.match(KERNEL, /def _postal_isolated\(sid\):[\s\S]*?return bool\(_mail_off_why_k\(sid\)\)/);
   // the session's own key decides either way; absent one, the master default under POSTAL_ALL_KEY does —
   // the same order the bus reads over the same file, which is what keeps the two answers equal
-  assert.match(KERNEL, /def _postal_isolation_flag\(sid\):[\s\S]*?own = _postal_own_flag\(sid\)\s*\n\s*return own if own is not None else _session_flag\(POSTAL_ALL_KEY, "postalServiceOff"\)/);
-  assert.match(KERNEL, /def _postal_own_flag\(sid\):[\s\S]*?for flag in \("postalServiceOff", "postalOff"\):\s*\n\s*own = _session_flag_raw\(sid, flag\)\s*\n\s*if own is not None:\s*\n\s*return own\s*\n\s*return None/);
+  assert.match(KERNEL, /def _postal_isolation_why\(flags, sid\):[\s\S]*?for flag in \("postalServiceOff", "postalOff"\):\s*\n\s*if own\.get\(flag\) is not None:\s*\n\s*return "isolation" if own\[flag\] else ""\s*\n\s*master = flags\.get\(POSTAL_ALL_KEY\)/);
   assert.match(POSTAL, /for key in \("postalServiceOff", "postalOff"\)/, "the bus reads the own keys in the kernel's order (the master: tests/test_postal_isolation.py)");
   assert.match(KERNEL, /"mailOff": bool\(mail_why\),/, "the comments frame carries it (one derivation with the reason)");
   assert.match(KERNEL, /\*\*_mail_off_fields\(m\["id"\]\),/, "the Sessions pane rows carry it, with the reason, from one derivation (T356 fifth follow-up)");
@@ -76,6 +90,8 @@ test("the kernel and the bus derive the same default from the thread's reg and t
   assert.match(POSTAL, /t = _thread_of\(sid\)\s*\n\s*if t == THREAD_REG_UNREADABLE:\s*\n\s*return "unreadable"[^\n]*\n\s*if t and not \(isinstance\(f, dict\) and f\.get\("threadMail"\) is True\):\s*\n\s*return "thread"/,
                "an unreadable record is closed under its own reason, then the literal-True key");
   assert.match(POSTAL, /agents, listing_answered = local_agents_checked\(threads=True\)/, "the relay lists thread rows, so a thread recipient bounces instead of retrying forever");
-  assert.match(POSTAL, /if why_off == "thread":[^\n]*\n\s*return self\._send\(\{"error": THREAD_MAIL_OFF_SENDER\}, 403\)/, "the thread's own send");
-  assert.match(POSTAL, /whys = \{a\["id"\]: _mail_off_why\(a\["id"\]\) for a in direct_all\}[\s\S]{0,500}?if "unreadable" in whys\.values\(\):[\s\S]{0,500}?if "thread" in whys\.values\(\):/, "a send to the thread, and to a session whose record cannot be read, each with its own words");
+  assert.match(POSTAL, /refused = _sender_refusal\(frm_id\)[^\n]*\n\s*if refused:\s*\n\s*return self\._send\(\{"error": refused\[1\]\}, refused\[0\]\)/, "the thread's own send");
+  assert.match(POSTAL, /return 403, \{"thread": THREAD_MAIL_OFF_SENDER, "unreadable": UNREADABLE_REG_SENDER\}\.get\(why, ISOLATION_SENDER\)/, "…in the thread's own words");
+  assert.match(POSTAL, /whys = \{_mail_off_why\(a\["id"\]\) for a in direct_all\}[\s\S]{0,300}?_all_off_refusal\(to, whys, tunneled\)/, "a send to the thread, and to a session whose record cannot be read, each with its own words");
+  assert.match(POSTAL, /def _all_off_refusal\(to, whys, tunneled\):[\s\S]{0,300}?if "unreadable" in whys:[\s\S]{0,200}?if "thread" in whys:/);
 });

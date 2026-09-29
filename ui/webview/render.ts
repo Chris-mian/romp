@@ -10860,10 +10860,11 @@ function renderCommentPopover(): void {
     if (th && th.mailOff && (th.heldMail || 0) > 0) {
       // T356: a thread's mail is off until it is broken out, but the comment box does not SAY so (the user
       // 2026-09-11, 3:05 PM PT: not here; the tab hover's Mail row and the Sessions pane tag carry the state quietly).
-      // Only a message actually held in its box is worth a line: the count, and that it lands at the break-out.
+      // Only a message actually held in its box is worth a line: the count, and when it lands. Not at the break-out
+      // itself: under an isolating master default the broken-out session's mail stays off, and so does the held mail.
       const held = th.heldMail || 0;
       const mail = el("div", "cmt-note cmt-mail");
-      mail.textContent = held + (held === 1 ? " message waits in its box and lands" : " messages wait in its box and land") + " at the break-out.";
+      mail.textContent = held + (held === 1 ? " message waits in its box and lands" : " messages wait in its box and land") + " once it is broken out and its mail is on.";
       pop.appendChild(mail);
     }
     if (th && th.status === "open") {
