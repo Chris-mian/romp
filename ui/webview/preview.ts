@@ -469,8 +469,10 @@ export function previewThumb(path: string, sid?: string | null): HTMLElement | n
     nm.className = "path-thumb-name";
     nm.textContent = path.slice(path.lastIndexOf("/") + 1);
     box.append(tag, nm);
-    // a chip can't self-verify like an <img> — probe so a missing PDF never shows a dead chip
-    fetch(fileUrl(path, sid), { method: "HEAD" }).then((r) => { if (!r.ok) box.remove(); }).catch(() => box.remove());
+    // a chip can't self-verify like an <img> — probe so a missing PDF never shows a dead chip; hidden, not
+    // removed, like every preview failure (the modal's next render rebuilds the strip)
+    const hide = () => { box.style.display = "none"; };
+    fetch(fileUrl(path, sid), { method: "HEAD" }).then((r) => { if (!r.ok) hide(); }).catch(hide);
   } else {
     const img = document.createElement("img");
     img.className = "path-thumb-img";
@@ -478,7 +480,7 @@ export function previewThumb(path: string, sid?: string | null): HTMLElement | n
     img.src = url;
     img.alt = path;
     img.loading = "lazy";
-    img.onerror = () => box.remove();
+    img.onerror = () => { box.style.display = "none"; };
     withLoadCue(box, img, url);   // mini swirl holds the spot until the load event (first load only)
     box.appendChild(img);
   }

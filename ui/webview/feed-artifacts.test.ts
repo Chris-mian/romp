@@ -19,7 +19,9 @@ const JUDGE = fs.readFileSync(path.resolve(process.cwd(), "..", "bin", "romp-jud
 test("feed card: 'N artifacts' rides the bottom of the summary section and opens the modal", () => {
   assert.match(FEED, /artifacts\?: string\[\] \| null;/, "AskItem carries the kernel's existence-filtered list");
   assert.match(FEED, /const artline = el\("div", "fask-artline nav"\); artline\.style\.display = "none";/);
-  assert.match(FEED, /if \(choice === "summary" && arts\.length\) \{/, "shows only with the summary section open");
+  assert.match(FEED, /secs\.appendChild\(artline\);/, "a body of the shared section container, at its bottom");
+  assert.match(FEED, /if \(arts\.length && \(a\._distill as HTMLElement\)\.style\.display !== "none"\) \{/, "shows only with the summary section open");
+  assert.match(FEED, /afterApply: \(a\) => applyArtline\(a\),/, "a section pick re-applies it too");
   assert.match(FEED, /arts\.length === 1 \? "1 artifact" : arts\.length \+ " artifacts"/);
   assert.match(FEED, /artline\.onclick = \(ev: Event\) => \{ ev\.stopPropagation\(\); fullscreenAskId = it\.itemId; renderModal\(\); \};/);
   assert.match(FEED_CSS, /\.fask-artline \{ font-size: 0\.86em;/, "same size as the summary body it sits in");
@@ -68,11 +70,9 @@ test("judge: written documents count as artifacts, and a re-distill never erases
                "keep-what-you-recorded; the existence filter retires moved files instead");
 });
 
-test("the lightbox + thumb styles exist in BOTH sheets (each page loads only its own css)", () => {
-  for (const css of [FEED_CSS, CHAT_CSS]) {
-    assert.match(css, /#romp-lightbox \{ position: fixed; inset: 0; z-index: 1300;/);
-    assert.match(css, /\.path-thumb \{ display: inline-flex;/);
-    assert.match(css, /\.path-thumb-img \{ display: block; max-width: 220px; max-height: 140px;/);
-  }
-  assert.match(CHAT_CSS, /\.path-thumbs \{ display: flex; flex-wrap: wrap;/, "the chat strip container");
+test("the lightbox exists in BOTH sheets (each page loads only its own css), the thumbs in the feed's", () => {
+  for (const css of [FEED_CSS, CHAT_CSS]) assert.match(css, /#romp-lightbox \{ position: fixed; inset: 0; z-index: 1300;/);
+  // the thumbnails are the feed modal's alone: the chat renders a mention full-size (previewFull)
+  assert.match(FEED_CSS, /\.path-thumb \{ display: inline-flex;/);
+  assert.match(FEED_CSS, /\.path-thumb-img \{ display: block; max-width: 220px; max-height: 140px;/);
 });

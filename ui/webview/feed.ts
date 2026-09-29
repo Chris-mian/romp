@@ -1462,13 +1462,13 @@ function makeAskCard(it: AskItem): HTMLElement {
   const se = buildSectionElements();
   const { bgBtn, bgBody, takeBtn, distill, subBtn, stallBtn, stallBody, taskBtn, taskLbl, secs, checklist, awaitSpin, awaitWhy } = se;
   secs.style.display = "none";
+  row3.append(...se.toggles, actions);
   // "N artifacts" (the user 2026-07-08): when the distiller listed PRODUCED files (and the kernel verified
   // they exist), a small nav line at the BOTTOM of the summary body — click opens the modal, where the
   // artifacts render as previews. Feed-only, so it rides the shared bodies rather than the builder; filled
   // in applyArtline, shown only with the summary section.
   const artline = el("div", "fask-artline nav"); artline.style.display = "none";
   secs.appendChild(artline);
-  row3.append(...se.toggles, actions);
   // NOTICE CARD (T370): the producer label beside the session name, then the body, the attachment and the actions, all
   // hidden until updateAskCard finds it.notice. The body is the sanitizer's inert DOM adopted (never innerHTML), the
   // attachment an image the kernel already judged and pinned, the actions buttons the kernel executes (noticeAction).
