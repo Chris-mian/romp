@@ -355,6 +355,18 @@ class ParityWithTheBus(unittest.TestCase):
     def test_a_master_isolated_callers_note_is_published_by_both_copies(self):
         self.assertIn("Published", self._set_working_both("master"))
 
+    def test_both_listings_tell_a_hidden_caller_and_a_lone_caller_alike(self):
+        rows = [{"id": "b" * 36, "name": "peer"}]
+        for why in ("isolation", "thread", "flags", "", "master"):
+            self.assertEqual(km._codex_agents_text(rows, SID, why), pm.format_agents(rows, "api", SID, why), why)
+        mine = [{"id": SID, "name": "api"}]
+        self.assertEqual(km._codex_agents_text(mine, SID), pm.format_agents(mine, "api", SID))
+        self.assertEqual(pm.format_agents(mine, "api", SID).splitlines()[-1], pm.NO_AGENTS_LISTED)
+
+    def test_both_note_replies_agree_on_every_reason(self):
+        for why in ("", "master", "isolation", "thread", "unreadable", "flags"):
+            self.assertEqual(km._codex_working_reply("the fixtures", why), pm.working_reply("the fixtures", why), why)
+
     def test_both_listings_mark_a_master_isolated_row_alike(self):
         rows = [{"id": SID, "name": "api"}, {"id": "b" * 36, "name": "peer", "mailOff": "master", "branch": "dev"}]
         self.assertEqual(km._codex_agents_text(rows, SID), pm.format_agents(rows, "api", SID))

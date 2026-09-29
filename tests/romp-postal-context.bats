@@ -308,3 +308,24 @@ write_flags() { mkdir -p "$XDG_STATE_HOME/romp"; printf '%s' "$1" > "$XDG_STATE_
     [ "$status" -eq 0 ]
     [ -z "$output" ]
 }
+
+@test "a master entry that carries only other flags does not isolate" {
+    write_reg "$FSID"; write_flags '{"*": {"notify": true}}'
+    ROMP_SID="$SID" run_hook "$(payload "$FSID" resume)"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'"additionalContext"'* ]]
+}
+
+@test "a master entry with postalServiceOff false does not isolate" {
+    write_reg "$FSID"; write_flags '{"*": {"postalServiceOff": false}}'
+    ROMP_SID="$SID" run_hook "$(payload "$FSID" resume)"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'"additionalContext"'* ]]
+}
+
+@test "a master entry that is not an object does not isolate" {
+    write_reg "$FSID"; write_flags '{"*": true}'
+    ROMP_SID="$SID" run_hook "$(payload "$FSID" resume)"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'"additionalContext"'* ]]
+}

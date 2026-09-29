@@ -155,6 +155,7 @@ class PostalIsolated(unittest.TestCase):
 class KernelAndBusAgree(unittest.TestCase):
     """The kernel's and the bus's isolation readers, fed the same flags file, give the same answer."""
     OTHER = "99999999-8888-7777-6666-555555555555"
+    FIXED_MTIME_NS = 1_700_000_000 * 10 ** 9
     SHAPES = [                                                            # (flags, reason for SID, for OTHER)
         ({}, "", ""),
         ({"*": {"postalServiceOff": True}}, "master", "master"),
@@ -181,13 +182,58 @@ class KernelAndBusAgree(unittest.TestCase):
         self.td.cleanup()
 
     def test_every_shape_resolves_as_expected_on_both_sides(self):
+        # Every shape's file wears ONE mtime, as a coarse filesystem clock gives back-to-back rewrites, and two shapes
+        # in a row share a size; the kernel's cache is keyed on (mtime, size), so it is cleared per shape.
         for shape, *expected in self.SHAPES:
             pm.SESSION_FLAGS.write_text(json.dumps(shape))
+            os.utime(pm.SESSION_FLAGS, ns=(self.FIXED_MTIME_NS, self.FIXED_MTIME_NS))
+            km._flags_cache.clear()
             pm._FLAGS_LAST[0] = None
             for sid, want in zip((SID, self.OTHER), expected):
                 with self.subTest(shape=shape, sid=sid):
                     self.assertEqual((km._mail_off_why_k(sid), pm._mail_off_why(sid)), (want, want))
                     self.assertEqual((km._postal_isolated(sid), pm._postal_off(sid)), (bool(want), bool(want)))
+
+
+class OneSnapshotPerReason(unittest.TestCase):
+    """The kernel derives a session's mail-off reason from ONE read of the flags file, so a write landing mid-derivation
+    cannot give a reason that neither file holds."""
+
+    def test_a_write_between_reads_cannot_mix_two_files(self):
+        before = {"*": {"postalServiceOff": True}}
+        after = {"*": {"postalServiceOff": True}, SID: {"postalServiceOff": False}}
+        reads = iter([before, after, after, after])
+        saved = km._session_flags
+        km._session_flags = lambda: next(reads)
+        try:
+            self.assertEqual(km._mail_off_why_k(SID), "master", "the reason of the file it read first, whole")
+        finally:
+            km._session_flags = saved
+
+
+class TheKernelsRefusalsNameTheReason(unittest.TestCase):
+    """The kernel's own /send and /deliver refusals say why the target's mail is off and how it reopens."""
+
+    def _text(self, why, tail):
+        saved = km._mail_off_why_k
+        km._mail_off_why_k = lambda sid: why
+        try:
+            return km._target_mail_off_text(SID, tail)
+        finally:
+            km._mail_off_why_k = saved
+
+    def test_the_master_names_the_master_and_the_opt_in(self):
+        text = self._text("master", km._TARGET_REFUSED_FINAL)
+        self.assertTrue(text.startswith("isolation: "), "the isolation refusal a peer treats as final")
+        self.assertIn("master default", text); self.assertIn("lane's mailbox toggle", text); self.assertNotIn("mailbox is OFF", text)
+        self.assertIn("master default", self._text("master", km._TARGET_PARKED))
+
+    def test_every_reason_has_its_own_words_and_isolation_keeps_the_mailbox(self):
+        self.assertIn("mailbox is OFF", self._text("isolation", km._TARGET_REFUSED_FINAL))
+        self.assertIn("toggle its mailbox back on", self._text("isolation", km._TARGET_REFUSED_FINAL))
+        self.assertIn("comment thread", self._text("thread", km._TARGET_PARKED))
+        self.assertIn("settings file", self._text("flags", km._TARGET_PARKED))
+        self.assertIn("record cannot be read", self._text("unreadable", km._TARGET_PARKED))
 
 
 class RouteGates(unittest.TestCase):
@@ -207,7 +253,8 @@ class RouteGates(unittest.TestCase):
                       "the bus reads injected:false and keeps the banner parked in its maildir")
 
     def test_the_refusals_name_the_boundary(self):
-        self.assertGreaterEqual(self.src.count("mailbox is OFF"), 2)
+        self.assertGreaterEqual(self.src.count("_target_mail_off_text(sid, _TARGET_REFUSED_FINAL)"), 2)
+        self.assertEqual(self.src.count("_target_mail_off_text(sid, _TARGET_PARKED)"), 1)
 
 
 class PolicyPins(unittest.TestCase):
