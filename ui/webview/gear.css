@@ -86,6 +86,10 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 /* a row's permanent one-sentence line under its label (T408, the Automation rows): the note's dress on its own line, in
    the flow (never a popover, so it cannot run past the card and scroll it the way a hover rs-sub does on a short pane) */
 #rsettings .rs-line { display: block; color: var(--text-muted, #9aa0a6); font-size: 0.92em; line-height: 1.35; margin-top: 1px; }
+/* …and a line with nothing to say takes no layout, like an rs-note: the Extra models row's live status line is blank on
+   a stock install, and blank it kept its 1px margin, standing the row a pixel taller than Conserve memory's beside it
+   (review find, 2026-09-22; gear-router-line-browser.test.ts measures the pair) */
+#rsettings .rs-line:empty { display: none; }
 /* ONE tooltip at a time: while a picker dropdown is open, or the pointer is on the tri-state
    'mixed' mark (whose own title names the differing hosts), the row's description stands down —
    otherwise the native tooltip and the description popover stack (2026-09-02) */
@@ -336,6 +340,13 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 #rsettings .rs-widget-demo .tab-badge, #rsettings .rs-preview .tab-badge { position: absolute; top: 3px; right: 3px; width: 8px; height: 8px; border-radius: 50%; background: var(--st-needs-bg, #d946ef); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5); pointer-events: none; z-index: 3; }
 #rsettings .rs-widget-demo .tab-badge:not(:empty), #rsettings .rs-preview .tab-badge:not(:empty) { width: auto; min-width: 14px; height: 14px; border-radius: 7px; padding: 0 3px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; color: #000; font-weight: 700; font-size: 9px; line-height: 1; }
 body.theme-light #rsettings .rs-widget-demo .tab-badge:not(:empty), body.theme-light #rsettings .rs-preview .tab-badge:not(:empty) { color: var(--st-needs-fg, #ffffff); }
+/* the keycap-widen twin (the keycap-width fix 2026-09-24): a ring row's demo tab carries the demo hot-key keycap
+   (tab-widgets.ts, the "Ctrl+Shift+1" chord for DEMO_SID) AND, in badge mode, the Needs-you count of 2 at the top-right,
+   so without this the badge overpaints the keycap. Reserve the badge box on the demo's keycap tab (3px inset + the 14px
+   min-width box + a 4px gap = 21px), mirroring styles.css's strip reserve. The demo carries no #tabs strip class and
+   always shows the count in badge mode, so it keys on the keycap AND the non-empty badge (its badge-mode signal);
+   injected, it wins on specificity over the demo's own rules. Pinned by test_tab_badge_browser.py's gear preview. */
+#rsettings .rs-widget-demo .tab:has(.tab-key):has(.tab-badge:not(:empty)) { padding-right: 21px; }
 
 /* A control that depends on the Task tracking switch while it is off (T404): the row greys by token (the fast-mode box's
    dress), keeps its hover so the title says what to enable, and its inputs are inert (disabled, and no pointer on them or

@@ -287,6 +287,16 @@ class ColdTabGate(unittest.TestCase):
         # NOTE only the feed page's ("feed",) and ("timelinebars",) slots ride _send_slot_delta (its _DELTA_SLOTS), which
         # pops and reads the client's `sent` map for its own rebase dedup, so the reset must NOT clear the whole map; the
         # ("timeline",) data frames go through plain _send_client sends to timeline-app clients (exempt above), not chat.
+        # the comments-frame doc names the LIVE roads (PR 2094 removed _push_session_now's comments emission; the queued 2094
+        # low folded here 2026-09-24, beside this census): the reference's comments paragraph counts the three roads that
+        # still emit the {type:"comments"} frame and no longer names the retired targeted per-session push.
+        ref = Path(os.path.dirname(HERE), "docs", "reference.md").read_text()
+        para = ref[ref.index("The comments frame follows the same own-slot model"):]
+        para = " ".join(para[:para.index("\n\n")].split())
+        self.assertIn("three roads", para, "the comments-frame paragraph counts the three live roads")
+        for road in ("the pusher's full cycle", "the create handler's direct send", "the ready reset's re-send"):
+            self.assertIn(road, para, "the comments-frame paragraph names the road: %r" % road)
+        self.assertNotIn("_push_session_now", para, "the retired targeted-push road (removed by PR 2094) is gone from the comments paragraph")
 
     def test_09a_an_api_error_tail_reads_blocked_provisionally_as_it_would_built(self):
         _api_error_tail(self.paths[S3])                      # S3's transcript ends in an api error; its row is idle

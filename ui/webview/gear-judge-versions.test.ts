@@ -76,7 +76,7 @@ test("the gear's cached /models list re-reads on the kernel's models frame", () 
   // moving repaints the selects through the ONE painter fillChoices uses (paintChoices, which hands
   // each select its value back), so a frame that lands before the page-load fill has painted still
   // leaves populated pickers.
-  assert.match(GEAR, /if \(!m \|\| m\.type !== 'models'\) return;/);
+  assert.match(GEAR, /if \(!m \|\| \(m\.type !== 'models' && m\.type !== 'wsup'\)\) return;/);   // …and the shim's wsup frame: a kernel restart re-reads too (router-models.test.ts)
   const at = GEAR.indexOf("m.type !== 'models'");
   const seg = GEAR.slice(at, at + 400);
   assert.ok(seg.includes("fetch(ku('/models'), { cache: 'no-store' })"), "the same endpoint fillChoices reads");

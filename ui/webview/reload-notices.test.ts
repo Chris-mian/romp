@@ -325,9 +325,10 @@ test("render.ts: warnToast hands back its toast, and the refusals about a state 
 test("render.ts keeps the notices on the core's hook alone, pagehide keeps the scroll record alone, and the fresh page shows them once after the loss toast", () => {
   assert.match(RENDER, /^import \{ liveNotices, keepReloadNotices, takeReloadNotices \} from "\.\/reload-notices";/m);
   assert.match(RENDER, /^function persistNoticesForReload\(\): void \{\n\s*try \{ keepReloadNotices\(sessionStorage, liveNotices\(document\.getElementById\("warn-toasts"\)\)\); \} catch \{ \/\* ignore \*\/ \}\n\}/m);
-  // the core's synchronous hook writes both records; a navigation of the user's own (pagehide) writes the scroll record
-  // alone, so a load they asked for does not replay a toast they were already looking at
-  assert.match(RENDER, /^function persistForReload\(\): void \{ persistScrollForReload\(\); persistNoticesForReload\(\); \}[^\n]*\n\(window as any\)\.__rompPersistForReload = persistForReload;\nwindow\.addEventListener\("pagehide", persistScrollForReload\);/m);
+  // the core's synchronous hook writes all three records; a navigation of the user's own (pagehide) writes the scroll
+  // record and the open comment thread (reload-comment.ts: the reader's own view, which they want back either way) —
+  // never the notices, so a load they asked for does not replay a toast they were already looking at
+  assert.match(RENDER, /^function persistForReload\(\): void \{ persistScrollForReload\(\); persistNoticesForReload\(\); persistCommentForReload\(\); \}[^\n]*\n\(window as any\)\.__rompPersistForReload = persistForReload;\nwindow\.addEventListener\("pagehide", persistScrollForReload\);\nwindow\.addEventListener\("pagehide", persistCommentForReload\);/m);
   assert.equal((RENDER.match(/persistNoticesForReload\(\)/g) || []).length, 2, "defined once, called from the core's hook alone");
   const scroll = RENDER.match(/^function persistScrollForReload\(\): void \{([\s\S]*?)\n\}/m);
   assert.ok(scroll && !scroll[1].includes("Notices"), "the scroll record is untouched");

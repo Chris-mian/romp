@@ -9,8 +9,8 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
-const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
+const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.css"), "utf8");   // the card's sections moved to a sheet both pages import (plans/needs-you.md)
 
 test("the card carries the kernel's stalled field", () => {
   assert.match(FEED, /stalled\?: \{ why: string; since: number; note\?: string \| null; blocked\?: boolean \} \| null;/,
@@ -19,14 +19,14 @@ test("the card carries the kernel's stalled field", () => {
 
 test("Stalled is a real section button, in the toggle row, with its own class", () => {
   assert.match(FEED, /const stallBtn = el\("button", "fask-secbtn fask-stallbtn"\); stallBtn\.textContent = "Stalled";/);
-  assert.match(FEED, /row3\.append\(bgBtn, takeBtn, stallBtn, subBtn, taskBtn, actions\)/,
+  assert.match(FEED, /row3\.append\(\.\.\.se\.toggles, actions\)/,
     "it rides the same row as the other toggles");
   assert.match(FEED, /secs\.append\(bgBody, distill, stallBody\)/,
     "and its body rides the same body container");
 });
 
 test("it joins the ONE mutually-exclusive selection, so opening it closes the others", () => {
-  assert.match(FEED, /const secChoice = new Map<string, "bg" \| "summary" \| "subgoals" \| "tasks" \| "stall" \| "none">\(\)/);
+  assert.match(FEED, /export type SecChoice = "bg" \| "summary" \| "subgoals" \| "tasks" \| "stall" \| "none";/); assert.match(FEED, /export const secChoice = new Map<string, SecChoice>\(\)/);
   assert.match(FEED, /if \(choice === "stall" && !stall\) choice = "none";/,
     "a card with no stall can never sit on the stall section");
   assert.match(FEED, /a\._stallBtn\.onclick = pick\("stall"\);/);

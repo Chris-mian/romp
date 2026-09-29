@@ -8,9 +8,9 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
 const SPIN = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "spin-caption.ts"), "utf8");
-const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
+const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.css"), "utf8");   // the card's sections moved to a sheet both pages import (plans/needs-you.md)
 
 test("the swirl element is built in the body, right after the distiller line, and registered", () => {
   assert.match(FEED, /const awaitSpin = el\("div", "fask-awaiting"\); awaitSpin\.style\.display = "none";/);
@@ -23,13 +23,13 @@ test("the swirl element is built in the body, right after the distiller line, an
 
 test("the swirl is driven by spinFor's caption — shown when there is one, else hidden", () => {
   assert.match(FEED, /import \{ spinFor, awaitWord, groupRows, waitsNote, GROUP_TITLE, ROW_KIND_OF_LEGACY, type AwaitRow \} from "\.\/spin-caption";/);   // the rows' vocabulary too (slice 2)
-  assert.match(FEED, /const spin = spinFor\(it, !it\.notice && distillPending\(dCompleted, dBlocked, it\.summary, it\.blockSummary, !!it\.blocked\),/);
+  assert.match(FEED, /return spinFor\(it as Parameters<typeof spinFor>\[0\], !it\.notice && distillPending\(dCompleted, dBlocked, it\.summary, it\.blockSummary, !!it\.blocked\), dCompleted, env\.nowSec\(\)\);/, "cardSpin (card-sections.ts): one ladder call for the card and the Needs you row"); assert.match(FEED, /const spin = cardSpin\(it, dCompleted, dBlocked, sectionEnv\);/);
   assert.match(FEED, /const spinCaption = spin\.caption, spinTip = spin\.tip, awaitingBg = spin\.awaitingBg;/);
-  assert.match(FEED, /import \{ distillText, distillInputs, applyDistillLine, distillPending, distillStaleNote \} from "\.\/distiller-line";/);
+  assert.match(FEED, /import \{ distillText, distillInputs, applyDistillLine, distillPending, distillStaleNote, distillParas \} from "\.\/distiller-line";/);   // distillParas since the box content round
   assert.match(FEED, /a\._awaitSpin\.style\.display = spinCaption \? "" : "none";/);
   // a caption that ends in a running duration renders the duration as its own stamped element (feed-age.ts
   // fmt "dur") so the live pass keeps it moving on a card the per-card update gate does not repaint
-  assert.match(FEED, /\} else if \(spin\.dur\) a\._awaitWhy\.replaceChildren\(spin\.dur\.text, durSpan\(spin\.dur\.since\)\);/);
+  assert.match(FEED, /\} else if \(spin\.dur\) \{[^\n]*\n\s*const d = el\("span", "fask-dur"\); stampAge\(d, spin\.dur\.since, "dur", false, env\.nowSec\(\), env\.relAge, env\.ageTint\);\s*\n\s*a\._awaitWhy\.replaceChildren\(spin\.dur\.text, d\);/, "the running duration on its own stamped element, on the page\'s clock (applySpin)");
   assert.match(FEED, /else a\._awaitWhy\.textContent = spinCaption;\n\s*a\._awaitSpin\.title = spinTip \|\| spinCaption;/);
 });
 
@@ -46,7 +46,7 @@ test("a bg-task wait wears the compact 'Awaiting task' pill that expands the tas
   assert.doesNotMatch(FEED, /"Waiting on task"/);
   // the pill carries the wait's elapsed time, same readout as the awaiting box (the user 2026-08-23) —
   // as a stamped duration element, so the 15 s live pass moves it (durNodes mirrors waitedSuffix's rule)
-  assert.match(FEED, /pillLbl\.append\(\.\.\.durNodes\(it\.awaiting && it\.awaiting\.since\)\);\s*\/\/ the waited time, live/);   // appended after the (possibly coloured) word since slice 2
+  assert.match(FEED, /pillLbl\.append\(\.\.\.env\.durNodes\(it\.awaiting && it\.awaiting\.since\)\);\s*\/\/ the waited time, live/);   // appended after the (possibly coloured) word since slice 2; the ages come from the page's environment (card-sections.ts)
   assert.match(FEED, /taskBtn\.onclick = pick\("tasks"\);/);
   // expanded rows render in the checklist spot, same view as Sub-goals, the swirl as each row's mark
   assert.match(FEED, /if \(choice === "tasks"\) \{[\s\S]*?el\("div", "fcheck ftask" \+ \(sub \? " ftask-sub" : ""\)\)[\s\S]*?ftask-swirl/);   // + the nested-row marker (2026-09-10)
@@ -66,7 +66,7 @@ test("each case carries a concise tooltip on the swirl (hover → the key idea, 
 });
 
 test("the swirl's Analyzing caption REPLACES the '↩ re-judging' chip (no double-labeling)", () => {
-  assert.match(FEED, /if \(spinCaption === "Analyzing…"\) a\._followedup\.style\.display = "none";/);
+  assert.match(FEED, /if \(it\.recheck && spinCaption !== "Analyzing…"\) out\.push\(badge\("fask-followedup", BADGE_WORDS\.rejudging\.text, BADGE_WORDS\.rejudging\.title\)\);/, "the chip yields to the caption inside stateBadges, which takes the caption the page drew"); assert.match(FEED, /a\._badges\.replaceChildren\(\.\.\.stateBadges\(it, sectionEnv, spinCaption\)\);/);
 });
 
 test("the awaiting case gets a rounded box, its swirl SPINS, and its caption wraps to two lines (the user 2026-07-04)", () => {
@@ -97,7 +97,7 @@ test("a DELEGATION wait names its peers like the ↪ from line — identity colo
   assert.match(FEED, /nm\.replaceChildren\(\.\.\.hostPartsNodes\(p\.host, p\.name\)\);/);
   assert.match(FEED, /if \(p\.color && p\.color\.bg\) nm\.style\.color = p\.color\.bg;/);
   // the elapsed readout survives the structured path (the pill/box parity rule of 2026-08-23)
-  assert.match(FEED, /a\._awaitWhy\.append\(\.\.\.durNodes\(it\.awaiting && it\.awaiting\.since\)\);/);
+  assert.match(FEED, /a\._awaitWhy\.append\(\.\.\.env\.durNodes\(it\.awaiting && it\.awaiting\.since\)\);/);
   // older kernels ship no peers → the ladder's plain caption is the fallback
   assert.match(FEED, /else a\._awaitWhy\.textContent = spinCaption;/);
   // federation attributes a kernel-local peer to that kernel and prefixes its sid, exactly as it

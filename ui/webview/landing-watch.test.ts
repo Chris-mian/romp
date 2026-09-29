@@ -99,7 +99,7 @@ test("the send, the reconcile's verdicts and the send row reach the watch; each 
   const decl = RENDER.indexOf("const landingWatch = new LandingWatch();");
   assert.ok(decl > 0 && decl < RENDER.indexOf("\nfunction registerOptimistic("), "declared ahead of every caller, beside the pending sends");
   assert.match(body("registerOptimistic"), /try \{ if \(p\.qid\) landingWatch\.send\(id, p\.qid, p\.ts\); \} catch \{/);
-  assert.match(body("reconcileOptimisticInner"), /const r = reconcilePending\(s\.events as TailEvent\[\], list\);\n\s*noteLandings\(s\.id, s\.events, r\);/);
+  assert.match(body("reconcileOptimisticInner"), /const r = reconcilePending\(s\.events as TailEvent\[\], list, clearBoundary\);\n\s*noteLandings\(s\.id, s\.events, r\);/);
   const nl = body("noteLandings");
   assert.match(nl, /try \{[\s\S]*landingWatch\.claim\(sid, p\.qid, events\[idx\]\?\.uuid\)[\s\S]*landingWatch\.lost\(sid, p\.qid\)[\s\S]*\} catch \{/);
   assert.match(body("routeUserMessage"), /data: \{ sid, key: qid, ts: Date\.now\(\)/, "the send row carries the id the landed row names");

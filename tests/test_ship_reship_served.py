@@ -121,11 +121,13 @@ class SourcePins(unittest.TestCase):
         # dismissal of the last pending chip and the ack landing on another tab, just before it), one task before the
         # owed reload fires, so the toast was never read and the loss toast above has nothing to say (shipsInFlight is
         # already empty). The core's synchronous hook keeps the toasts on screen in this tab's sessionStorage and the
-        # fresh page shows them once, after the loss toast (reload-notices.ts); pagehide keeps the scroll record alone,
-        # so a load the user asks for replays nothing. NackNoticeSurvivesReload executes the nack's.
+        # fresh page shows them once, after the loss toast (reload-notices.ts); pagehide keeps the reader's place and
+        # view alone — the scroll record and the comment thread they had open (reload-comment.ts) — so a load the user
+        # asks for replays no toast. NackNoticeSurvivesReload executes the nack's.
         self.assertIn("(window as any).__rompPersistForReload = persistForReload;", RENDER)
-        self.assertIn("function persistForReload(): void { persistScrollForReload(); persistNoticesForReload(); }", RENDER)
+        self.assertIn("function persistForReload(): void { persistScrollForReload(); persistNoticesForReload(); persistCommentForReload(); }", RENDER)
         self.assertIn('window.addEventListener("pagehide", persistScrollForReload);', RENDER)
+        self.assertNotIn('window.addEventListener("pagehide", persistNoticesForReload);', RENDER)
         self.assertIn('keepReloadNotices(sessionStorage, liveNotices(document.getElementById("warn-toasts")))', RENDER)
         self.assertIn("for (const text of takeReloadNotices(sessionStorage)) warnToast(text);", RENDER)
         self.assertLess(RENDER.index("shipsInFlight: [] });"), RENDER.index("takeReloadNotices(sessionStorage)"),

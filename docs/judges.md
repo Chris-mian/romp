@@ -451,11 +451,18 @@ event).
 - **An empty reply never counts.** `parse` means the model's own text was
   rejected, and the row carries the reply tail so the log says why. Empty
   replies (the rate gate, a failed call) log nothing at the caller and
-  never burn a retry cap, with two exceptions, both the closer's, both
-  adopting a turn loudly on their own event: a safeguards refusal of the
-  turn's content, and a *killed* call (one the timer ended; never an API
-  error or a process that ended any other way), each counted against the
-  turn it happened on. The kill streak is described below.
+  never burn a retry cap, with three exceptions, each a call the same item
+  would fail again identically. Two are the closer's, both adopting a turn
+  loudly on their own event: a safeguards refusal of the turn's content,
+  and a *killed* call (one the timer ended; never an API error or a process
+  that ended any other way), each counted against the turn it happened on.
+  The third is the planner's work run (2026-09-23): a content refusal of the
+  segment (the safeguards flag or the classifier-stop envelope,
+  `_REFUSAL_ENVELOPE_RE`) is struck against that segment's
+  `PLAN_PARSE_RETRIES` counter and resolved at the cap as a parse reject is,
+  a user message hard-placed and a non-user segment dropped, the `give-up`
+  row naming the refusal. A transient failure (a rate limit, an auth blip,
+  a dead CLI) still counts nothing. The kill streak is described below.
 - **Every judge is capped.** Three genuine parse rejects on the same work
   item (`JUDGE_FAIL_CAP`) and the judge gives up loudly, one `give-up` row
   naming the re-arm event, instead of retrying every pass forever:
@@ -463,7 +470,7 @@ event).
 | Judge | On failure | Re-arms |
 |---|---|---|
 | opener, live re-plan | hard-places at card level immediately | (no retries needed) |
-| planner (work run) | 3 tries, then hard-place a user message / drop a non-user segment | on its next segment |
+| planner (work run) | 3 parse rejects or content refusals, then hard-place a user message / drop a non-user segment | on its next segment |
 | placer | files at the card immediately | (no retries needed) |
 | closer | 3 parse rejects, or 3 killed calls, then skips the turn | when the turn gains atoms |
 | archiver | 3 tries, then keeps serving the old headline | when the session gains a turn |

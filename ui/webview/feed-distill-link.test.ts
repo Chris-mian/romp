@@ -8,20 +8,20 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
-const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the line's landing moved to card-sections.ts (round two of the box content PR: one builder for the card and the Needs you row)
+const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.css"), "utf8");   // the card's sections moved to a sheet both pages import (plans/needs-you.md)
 
 test("the CARD's distiller line links to it.summaryAnchorUuid (work anchor), only when shown + anchored", () => {
   // applyDistillLine returns whether the line is shown; the link wires only when shown AND there's an anchor
   // a NOTICE card has no distiller line (the user 2026-09-19): the notice branch hides the line and yields no shown text; a goal card's line is applyDistillLine's
   assert.match(FEED, /const distillShown = it\.notice \? \(\(\(a\._distill as HTMLElement\)\.style\.display = "none"\), ""\)[^\n]*\n\s*: applyDistillLine\(a\._distill as HTMLElement, dCompleted, dBlocked, it\.summary, it\.blockSummary\);/);
   assert.match(FEED, /if \(distillShown && it\.summaryAnchorUuid\) \{/);
-  assert.match(FEED, /dl\.classList\.add\("fask-distill-link"\)/);
-  assert.match(FEED, /type: "showOnTimeline", itemId: it\.itemId, sid: it\.sid, t: it\.t, anchor: "work", anchorUuid: it\.summaryAnchorUuid/);
+  assert.match(FEED, /dle\.classList\.add\("fask-distill-link"\)/);
+  assert.match(FEED, /"sec-landing": \(el, ev\) => \{ ev\.stopImmediatePropagation\(\); const p = item\(el\); if \(p && el\.dataset\.uuid\) env\.landing\(p\.it, \{ anchorUuid: el\.dataset\.uuid, quote: el\.dataset\.quote, anchor: "work" \}\); \},/, "the line\'s click lands through the page (card-sections.ts sectionActs, the delegated landing act)"); assert.match(FEED, /type: "showOnTimeline", itemId: it\.itemId, sid: it\.sid, t: it\.t, anchor: target\.anchor, anchorUuid: target\.anchorUuid, quote: target\.quote/, "which the feed posts to the timeline");
   // stopPropagation so the link doesn't ALSO open the modal (the card-body click)
-  assert.match(FEED, /dl\.onclick = \(ev: Event\) => \{ ev\.stopPropagation\(\);/);
+  assert.match(FEED, /dle\.dataset\.act = "sec-landing"; dle\.dataset\.uuid = it\.summaryAnchorUuid;/);   // delegated through data-act (round three of the box content PR: rebuilt nodes carry no handler of their own; sectionActs routes the act)
   // and it's cleared (non-clickable) when there's nothing to link to
-  assert.match(FEED, /dl\.classList\.remove\("fask-distill-link"\);\s*\n\s*dl\.onclick = null;/);
+  assert.match(FEED, /dle\.classList\.remove\("fask-distill-link"\);\s*\n\s*delete dle\.dataset\.act; delete dle\.dataset\.uuid; delete dle\.dataset\.quote;/);
 });
 
 test("the MODAL node summary is also a link (parity), to the node's work anchor via goWork", () => {
@@ -47,6 +47,6 @@ test("an anchorless summary still acknowledges the click with a visible toast (t
   // the line used to render as silently dead text — no hover affordance, no click, no error anywhere.
   // It must keep the link affordance and honestly say why the jump can't happen.
   assert.match(FEED, /\} else if \(distillShown\) \{/);
-  assert.match(FEED, /dl\.title = "no anchor recorded for this card";/);
+  assert.match(FEED, /dle\.title = "no anchor recorded for this card";/);
   assert.match(FEED, /feedToast\("couldn't locate this in the transcript — no anchor was recorded for this card"\)/);
 });

@@ -42,10 +42,28 @@ test("applyTabOrder arranges the seed on such a page, before every rule that rea
   // it read the same ids they always did; only their order differs
   assert.match(RENDER, /const seed = Array\.isArray\(o\) \? o\.filter\(\(x: any\) => typeof x === "string"\) : \[\];\n(?:\s*\/\/[^\n]*\n)*\s*const kernelOrder = paneArranges\(window as any\) \? applyViewOrder\(seed, readViewOrder\(\)\) : seed;\n\s*ackClosingTabs\(kernelOrder, report\);/,
     "arranged once, at the adoption point, ahead of ackClosingTabs and the reconcile");
-  assert.match(RENDER, /import \{ applyViewOrder, readViewOrder, writeViewOrder \} from "\.\/view-order";/, "the read and the write come from the one module");
+  assert.match(RENDER, /import \{ applyViewOrder, hearSharedOrder, readViewOrder, setViewOrderPublisher, writeViewOrder \} from "\.\/view-order";/, "the read and the write come from the one module");
   assert.match(RENDER, /import \{ listenForFrames, federationMissing, federationLoadEntry, fedRetryKey, paneArranges \} from "\.\/frame-listener";/);
   // the arrangement is re-read per frame, never cached (view-order-wiring.test.ts holds the manager to the same rule)
   assert.doesNotMatch(RENDER, /const viewOrder = readViewOrder\(\);/);
-  // the write side is untouched: a drag still writes the browser's store and a page without its manager never writes
+  // the write side is untouched: a drag still writes the arrangement and a page without its manager never writes
   assert.match(RENDER, /function commitTabOrder\(\) \{\n\s*if \(fedMissing\) return;[^\n]*\n\s*writeViewOrder\(order\.slice\(\)\);/);
+});
+
+test("such a page is a viewer of the kernel like any other: it publishes its arrangement and takes the kernel's", () => {
+  // Since 2026-09-23 the arrangement is the KERNEL'S to keep, so this page must reach it too — its host
+  // pipes every message through verbatim, which is all the wiring it needs. Without the publish, a drag
+  // here would move this panel's tabs and nobody else's; without the adopt, a drag on the phone would
+  // never reach this panel. The predicate is the same one that decides the arranging above, so a page
+  // WITH a manager installs neither (the manager owns both halves) and a page whose manager is MISSING
+  // installs neither either — an order that never passed through the arrangement is never published.
+  // The publisher is installed by HEARING the kernel's arrangement, never at boot (review find on #2062,
+  // 2026-09-23: a page speaking before it has heard puts a stale or empty copy over every device's), and the
+  // pipe's down edge withdraws it until the next connection's frame.
+  assert.doesNotMatch(RENDER, /^if \(paneArranges\(window as any\)\) setViewOrderPublisher\(/m, "not at boot");
+  assert.match(RENDER, /else if \(m\.type === "viewOrder" && paneArranges\(window as any\)\) \{/);
+  assert.match(RENDER, /if \(hearSharedOrder\(served, m\.stored === true, \(o\) => vscodeApi\?\.postMessage\(\{ type: "setViewOrder", order: o\.slice\(\) \}\), setViewOrderPublisher\)\) \{/,
+    "the migration, the merge and the install are the shared implementation, not a second copy of the rule");
+  // (the folds' publisher goes with it, 2026-09-23: the same frame granted both; tab-folds-shared.test.ts)
+  assert.match(RENDER, /if \(m\.type === "pipeState" && !m\.up && paneArranges\(window as any\)\) \{ setViewOrderPublisher\(null\); setFoldsPublisher\(null\); \}/);
 });

@@ -10,18 +10,23 @@ scraping the page's own hidden #tabs strip, so it lists whatever the strip rende
 the phone layout the plan used to FLATTEN: planStrip(phone=true) returned the visible ids in their raw
 view order with no headings, since a folded section there would have hidden its members from the
 phone's only switcher. The two surfaces therefore read the same ids in two orders. Now the phone plan
-sections like the desktop's (nothing folds there: the picker's heading is a label, not a fold control,
-so every session stays reachable), and the picker mirrors the strip's children one for one: a heading
-row per group header (the tag's chip and the count, cloned from the header), a row per tab copy, a
-divider where the trail begins.
+sections like the desktop's, and since 2026-09-23 it folds like it too, from the folds the kernel keeps
+for every device (the user asked to fold groups on the phone, synced with the desktop): the picker's
+heading is the fold control, so a folded group's sessions stay one tap away. The picker mirrors the
+strip's children one for one: a heading row per group header (the tag's chip, the caret and the count,
+cloned from the header), a row per tab copy, a divider where the trail begins.
 
 This lab drives a hermetic kernel's real /chat page twice: a desktop context reads the strip's children,
 a phone context (a coarse pointer under 1024 px, the kernel's own media rule) opens the picker and reads
 its rows; the two sequences must be identical. It also taps a copy under its second tag (the session
-opens), taps a heading (nothing opens, the list stays), and folds a group in the phone's own store (the
-phone lists its members regardless, where the desktop hides them). Skips LOUDLY without the extension
-deps or a Playwright browser. SYNTHETIC fixtures only (the notes-api demo world, host TESTHOST,
-placeholder sids). MOBILE_ORDER_DUMP=<path> writes the whole measurement."""
+opens), taps a heading (nothing opens, the list stays open, the group folds and a second tap opens it),
+and folds a group on the desktop (the phone's picker folds it the same way). The arrangement and the
+folds are the kernel's since 2026-09-23 (view-order.ts, tab-groups.ts), so the trail matrix resets the
+kernel's viewer store along with both browsers' keys, and a desktop's arrangement reaches the phone.
+Skips LOUDLY without the extension deps or a Playwright browser. The lab kernel never reaches the
+machine's user manager: a `systemctl` and a `systemd-run` of the lab's own shadow the real ones on its
+PATH. SYNTHETIC fixtures only (the notes-api demo world, host TESTHOST, placeholder sids).
+MOBILE_ORDER_DUMP=<path> writes the whole measurement."""
 import json
 import os
 import re
@@ -65,9 +70,10 @@ MEMBERS = {"qa": {"tests", "docs", "deploy"}, "infra": {"web", "api", "deploy"},
 TRAIL_ARRIVAL = ["auth", "search", "cache", "worker"]   # the order the four loose sessions were created in
 TRAIL_RENDERED = ["worker", "cache", "search", "auth"]  # …and the order a viewer that never dragged shows: the
 #   kernel lists newest first, and an empty arrangement is view-order.ts's identity transform over that seed
-# ONE VIEWER'S ARRANGEMENT (romp:vieworder, per browser by the user's 2026-07-31 ruling): the whole
-# rendered order as a drag writes it (commitTabOrder is dense), with the TRAIL reversed — what a desktop
-# that has dragged its loose tabs holds while a phone that never dragged holds nothing
+# ONE VIEWER'S ARRANGEMENT: the whole rendered order as a drag writes it (commitTabOrder is dense), with the
+# TRAIL reversed — what a desktop that has dragged its loose tabs holds. Seeded as the pre-move key
+# (romp:vieworder), which a browser publishes when the kernel keeps no arrangement (view-order.ts, 2026-09-23),
+# so it reaches a phone that never dragged
 DRAG_NAMES = ["web", "tests", "api", "docs", "deploy", "mailer", "search", "worker", "auth", "cache"]
 TRAIL_DRAGGED = ["search", "worker", "auth", "cache"]   # neither the arrival nor the rendered order: unmistakably a drag
 # THE LATE ARRIVALS: two untagged sessions that land while the desktop is open and the phone is not — the
@@ -78,7 +84,7 @@ NAME_OF.update({v: k for k, v in LATE_SIDS.items()})
 # tab NODES on a full strip: every group's members (3 + 3 + 1) plus the trail's four — deploy counted
 # twice, once per group, as the strip draws a copy per tag
 FULL_NODES = 3 + 3 + 1 + 4
-FOLDED_DESK_NODES = FULL_NODES - 3        # qa folded on the desktop hides its three members
+FOLDED_DESK_NODES = FULL_NODES - 3        # qa folded hides its three members, on the desktop and (since 2026-09-23) the phone
 LENS_NODES = 3 + 3 + 1                    # the lens narrowed to the tags: no trail at all
 HEADS = 3                                 # qa, infra, solo (`empty` holds nothing, so it yields no section)
 
@@ -112,7 +118,8 @@ const SEQ = `(root, k) => Array.from(root ? root.children : []).map((el) => {
   if (el.matches(k.sep)) return "sep";
   if (el.matches(k.tab)) return "t:" + el.dataset.id + "/" + (el.dataset.copy === undefined ? "-" : el.dataset.copy);
   return null; }).filter(Boolean)`;
-const STRIP = { head: ".tab-group-head[data-group]", sep: ".tab-group-sep", tab: ".tab[data-id]" };
+// (the phone's folded-away active tab, .tab-away, is read by its picker's chip and never listed: not a strip item here either)
+const STRIP = { head: ".tab-group-head[data-group]", sep: ".tab-group-sep", tab: ".tab[data-id]:not(.tab-away)" };
 const PICKER = { head: ".mhead[data-group]", sep: ".msep", tab: ".mrow[data-id]" };
 const readStrip = (page) => page.evaluate(([seq, k]) => (0, eval)(seq)(document.getElementById("tabs"), k), [SEQ, STRIP]);
 const readPicker = (page) => page.evaluate(([seq, k]) => (0, eval)(seq)(document.getElementById("mlist"), k), [SEQ, PICKER]);
@@ -122,7 +129,7 @@ const readPicker = (page) => page.evaluate(([seq, k]) => (0, eval)(seq)(document
 const FULL_NODES = cfg.nodes.full, HEADS = cfg.heads;
 const settle = async (page, nodes = FULL_NODES, heads = HEADS) => {
   // attached, not visible: the phone page hides #tabs (display:none) and still renders every tab into it
-  await page.waitForFunction((n) => document.querySelectorAll("#tabs .tab[data-id]").length === n, nodes, { timeout: 30000 });
+  await page.waitForFunction((n) => document.querySelectorAll("#tabs .tab[data-id]:not(.tab-away)").length === n, nodes, { timeout: 30000 });
   await page.waitForFunction((h) => document.querySelectorAll("#tabs .tab-group-head[data-group]").length === h, heads, { timeout: 15000 }).catch(() => {});
   await page.waitForTimeout(300);
 };
@@ -139,14 +146,15 @@ const openPicker = async (page, nodes = FULL_NODES) => {
 const setLS = (page, k, v) => page.evaluate(([k, v]) => { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); }, [k, v]);
 const state = (page) => page.evaluate((m) => {
   const vis = (el) => !!el && getComputedStyle(el).display !== "none" && el.getClientRects().length > 0;
-  const act = document.querySelector("#tabs .tab.active[data-id]");
+  const act = document.querySelector("#tabs .tab.active[data-id]:not(.tab-away)");
   const cur = document.querySelector("#mcur .nm");
   return { phoneLayout: window.matchMedia(m).matches, stripVisible: vis(document.getElementById("tabs")),
            headerVisible: vis(document.getElementById("mhdr")), listOpen: !!document.querySelector("#mlist.open"),
            active: act ? act.dataset.id : null, current: cur ? cur.textContent.trim() : null,
            activeRows: Array.from(document.querySelectorAll("#mlist .mrow.active")).map((r) => r.dataset.id),
            rowNames: Array.from(document.querySelectorAll("#mlist .mrow[data-id]")).map((r) => (r.querySelector(".nm") || r).textContent.trim()),
-           headTexts: Array.from(document.querySelectorAll("#mlist .mhead")).map((h) => h.textContent.trim()) };
+           headTexts: Array.from(document.querySelectorAll("#mlist .mhead")).map((h) => h.textContent.trim()),
+           folded: Array.from(document.querySelectorAll("#mlist .mhead.folded")).map((h) => h.dataset.group) };
 }, MEDIA);
 const out = {};
 // 1. the DESKTOP strip: a mouse, a wide window — the order the user sees on their desktop
@@ -175,34 +183,32 @@ if (copies.length) {
   await page.waitForTimeout(300);
   Object.assign(out.tapCopy, await state(page));
 }
-// 4. a heading is a label, not a pick: tapped, the list stays open and nothing opens
+// 4. a heading is the FOLD control (2026-09-23), never a pick: tapped, nothing opens, the list stays open and the group
+//    folds; tapped again, it opens. The fold is the kernel's now (every device's), so the second tap also restores the rest
+//    of this run's starting point
 await page.evaluate(() => { const l = document.getElementById("mlist"); if (l && !l.classList.contains("open")) document.getElementById("mcur").click(); });
-await page.waitForTimeout(200);
+await page.waitForSelector("#mlist.open", { timeout: 10000 });
 const before = await state(page);
-const head = await page.$("#mlist .mhead[data-group]");
+const head = await page.$('#mlist .mhead[data-group="qa"]');
 out.tapHead = { present: !!head, before: before.active };
 if (head) {
   await head.tap();
-  await page.waitForTimeout(400);
-  Object.assign(out.tapHead, await state(page));
+  await page.waitForFunction(() => { const h = document.querySelector('#mlist .mhead[data-group="qa"]'); return !!h && h.classList.contains("folded"); }, null, { timeout: 10000 }).catch(() => {});
+  Object.assign(out.tapHead, await state(page), { picker: await readPicker(page) });
+  await page.tap('#mlist .mhead[data-group="qa"]');
+  await page.waitForFunction(() => { const h = document.querySelector('#mlist .mhead[data-group="qa"]'); return !!h && !h.classList.contains("folded"); }, null, { timeout: 10000 }).catch(() => {});
+  out.tapHead.reopened = { ...(await state(page)), picker: await readPicker(page) };
 }
-// 5. a FOLD in the phone's own store: qa folded. The desktop hides qa's members under its header; the phone lists
-//    them regardless — its heading is a label, the picker its only switcher, so nothing may fold out of reach
-const FOLD = JSON.stringify({ on: true, collapsed: ["qa"], expanded: [], pinned: [] });
-await page.evaluate((v) => localStorage.setItem("romp:tabgroups", v), FOLD);
-await page.reload();
-await settle(page);
-await page.tap("#mcur");
-await page.waitForSelector("#mlist.open", { timeout: 10000 });
-await pickerReady(page);
-await page.waitForTimeout(300);
-out.phoneFolded = { strip: await readStrip(page), picker: await readPicker(page), ...(await state(page)) };
-await dpage.evaluate((v) => localStorage.setItem("romp:tabgroups", v), FOLD);
-await dpage.reload();
-await dpage.waitForFunction(() => document.querySelectorAll("#tabs .tab[data-id]").length >= 5, null, { timeout: 30000 });   // qa's three folded away
-await dpage.waitForFunction(() => document.querySelectorAll("#tabs .tab-group-head[data-group]").length >= 2, null, { timeout: 15000 }).catch(() => {});
-await dpage.waitForTimeout(300);
+// 5. a FOLD on the desktop: its qa header clicked. The desktop hides qa's members under its header, and the phone's picker,
+//    open and never reloaded, does the same (the kernel's push of the folds, 2026-09-23); then the desktop opens it again
+await dpage.click('#tabs .tab-group-head[data-group="qa"]');
+await dpage.waitForFunction((n) => document.querySelectorAll("#tabs .tab[data-id]:not(.tab-away)").length === n, cfg.nodes.foldedDesk, { timeout: 15000 }).catch(() => {});
+await page.waitForFunction(() => { const h = document.querySelector('#mlist .mhead[data-group="qa"]'); return !!h && h.classList.contains("folded"); }, null, { timeout: 15000 }).catch(() => {});
+await pickerReady(page, cfg.nodes.foldedDesk);
 out.desktopFolded = { strip: await readStrip(dpage), ...(await state(dpage)) };
+out.phoneFolded = { strip: await readStrip(page), picker: await readPicker(page), ...(await state(page)) };
+await dpage.click('#tabs .tab-group-head[data-group="qa"]');
+await page.waitForFunction(() => { const h = document.querySelector('#mlist .mhead[data-group="qa"]'); return !!h && !h.classList.contains("folded"); }, null, { timeout: 15000 }).catch(() => {});
 // ── THE TRAIL MATRIX (2026-09-23): every case that can move a session between a group and the trail, or
 // reorder the trail, read on BOTH surfaces side by side. Each case sets the two viewers' own stores, reloads
 // both, and records the desktop strip, the phone strip and the phone picker.
@@ -212,26 +218,34 @@ async function probe(label, deskNodes = FULL_NODES, phoneNodes = FULL_NODES, hea
   const desktop = await readStrip(dpage);
   await settle(page, phoneNodes, heads);
   await openPicker(page, phoneNodes);
-  cases.push({ label, desktop, phoneStrip: await readStrip(page), picker: await readPicker(page),
-               order: { desk: await dpage.evaluate(() => localStorage.getItem("romp:vieworder")),
-                        phone: await page.evaluate(() => localStorage.getItem("romp:vieworder")) } });
+  cases.push({ label, desktop, phoneStrip: await readStrip(page), picker: await readPicker(page), order: await orders() });
 }
+// the arrangement each viewer SHOWS (view-order.ts readViewOrder: the kernel's copy once held, else the pre-move key)
+const shown = (p) => p.evaluate(() => { const s = localStorage.getItem("romp:vieworder:shared"); return s !== null ? s : localStorage.getItem("romp:vieworder"); });
+async function orders() { return { desk: await shown(dpage), phone: await shown(page) }; }
 const both = [dpage, page];
-const reset = async (p) => { for (const k of ["romp:vieworder", "romp:tabgroups", "romp:settings"]) await setLS(p, k, null); };
+// A RESET clears both browsers' keys AND the kernel's viewer store: the arrangement and the folds are the kernel's since
+// 2026-09-23 (view-order.json, view-folds.json), served to a browser on every reload, so clearing a browser alone resets nothing
+const KEYS = ["romp:vieworder", "romp:vieworder:shared", "romp:tabgroups", "romp:tabgroups:shared", "romp:settings"];
+const reset = async (p) => { for (const f of cfg.viewerStore) { try { fs.unlinkSync(f); } catch (e) { /* absent */ } } for (const k of KEYS) await setLS(p, k, null); };
 // 1. BASELINE: neither viewer has arranged anything — the identity transform on both, so any difference
 //    here is structural
 for (const p of both) { await reset(p); await p.reload(); }
 await probe("baseline: neither viewer has dragged");
-// 2. THE REAL PAIR: the desktop has dragged its loose tabs (a dense romp:vieworder), the phone never has
-await setLS(dpage, "romp:vieworder", JSON.stringify(cfg.drag)); await dpage.reload();
-await setLS(page, "romp:vieworder", null); await page.reload();
+// 2. THE REAL PAIR: the desktop has dragged its loose tabs, the phone never has. The desktop writes the dense arrangement a drag
+//    writes, through the page's one write (federation.ts __rompWriteOrder, view-order.ts writeViewOrder): cached, published to
+//    the kernel, which keeps it and pushes it to the phone (2026-09-23). The phone is reloaded after, as a device opened later
+await dpage.evaluate((o) => window.__rompWriteOrder(o), cfg.drag);
+await page.waitForFunction((o) => localStorage.getItem("romp:vieworder:shared") === JSON.stringify(o), cfg.drag, { timeout: 15000 }).catch(() => {});
+await page.reload();
 await probe("the desktop has dragged its tabs; the phone has not");
-// 3. …and the same arrangement on both viewers
-await setLS(page, "romp:vieworder", JSON.stringify(cfg.drag)); await page.reload();
+// 3. …and the same arrangement written on both viewers (an unchanged republish: nothing moves)
+await page.evaluate((o) => window.__rompWriteOrder(o), cfg.drag); await page.reload();
 await probe("both viewers carry the same arrangement");
-// 4. a FOLDED group in both stores: the desktop hides qa's members, the phone shows them (#1770, deliberate)
+// 4. a FOLDED group in both stores: both hide qa's members (the phone folds like the desktop since 2026-09-23; until then it
+//    listed them regardless, #1770)
 for (const p of both) { await reset(p); await setLS(p, "romp:tabgroups", JSON.stringify({ on: true, collapsed: ["qa"], expanded: [], pinned: [] })); await p.reload(); }
-await probe("qa folded in both stores", cfg.nodes.foldedDesk, FULL_NODES);
+await probe("qa folded in both stores", cfg.nodes.foldedDesk, cfg.nodes.foldedDesk);
 // 5. ONE TAG GROUP PER ROW off in both: the trail stands behind its visible divider instead of a row break
 for (const p of both) { await reset(p); await setLS(p, "romp:settings", JSON.stringify({ stripGroupRows: false })); await p.reload(); }
 await probe("one tag group per row off in both");
@@ -255,9 +269,9 @@ for (const s of cfg.late) {
   for (const f of s.files) fs.writeFileSync(f[0], f[1]);
   grown += 1;
   await dpage.waitForFunction((n) => document.querySelectorAll("#tabs .tab[data-id]").length === n, grown, { timeout: 30000 });
-  // the adoption writes romp:vieworder synchronously on the frame it renders, so the entry is the event (a local id
-  // sits in that store bare: federation prefixes remote ids only)
-  await dpage.waitForFunction((sid) => JSON.parse(localStorage.getItem("romp:vieworder") || "[]").includes(sid), s.sid, { timeout: 10000 });
+  // the adoption writes the arrangement synchronously on the frame it renders (to the kernel's cached copy since 2026-09-23),
+  // so the entry is the event (a local id sits in that store bare: federation prefixes remote ids only)
+  await dpage.waitForFunction((sid) => JSON.parse(localStorage.getItem("romp:vieworder:shared") || "[]").includes(sid), s.sid, { timeout: 10000 });
 }
 await settle(dpage, grown, HEADS);
 // a phone that opens only NOW, having never seen these sessions: its own fresh profile, never dragged
@@ -268,8 +282,7 @@ await settle(freshPhone, grown, HEADS);
 await openPicker(freshPhone, grown);
 cases.push({ label: "two untagged sessions arrive while only the desktop is open", desktop: await readStrip(dpage),
              phoneStrip: await readStrip(freshPhone), picker: await readPicker(freshPhone),
-             order: { desk: await dpage.evaluate(() => localStorage.getItem("romp:vieworder")),
-                      phone: await freshPhone.evaluate(() => localStorage.getItem("romp:vieworder")) } });
+             order: { desk: await shown(dpage), phone: await shown(freshPhone) } });
 await freshCtx.close();
 // 8. A PICKER ROW REUSED ACROSS A STRIP RE-RENDER (CI, 2026-09-23): the row key collapses a missing copy attribute and the
 //    trail's empty one, so a row made while the strip was flat is reused once the strip sections; its copy attribute must follow
@@ -394,6 +407,13 @@ class ServedMobilePickerOrder(unittest.TestCase):
         for d in ("names", "sdk", "states"):
             os.makedirs(os.path.join(state, d), exist_ok=True)
         Path(state, "session-hosts").write_text("off\n")   # a lab root of its own: no per-session host process (CLAUDE.md, 2026-09-11)
+        # the machine's user manager is not the lab's: these shadow systemctl and systemd-run on the lab kernel's PATH, so
+        # the boot reconcile's scope listing (it lists for every session it finds alive) sees an empty manager
+        cls.fakebin = os.path.join(cls.lab, "fakebin")
+        os.makedirs(cls.fakebin)
+        for tool, body in (("systemctl", "exit 0\n"), ("systemd-run", "echo 'no user manager in this lab' >&2\nexit 1\n")):
+            Path(cls.fakebin, tool).write_text("#!/bin/sh\n" + body)
+            os.chmod(os.path.join(cls.fakebin, tool), 0o755)
         os.makedirs(cwd, exist_ok=True)
         proj = os.path.join(claude, "projects", re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(cwd)))
         os.makedirs(proj, exist_ok=True)
@@ -418,7 +438,8 @@ class ServedMobilePickerOrder(unittest.TestCase):
         Path(state, "timeline-views.json").write_text(json.dumps({"active": "all", "tags": TAGS, "tagOrder": TAG_ORDER}))
         Path(state, "usage.json").write_text(json.dumps({"five_hour": {"pct": 10}, "seven_day": {"pct": 10}}))
         cls.port, cls.token = _free_port(), "testtok-mobileorder"
-        env = _lab.kernel_env(cls.lab, claude, dist, cls.port, cls.token, ROMP_HOST_NAME="TESTHOST")
+        env = _lab.kernel_env(cls.lab, claude, dist, cls.port, cls.token, ROMP_HOST_NAME="TESTHOST", ROMP_CLI_SCOPE="0")
+        env["PATH"] = cls.fakebin + os.pathsep + env.get("PATH", os.environ.get("PATH", ""))
         cls.klog = os.path.join(cls.lab, "kernel.log")
         cls.kernel = subprocess.Popen([os.path.join(BIN, "romp-kernel")], stdout=open(cls.klog, "w"), stderr=subprocess.STDOUT, env=env)
         for _ in range(120):
@@ -473,6 +494,8 @@ class ServedMobilePickerOrder(unittest.TestCase):
                        "nodes": {"full": FULL_NODES, "foldedDesk": FOLDED_DESK_NODES, "lens": LENS_NODES},
                        "drag": [SIDS[n] for n in DRAG_NAMES],
                        "viewsFile": os.path.join(cls.lab, "xdg", "romp", "timeline-views.json"),
+                       # the kernel's viewer store (2026-09-23): the arrangement and the folds every device reads
+                       "viewerStore": [os.path.join(cls.lab, "xdg", "romp", f) for f in ("view-order.json", "view-folds.json")],
                        "baseViews": base_views, "lensViews": lens_views, "late": late}, f)
         driver = os.path.join(cls.lab, "driver.mjs")
         with open(driver, "w") as f:
@@ -525,8 +548,8 @@ class ServedMobilePickerOrder(unittest.TestCase):
         self.assertEqual(sorted(set(p["activeRows"])), [p["active"]], "every row of the active session wears .active (its copies too)")
         self.assertEqual(p["rowNames"], [t.split("/")[0][2:] for t in names(p["picker"]) if t.startswith("t:")],
                          "each row names its session")
-        self.assertEqual(p["headTexts"], ["qa3", "infra3", "solo1"],
-                         "a heading is the tag's chip and the member count, nothing else (no caret: it folds nothing)")
+        self.assertEqual(p["headTexts"], ["qa\u25b83", "infra\u25b83", "solo\u25b81"],
+                         "a heading is the tag's chip, the caret (the fold control's, 2026-09-23) and the member count, nothing else")
         self.assertEqual(p["current"], NAME_OF[p["active"]], "the current-session chip names the active session")
 
     # ── the copies: a session under two tags is a row under each, and either opens it ──
@@ -538,35 +561,41 @@ class ServedMobilePickerOrder(unittest.TestCase):
         self.assertEqual(t["current"], "deploy")
         self.assertFalse(t["listOpen"], "a pick closes the list")
 
-    # ── a heading is a label ──
-    def test_a_heading_is_a_label_not_a_pick(self):
+    # ── a heading is the fold control, never a pick (2026-09-23) ──
+    def test_a_heading_tap_folds_its_group_and_opens_nothing(self):
         r = self._run()
         t = r["tapHead"]
         self.assertTrue(t["present"], "the picker has headings")
-        self.assertEqual(t["active"], t["before"], "tapping a heading opens nothing")
+        self.assertEqual(t["active"], t["before"], "tapping a heading opens no session")
         self.assertTrue(t["listOpen"], "…and the list stays open for the pick")
+        self.assertEqual(t["folded"], ["qa"], "the heading folded its group")
+        self.assertEqual(sections(t["picker"])[0], ("qa", set()), "qa lists its heading alone: %s" % names(t["picker"]))
+        again = t["reopened"]
+        self.assertEqual((again["folded"], again["listOpen"], again["active"]), ([], True, t["before"]), "a second tap opens it; still no pick")
+        self.assertEqual(names(again["picker"]), names(r["desktop"]["strip"]), "and the picker reads as the desktop strip again")
 
-    # ── folds are the desktop's: the phone hides no session from its only switcher ──
-    def test_a_fold_hides_nothing_on_the_phone_where_the_desktop_folds(self):
+    # ── folds are every device's: a fold on the desktop folds the phone's picker the same way (2026-09-23) ──
+    def test_a_fold_on_the_desktop_folds_the_phone_picker_the_same_way(self):
         r = self._run()
-        self.assertEqual(names(r["phoneFolded"]["picker"]), names(r["desktop"]["strip"]),
-                         "qa folded in the phone's store: the phone lists qa's members regardless, in the strip's order")
         self.assertEqual(sections(r["desktopFolded"]["strip"]),
                          [("qa", set()), ("infra", MEMBERS["infra"]), ("solo", MEMBERS["solo"]), (None, MEMBERS[None])],
-                         "the same store on the desktop folds qa: its header alone, no member tab")
+                         "the desktop folds qa: its header alone, no member tab")
+        self.assertEqual(names(r["phoneFolded"]["picker"]), names(r["desktopFolded"]["strip"]),
+                         "the phone's picker, never reloaded, reads exactly as the desktop strip: qa's heading alone (#1770's "
+                         "never-fold rule is superseded by the user's ruling of 2026-09-23)")
+        self.assertEqual(r["phoneFolded"]["folded"], ["qa"])
 
     # ── THE TRAIL (the user 2026-09-23: the groups match now, the ungrouped tabs do not) ──
-    # The measured answer (the table this class prints): the trail's MEMBERSHIP never diverges, and its ORDER
-    # diverges in exactly one case — the two viewers hold different arrangements of their own. That one is
-    # deliberate and is pinned as such below; every other case must read alike.
-    DELIBERATE = "the desktop has dragged its tabs; the phone has not"
+    # The measured answer (the table this class prints): the trail's MEMBERSHIP never diverges, and since the kernel keeps
+    # the viewer's arrangement (view-order.ts, 2026-09-23) neither does its ORDER: the one case that used to differ, a
+    # desktop that had dragged and a phone that had not, now reads alike (pinned on its own below).
+    DRAGGED = "the desktop has dragged its tabs; the phone has not"
 
     def test_the_trail_reads_the_same_on_both_surfaces_in_every_case(self):
         """Whatever moves a session between a group and the trail, or reorders the trail, the phone picker's
-        trail and the desktop strip's read alike — same members, same order. The one exception is the case
-        below, where the two VIEWERS have arranged their tabs differently."""
+        trail and the desktop strip's read alike — same members, same order, in every case."""
         cases = self._matrix()
-        bad = [c for c in cases if c["label"] != self.DELIBERATE and trail(c["desktop"]) != trail(c["picker"])]
+        bad = [c for c in cases if trail(c["desktop"]) != trail(c["picker"])]
         self.assertEqual([c["label"] for c in bad], [],
                          self._trail_table(cases) + "".join(self._rows_table(c) for c in bad))
 
@@ -578,22 +607,18 @@ class ServedMobilePickerOrder(unittest.TestCase):
                for c in cases if set(trail(c["desktop"]) or []) != set(trail(c["picker"]) or [])]
         self.assertEqual(bad, [], self._trail_table(cases))
 
-    def test_the_one_deliberate_difference_is_each_viewers_OWN_arrangement_and_reorders_nothing_else(self):
-        """The residual, made deliberate rather than left accidental (the user's own ruling of 2026-07-31,
-        view-order.ts: the arrangement is a property of how you are LOOKING at your sessions, so dragging a
-        tab on one machine must not move it on another). The strip and the picker derive from the ONE plan;
-        what the two surfaces do not share is the per-browser arrangement the plan is fed. So a desktop that
-        has dragged its loose tabs reads in ITS order and a phone that never has reads the kernel's — the same
-        sessions, under the same headings, in each viewer's own sequence."""
-        c = next(c for c in self._matrix() if c["label"] == self.DELIBERATE)
+    def test_a_desktops_arrangement_reaches_the_phone_that_never_dragged(self):
+        """The difference that used to be deliberate, gone: until 2026-09-23 the arrangement was each browser's own (the
+        2026-07-31 ruling), so a desktop that had dragged its loose tabs read in its order and a phone that never had read
+        the kernel's. The kernel keeps the viewer's arrangement now, so the desktop's reaches the phone: the same sessions,
+        under the same headings, in the one sequence the desktop dragged them into."""
+        c = next(c for c in self._matrix() if c["label"] == self.DRAGGED)
         d, p = trail(c["desktop"]), trail(c["picker"])
-        self.assertEqual(d, TRAIL_DRAGGED, "the desktop renders its own arrangement: %s" % self._rows_table(c))
-        self.assertEqual(p, TRAIL_RENDERED, "the phone, which has never dragged, renders the kernel's order: %s" % self._rows_table(c))
-        self.assertEqual(set(d), set(p), "…and the difference is a REORDER: no session moves in or out of the trail")
-        self.assertNotEqual(c["order"]["desk"], c["order"]["phone"], "the two arrangements are what differ, not the plan")
-        # the headings and their order come from the kernel's shared tagOrder, so they agree even here
+        self.assertEqual(d, TRAIL_DRAGGED, "the desktop renders its arrangement: %s" % self._rows_table(c))
+        self.assertEqual(p, TRAIL_DRAGGED, "and so does the phone, which never dragged: %s" % self._rows_table(c))
+        self.assertEqual(c["order"]["desk"], c["order"]["phone"], "the two viewers hold the one arrangement")
         self.assertEqual([n for n, _ in sections(c["desktop"])], [n for n, _ in sections(c["picker"])],
-                         "the groups still read alike: their order is the kernel's tagOrder, shared by every viewer")
+                         "the groups read alike too: their order is the kernel's tagOrder")
 
     def test_every_case_the_phone_picker_mirrors_its_own_pages_strip(self):
         """The picker is built from the strip it sits on, so these can never differ — a case where they do

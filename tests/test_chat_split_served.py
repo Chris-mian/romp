@@ -36,7 +36,7 @@ driver run walks the whole story in order, each step landing in its own assertio
      state for a session it no longer shows to the shell, which hands it to the column that does;
  11. THE VANISHING TAB (the user 2026-09-12): B, column 1's ACTIVE tab, dragged into the edge while another pane's
      arrangement write reaches the new column ahead of the kernel's first strip (column 2's kernel frames held at the
-     wire until the shell has rewritten romp:vieworder): column 2 stands and lists B once its strip lands, no colEmpty
+     wire until the shell has rewritten romp:vieworder:shared): column 2 stands and lists B once its strip lands, no colEmpty
      is posted, column 1 re-points to a member of its own, and past the close backstop (shortened for the lab) a strip
      change raises no "Couldn't close" toast;
  12. the hold behind that toast is for the user's own cross: a colEmpty naming a session the kernel still lists, with no
@@ -358,7 +358,7 @@ const pickTabMenu = async (fid, sid, label) => {
 };
 const dialogShown = () => waitFn(() => { const b = document.getElementById("rkeys-back"); return !!b && !b.hidden; }, null, "the recorder never opened");
 const dialogGone = (why) => waitFn(() => { const b = document.getElementById("rkeys-back"); return !!b && b.hidden; }, null, why);
-const hotkeyRows = () => page.evaluate(() => { window.__rompKeysOpen(); const rows = Array.from(document.querySelectorAll("#rkeys-list .rkeys-title")).map((t) => t.textContent).filter((t) => t.startsWith("Switch to ")); window.__rompKeysClose(); return rows; });
+const hotkeyRows = () => page.evaluate(() => { window.__rompKeysOpen(); const rows = Array.from(document.querySelectorAll('#rkeys-list .rkeys-row[data-cmd^="session.hotkey."] .rkeys-title')).map((t) => t.textContent); window.__rompKeysClose(); return rows; });   // by the row's command id (data-cmd), never the title: a command titled "Switch to …" is not a hot key (2026-09-23)
 const stores = () => page.evaluate(() => ({ tabkeys: JSON.parse(localStorage.getItem("romp:tabkeys") || "{}"), keys: JSON.parse(localStorage.getItem("romp:keys") || "{}") }));
 out.hk = { mac: await page.evaluate(() => /Mac|iP(hone|ad|od)/.test(navigator.platform || "")) };
 out.hk.badgeB = await badgeOf("f-chat-2", cfg.sidB);        // B lives in column 2 (step 2): its tab there wears the keycap
@@ -420,6 +420,39 @@ await page.keyboard.press("Escape");
 await dialogGone("Esc never closed the solo recorder");
 await waitFn(() => document.activeElement && document.activeElement.id === "f-chat-2" && document.getElementById("f-chat-2").contentDocument.activeElement.id === "composer-input", null, "the focus never came back after Esc");
 out.hk.cancelled = { afterCancel: await whereFocus("f-chat-2"), badgeB: await badgeOf("f-chat-2", cfg.sidB), ...(await stores()), dialogRows: await hotkeyRows() };   // the focus first: listing the dialog's rows opens (and closes) it
+
+// ---- 2d'. the session pair by key (the user 2026-09-23): "Go to the next / previous session" on Ctrl+Alt+→ / ← — from a
+// column's COMPOSER the chord steps that column's own tabs (never the other column's), keeps the keyboard in the composer
+// with each tab's own draft, wraps, and from another column steps that one instead (the column last worked in) ----
+await clickIn("f-chat-2", "#composer-input"); await waitFocused("f-chat-2");   // the dialog listing above moved the focus: the press starts in column 2's composer
+out.tc = { before: { col1: await activeIn("f-chat"), col2: await activeIn("f-chat-2"), focus: await whereFocus("f-chat-2"), composer: await composerIn("f-chat-2") } };
+await page.keyboard.type(" plus a few words");                    // into column 2's composer, B's draft
+const bDraft = await composerIn("f-chat-2");
+await page.keyboard.press("Control+Alt+ArrowRight");
+await waitActive("f-chat-2", cfg.sidC);
+out.tc.afterRight = { col1: await activeIn("f-chat"), col2: await activeIn("f-chat-2"), focus: await whereFocus("f-chat-2"), composer: await composerIn("f-chat-2"),
+  focused: await page.evaluate(() => window.__rompFocusedChatId()) };
+await page.keyboard.press("Control+Alt+ArrowLeft");
+await waitActive("f-chat-2", cfg.sidB);
+out.tc.afterLeft = { col2: await activeIn("f-chat-2"), composer: await composerIn("f-chat-2"), draftTyped: bDraft, focus: await whereFocus("f-chat-2") };
+await page.keyboard.press("Control+Alt+ArrowLeft");               // two tabs in the column: previous from the first wraps to the last
+await waitActive("f-chat-2", cfg.sidC);
+out.tc.wrap = await activeIn("f-chat-2");
+await page.keyboard.press("Control+Alt+ArrowRight");
+await waitActive("f-chat-2", cfg.sidB);
+// from column 1 the same chord steps COLUMN 1 (the column last worked in), and column 2 keeps its tab
+await clickIn("f-chat", "#content"); await waitFocused("f-chat");
+const col1Before = await activeIn("f-chat");
+await page.keyboard.press("Control+Alt+ArrowRight");
+await waitFn(([fid, was]) => { const d = document.getElementById(fid).contentDocument; const t = d && d.querySelector("#tabs .tab.active[data-id]"); return !!t && t.dataset.id !== was; }, ["f-chat", col1Before], "column 1 never stepped on the chord");
+out.tc.otherColumn = { col1Was: col1Before, col1: await activeIn("f-chat"), col2: await activeIn("f-chat-2"), focused: await page.evaluate(() => window.__rompFocusedChatId()) };
+await page.keyboard.press("Control+Alt+ArrowLeft");
+await waitActive("f-chat", col1Before);
+// back to where the story stood: column 2's composer on B, with the draft as it was
+await clickIn("f-chat-2", "#composer-input"); await waitFocused("f-chat-2"); await waitActive("f-chat-2", cfg.sidB);
+await page.keyboard.press("Control+A"); await page.keyboard.press("Backspace");
+if (out.tc.before.composer) await page.keyboard.type(out.tc.before.composer);
+out.tc.restored = { col1: await activeIn("f-chat"), col2: await activeIn("f-chat-2"), composer: await composerIn("f-chat-2"), focus: await whereFocus("f-chat-2") };
 
 // ---- 2e. the session bell from the keyboard (the user 2026-09-11): the palette's "Toggle notifications for this session"
 // flips the ACTIVE session's bell in the focused column — the same override the tab menu's bell row writes — a toast says so,
@@ -635,7 +668,7 @@ try {   // steps 11 and 12 record their own failure rather than taking the story
 // Column 2 (step 10) closes from its cross; B comes home and is made column 1's ACTIVE tab (the user's case). Column 2's
 // kernel frames are HELD at the wire from its connect, so the window between the new column's bundle evaluating (its frame
 // handler registered with the federation manager) and the kernel's first strip landing stays open; in it the shell rewrites
-// romp:vieworder (the same list, a new spelling: what another chat pane's absorbHostReport, a drag elsewhere or another
+// romp:vieworder:shared (the same list, a new spelling: what another chat pane's absorbHostReport, a drag elsewhere or another
 // dashboard window does on a busy board), a real cross-context storage event in every column. Before the fix column 2's
 // manager re-emitted the merged order from its EMPTY store, the page took that as the board and posted colEmpty for B,
 // the shell closed the column and told column 1 to hold B back: no column showed B, and fifteen seconds later the
@@ -666,7 +699,7 @@ out.s11.bundleUp = await page.waitForFunction(() => { const f = document.getElem
 // than the bundle's own evaluation, so the write waits for the first held frame, bounded, rather than assuming it
 await Promise.race([heldOnce, new Promise((r) => setTimeout(r, T))]);
 out.s11.heldAtWrite = col2Held.length;
-await page.evaluate(() => { const cur = localStorage.getItem("romp:vieworder") || "[]"; const next = cur.includes(", ") ? cur.replace(/, /g, ",") : cur.replace(/,/g, ", "); localStorage.setItem("romp:vieworder", next === cur ? cur + " " : next); });
+await page.evaluate(() => { const cur = localStorage.getItem("romp:vieworder:shared") || "[]"; const next = cur.includes(", ") ? cur.replace(/, /g, ",") : cur.replace(/,/g, ", "); localStorage.setItem("romp:vieworder:shared", next === cur ? cur + " " : next); });
 // the page's reaction to the event settles in its own task, the shell's (a colEmpty) one message hop later: one bounded beat
 await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
 out.s11.beforeRelease = { frames: await page.evaluate(() => window.__rompChatFrameIds()), cols: await page.evaluate(() => localStorage.getItem("romp-chat-cols")), log: await shellLog() };
@@ -1166,6 +1199,26 @@ class ServedChatSplit(unittest.TestCase):
         self.assertEqual(c["badgeB"]["text"], "⌥⇧K", "Esc on a re-recording keeps the chord")
         self.assertIn(SID_B, c["tabkeys"]); self.assertEqual(c["keys"]["session.hotkey." + SID_B], "Alt+Shift+K"); self.assertEqual(c["dialogRows"], ["Switch to api"])
         self.assertEqual(c["afterCancel"], {"shell": "f-chat-2", "pane": "composer-input"}, "…and hands the keyboard back to the column that asked")
+
+    def test_the_session_pair_by_key_steps_the_focused_columns_own_tabs_from_its_composer(self):
+        # the user 2026-09-23: "Go to the next / previous session" on Ctrl+Alt+→ / ← — a chord, so it fires from the composer, where
+        # the strip's bare arrows are typing; the shell aims it at the column last worked in (the review asked for the press itself)
+        t = self._r()["tc"]
+        self.assertEqual((t["before"]["col1"], t["before"]["col2"]), (SID_A, SID_B))
+        self.assertEqual(t["before"]["focus"], {"shell": "f-chat-2", "pane": "composer-input"}, "the press starts in column 2's composer")
+        a = t["afterRight"]
+        self.assertEqual((a["col1"], a["col2"], a["focused"]), (SID_A, SID_C, "f-chat-2"), "column 2 steps to its other tab; column 1 keeps its own: %r" % a)
+        self.assertEqual(a["focus"], {"shell": "f-chat-2", "pane": "composer-input"}, "the keyboard stays in the composer")
+        self.assertNotIn("plus a few words", a["composer"] or "", "the entering tab shows its OWN draft, not the leaving one's")
+        l = t["afterLeft"]
+        self.assertEqual(l["col2"], SID_B); self.assertEqual(l["composer"], l["draftTyped"], "B's draft comes back with B, as typed")
+        self.assertEqual(l["focus"], {"shell": "f-chat-2", "pane": "composer-input"})
+        self.assertEqual(t["wrap"], SID_C, "two tabs: previous from the first wraps to the last")
+        o = t["otherColumn"]
+        self.assertEqual(o["focused"], "f-chat"); self.assertNotEqual(o["col1"], o["col1Was"], "from column 1 the chord steps column 1: %r" % o)
+        self.assertEqual(o["col2"], SID_B, "…and column 2 keeps its tab")
+        self.assertEqual((t["restored"]["col1"], t["restored"]["col2"]), (SID_A, SID_B))
+        self.assertEqual(t["restored"]["composer"], t["before"]["composer"], "the story's draft stands as it was")
 
     def test_the_session_bell_is_a_command_that_flips_the_active_sessions_flag_and_another_window_learns_it(self):
         # the user 2026-09-11: notifications for the selected session on a key — the palette's command (bindable like any

@@ -188,7 +188,7 @@ test("render.ts tracks a session MRU on window for the shell's switcher", () => 
 
 test("jumpSession activates an open tab like a feed jump, and opens a closed session through the host", () => {
   assert.match(RENDER, /m\.type === "jumpSession" && typeof m\.id === "string"/);
-  assert.match(RENDER, /if \(order\.includes\(m\.id\)\) \{ revealSelfPane\(\); closingTabs\.delete\(m\.id\); setActive\(m\.id\); \}/);
+  assert.match(RENDER, /if \(order\.includes\(m\.id\)\) \{ revealSelfPane\(\); closingTabs\.delete\(m\.id\); if \(m\.gesture === true\) asGesture\(\(\) => setActive\(m\.id\)\); else setActive\(m\.id\); \}/);   // a hot key's jump is the reader's gesture (2026-09-23)
   assert.match(RENDER, /else if \(vscodeApi\) vscodeApi\.postMessage\(\{ type: "openSession", id: m\.id \}\);/);
 });
 

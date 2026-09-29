@@ -85,8 +85,9 @@ class TabsFirst(unittest.TestCase):
         # own (living sessions only), and the client closes every tab a later frame omits without affirming it
         # live, so every read-only reopened tab the push had just listed went down at each ready.
         types, slots = self._ready("chat")
-        self.assertEqual(types, ["_pushed", "caps"],
-                         "the connect push, then the caps frame: no strip from the handler itself")
+        # …and the viewer's arrangement between them (2026-09-23): its own frame on its own slot, never a strip
+        self.assertEqual(types, ["_pushed", "viewOrder", "caps"],
+                         "the connect push, the arrangement, then the caps frame: no strip from the handler itself")
         self.assertNotIn(("taborder",), slots, "and none attempted through the strip's dedup slot")
 
     def test_a_feed_clients_ready_yields_no_tab_order_frame(self):
@@ -95,12 +96,14 @@ class TabsFirst(unittest.TestCase):
         # arrangement (federation.ts absorbHostReport), so a strip for a feed client would prune the kept-open
         # tabs from that store again, and the chat case above would not notice.
         types, slots = self._ready("feed")
-        self.assertEqual(types, ["_pushed", "caps"], "a feed client's ready: the connect push, then caps, no strip")
+        self.assertEqual(types, ["_pushed", "viewOrder", "caps"],
+                         "a feed client's ready: the connect push, the arrangement, then caps, no strip")
         self.assertNotIn(("taborder",), slots)
 
     def test_a_timeline_clients_ready_yields_no_tab_order_frame(self):
         types, slots = self._ready("timeline")
-        self.assertEqual(types, ["_pushed", "caps"], "a timeline client's ready: the connect push, then caps, no strip")
+        self.assertEqual(types, ["_pushed", "viewOrder", "caps"],
+                         "a timeline client's ready: the connect push, the arrangement, then caps, no strip")
         self.assertNotIn(("taborder",), slots)
 
     def test_no_living_only_ordered_reader_remains(self):

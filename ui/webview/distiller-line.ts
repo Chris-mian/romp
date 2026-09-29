@@ -105,3 +105,14 @@ export function distillStaleNote(summaryStale: boolean, completed: boolean, show
   if (!summaryStale || !completed || !shownText.trim()) return "";
   return "You replied after this summary was written. It refreshes when the new work lands.";
 }
+
+/** The distill line's PARAGRAPHS with their per-item stamps (the user 2026-07-24): a multi-item brief or takeaway writes one paragraph per
+ *  item in order, so each paragraph can wear the age of its own event. The gate is the card's (feed.ts, 2026-07-29): stamps only when there
+ *  are at least two parts and the paragraph count matches them, or exceeds them by exactly one trailing unstamped paragraph (the leftover
+ *  the judges put last); any other split means the mapping cannot be trusted, and `stamps` is null. Shared by the feed card and the Needs
+ *  you box's row, so both split the same text the same way. */
+export function distillParas(text: string, parts: { id?: string; since: number }[] | null | undefined): { paras: string[]; stamps: ({ id?: string; since: number } | null)[] | null } {
+  const paras = text.split(/\n\s*\n/).map((s) => s.trim()).filter(Boolean);
+  const ok = !!(parts && parts.length > 1 && (paras.length === parts.length || paras.length === parts.length + 1));
+  return { paras, stamps: ok ? paras.map((_, i) => (i < parts!.length ? parts![i] : null)) : null };
+}

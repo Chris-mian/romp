@@ -138,7 +138,7 @@ test("a state under the cap is returned untouched", () => {
 test("feed.ts hydrates every disclosure collection on load", () => {
   assert.match(FEED, /function hydrateViewState\(\)/);
   assert.match(FEED, /parseViewState\(localStorage\.getItem\(VIEW_STATE_KEY\)\)/);
-  for (const c of ["secChoice.set", "cardTreeExpanded.add", "collapsedNodes.add", "nodeLogOpen.add",
+  for (const c of ["replaceSectionChoices(", "cardTreeExpanded.add", "collapsedNodes.add", "nodeLogOpen.add",
                    "expandedAsks.add", "collapsedThreads.add"]) {
     assert.ok(FEED.includes(c), `hydrate restores ${c}`);
   }

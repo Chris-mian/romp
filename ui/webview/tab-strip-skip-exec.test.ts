@@ -11,7 +11,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
-import { planStrip, parseTabGroups, headWords, revealedTabs } from "./tab-groups";
+import { planStrip, parseTabGroups, headWords, revealedTabs, phoneStandIns } from "./tab-groups";
 import { tabStateClass, tabRingId, RING_ORDER, tabDotClass, tabDotTitle, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
 import { newSkeletonState, renderKind } from "./skeleton-tabs";
 import type { TagUnion } from "./session-views";
@@ -74,7 +74,7 @@ type Hooks = {
   groupsRaw: string | null;   // the stored tab-groups blob the plan reads (localStorage's, in the page)
   phone: boolean;             // the phone layout: the plan sections as on the desktop and folds nothing there
   heads: HeadCall[];          // every group header the paint minted, in order
-  planStrip: typeof planStrip; parseTabGroups: typeof parseTabGroups; headWords: typeof headWords; revealedTabs: typeof revealedTabs;
+  planStrip: typeof planStrip; parseTabGroups: typeof parseTabGroups; headWords: typeof headWords; revealedTabs: typeof revealedTabs; phoneStandIns: typeof phoneStandIns;
   tabStateClass: typeof tabStateClass; tabRingId: typeof tabRingId; RING_ORDER: typeof RING_ORDER; tabDotClass: typeof tabDotClass; tabDotTitle: typeof tabDotTitle; sectionPip: typeof sectionPip; sectionPipMembers: typeof sectionPipMembers; sectionPipTitle: typeof sectionPipTitle;
   newSkeletonState: typeof newSkeletonState; renderKind: typeof renderKind;   // the skeleton strip (2026-09-07): empty here, so every listed id is a loaded tab or a placeholder
   skeletons: number;          // skeleton tabs minted (none expected: the set stays empty in these worlds)
@@ -145,7 +145,7 @@ function lift(): (hooks: Hooks) => Api {
     const skeletonTabs = H.newSkeletonState(); const renderKind = H.renderKind;
     function makeSkeletonTab(id) { const t = el("div", "tab tab-skeleton"); t.dataset.id = id; H.skeletons++; return t; }
     // the sectioned strip's pure rules, for real; the header builder a recorder
-    const planStrip = H.planStrip; const headWords = H.headWords;
+    const planStrip = H.planStrip; const headWords = H.headWords; const phoneStandIns = H.phoneStandIns;
     const readTabGroups = (u) => H.parseTabGroups(H.groupsRaw, u);
     const tabGroups = () => readTabGroups(H.unions); const writeTabGroups = () => {};
     const phoneLayout = () => H.phone;
@@ -154,6 +154,7 @@ function lift(): (hooks: Hooks) => Api {
     // ring class off, then the first switched-on ring whose test holds (settings.tabWidgets.on, every ring on by default) — and the
     // switch predicate the folded header's pip reads
     const ringSwitch = (prefs) => (id) => !(prefs && prefs.on && prefs.on[id] === false);
+    const needsYouWidgetOn = (prefs) => ringSwitch(prefs)("ring-waiting-on-you");   // renderTabs reads this to gate the keycap-room strip class (the keycap-width fix 2026-09-24)
     const composeTabRing = (tab, sid, status, prefs) => { for (const id of H.RING_ORDER) tab.classList.remove(id); const r = H.tabRingId(status, ringSwitch(prefs)); if (r) tab.classList.add(r); return r; };
     const mentionRosterChanged = () => {};   // the @-mention roster hook at the top of renderTabs: not the strip's (composer-mention-pane.test.ts)
     function makeGroupHead(sec, folded, active, hidden) {
@@ -201,7 +202,7 @@ function world(): { H: Hooks; api: Api; sessions: Map<string, any>; tabMeta: Map
   const H: Hooks = { FakeEl, applyTabBadgeMode: TW.applyTabBadgeMode, dotAfter: false, bar: new FakeEl("div"), mslot: null, only: "", hidden: new Set(), down: new Set(), notes: {},
                      keyHint: "Open a session (K)", lens: { all: true }, unions: [], tips: [], aftermaths: [], rowPaints: 0, tagSyncs: 0, placeholders: 0,
                      groupsRaw: null, phone: false, heads: [],
-                     planStrip, parseTabGroups, headWords, revealedTabs, tabStateClass, tabRingId, RING_ORDER, tabDotClass, tabDotTitle, sectionPip, sectionPipMembers, sectionPipTitle,
+                     planStrip, parseTabGroups, headWords, revealedTabs, phoneStandIns, tabStateClass, tabRingId, RING_ORDER, tabDotClass, tabDotTitle, sectionPip, sectionPipMembers, sectionPipTitle,
                      newSkeletonState, renderKind, skeletons: 0, timers: [], activated: [] };
   const api = lift()(H);
   const sessions = new Map<string, any>([["a", session("web", "ready")], ["b", session("api", "working")]]);
@@ -305,9 +306,36 @@ test("the sectioned strip: every input a group header paints repaints it, once, 
     ["the active tab's section (unfoldable while it holds it)", () => { H.groupsRaw = groups({ collapsed: ["backend"] }); api.renderTabs(); api.set({ activeId: "a" }); }],
     ["a provisional tab's tags (it sections under its future home)", () => { api.set({ provisionalId: "p", provisionalTags: ["frontend"] }); }],
     ["sectioning switched off", () => { H.groupsRaw = groups({ on: false }); }],
-    ["the phone layout (nothing folds there: the folded section opens)", () => { H.groupsRaw = groups({ collapsed: ["backend"] }); api.renderTabs(); H.phone = true; }],
+    // the phone folds like the desktop since 2026-09-23; what it paints beyond the plan is the folded-away ACTIVE tab's node,
+    // which its picker's current-session chip mirrors (tab-groups.ts phoneStandIns)
+    ["the phone layout with the active tab folded away (its stand-in node for the picker's chip)", () => { H.groupsRaw = groups({ collapsed: ["backend"] }); api.set({ activeId: "a" }); api.renderTabs(); H.phone = true; }],
   ];
   for (const [what, change] of changes) repaintsOnce(H, api, what, change);
+});
+
+test("the phone paints the folded-away ACTIVE tab as one hidden node after its stand-in header, and only there (2026-09-23)", () => {
+  // the picker's current-session chip mirrors the strip's active tab; a fold that took it off the strip would leave the
+  // chip naming whichever session came first. The node is the full tab (the one builder), marked away: never displayed,
+  // out of the keyboard's reach, not draggable. The desktop paints no such node (its header is the stand-in)
+  const { H, api } = sectionedWorld();
+  H.groupsRaw = groups({ collapsed: ["backend"] });
+  api.set({ activeId: "a" });
+  api.renderTabs();
+  assert.deepEqual(H.bar.tabs().map((t) => t.dataset.id), ["p"], "the desktop: only the untagged placeholder is a tab node");
+  H.phone = true;
+  api.renderTabs();
+  const tabs = H.bar.tabs();
+  assert.deepEqual(tabs.map((t) => [t.dataset.id, t.classList.contains("tab-away"), t.classList.contains("active")]), [["a", true, true], ["p", false, false]],
+    "the phone: the active tab's node, away and active, then the placeholder");
+  const away = tabs[0];
+  assert.deepEqual([away.attrs["aria-hidden"], away.tabIndex, away.draggable], ["true", -1, false], "hidden from assistive tech and the keyboard, and never dragged");
+  const kids = H.bar.children, at = kids.indexOf(away);
+  assert.ok(at > 0 && kids[at - 1].classList.contains("tab-group-head") && kids[at - 1].dataset.group === "backend", "right after the header that stands in for it");
+  assert.deepEqual([...api.folded()].sort(), ["a", "b"], "the plan's folded set is unchanged: the node is paint, not a tab back on the strip");
+  // the active tab shown again (its section opened): no node
+  H.groupsRaw = groups({});
+  api.renderTabs();
+  assert.ok(!H.bar.tabs().some((t) => t.classList.contains("tab-away")), "open: the tab itself is on the strip, no stand-in node");
 });
 
 test("the folded set the plan yields is published on the skip path too (keyboard cycling reads it)", () => {

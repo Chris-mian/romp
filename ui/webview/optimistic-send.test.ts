@@ -29,15 +29,38 @@ const RENDER = fs.readFileSync(
   path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 
 test("the plain send registers an optimistic bubble; follow-up/quote sends keep their own kernel echo", () => {
-  // only the PLAIN sendMessage branch registers — a citation follow-up/quote has its own kernel-side
-  // echo (the branch lives in routeUserMessage since the staged flush, 2026-08-15)
-  assert.match(RENDER, /else \{ vscodeApi\.postMessage\(\{ type: "sendMessage", id: sid, text, qid, \.\.\.att \}\); registerOptimistic\(sid, text, imgPaths, qid, paths\); \}/);
+  // EVERY branch registers, /clear included: the plain send passes a `clear` flag (true only for a
+  // non-Codex /clear, which ends at its boundary, not a landing); a citation follow-up/quote has its own
+  // kernel-side echo (the branch lives in routeUserMessage since the staged flush, 2026-08-15)
+  assert.match(RENDER, /else \{ vscodeApi\.postMessage\(\{ type: "sendMessage", id: sid, text, qid, \.\.\.att \}\); registerOptimistic\(sid, text, imgPaths, qid, paths, isClearCmd\(text\) && liveSession\(sid\)\?\.status\?\.backend !== "codex"\); \}/);
   // registerOptimistic shows it NOW (before any push) via reconcile + appendActive
-  assert.match(RENDER, /function registerOptimistic\(id: string, text: string, imgPaths\?: string\[\], qid\?: string, paths\?: string\[\]\): void/);   // + the dragged-image paths → echo thumbnails (2026-08-25); + the copy's id the caller minted and posted
+  assert.match(RENDER, /function registerOptimistic\(id: string, text: string, imgPaths\?: string\[\], qid\?: string, paths\?: string\[\], clear\?: boolean\): void/);   // + the /clear-ends-at-boundary flag (2026-09-24); + the dragged-image paths → echo thumbnails; + the copy's id the caller minted and posted
   // the active-tab arm still paints via appendActive (the snap gate moved ahead of it, 2026-08-30); the reconcile names what it
   // changed (repaintFromChange), no stale mark: a send touches the tail units it changes and nothing above (2026-09-23)
   assert.match(RENDER, /reconcileOptimistic\(s\);\s*\n\s*if \(id === activeId\) \{/);
   assert.match(RENDER, /const wasAtBottom = !!content && nearBottomForSend\(content\);[^\n]*\s*\n\s*appendActive\(\);/);
+});
+
+test("a transcript-resetting /clear registers its optimistic bubble and ends it at the clear boundary", () => {
+  // The round-one blanket gate (`if (!isClearCmd(text)) registerOptimistic`) suppressed the /clear bubble
+  // for EVERY backend, which left a socket-down /clear with no trace and no cancel and a refused Codex
+  // /clear with nothing to restore. Now EVERY /clear registers a bubble; a non-Codex /clear is flagged
+  // `clear` so reconcileOptimistic ends it at the CLEAR BOUNDARY (the fresh episode it forks) rather than
+  // on a landing it never gets, while a Codex /clear (refused, no boundary) is not flagged and ends the
+  // ordinary way, on the refusal. The kernel retires its own /clear echo at the same boundary (sdk_backend.py).
+  assert.match(RENDER, /registerOptimistic\(sid, text, imgPaths, qid, paths, isClearCmd\(text\) && liveSession\(sid\)\?\.status\?\.backend !== "codex"\);/);
+  assert.doesNotMatch(RENDER, /if \(!isClearCmd\(text\)\) registerOptimistic/);   // the blanket suppression is gone
+  // the boundary is passed to the reconcile from the upsert via clearBoundarySeen (a new clear card, or a
+  // transcript-turn fork that catches the solo small-session /clear); the executed detection is pinned in send-pending.test.ts
+  assert.match(RENDER, /const clearBoundary = [\s\S]*?clearBoundarySeen\(prev \? \(prev\.events as TailEvent\[\]\) : undefined, msg\.events as TailEvent\[\]\)\);\s*\n\s*reconcileOptimistic\(s, clearBoundary\);/);
+  // the !keepResident BELT, pinned as its own conjunct: a kept-resident frame (an empty/overlay-only build, a
+  // desync refusal that held the prior events) must NOT read as a clear boundary and end a /clear entry that
+  // never ran. Without this pin, deleting `&& !keepResident` leaves the suite green.
+  assert.match(RENDER, /const clearBoundary = !!\(existed && !keepResident\s*\n\s*&& clearBoundarySeen\(/);
+  // isClearCmd is the same predicate the /clear confirm and the kernel's _is_clear_cmd read (clear-confirm.ts).
+  // Its EXECUTED verification (that routeUserMessage's routing gates on it) is staged-list-cap.test.ts's lifted
+  // routing test, which imports isClearCmd; here it is a source pin.
+  assert.match(RENDER, /import \{ isClearCmd,[^\n]*\} from "\.\/clear-confirm";/);
 });
 
 test("your OWN send reveals itself from the TAIL only — scrolled up, the viewport stays put", () => {
@@ -61,8 +84,8 @@ test("your OWN send reveals itself from the TAIL only — scrolled up, the viewp
 test("a send paints on ITS OWN keystroke even when the tail mutates in place (no length change)", () => {
   // the reconcile wrapper names the first event object the pass swapped (repaintFromChange) and lowers v.rendered to it, so
   // appendActive can't hit the fast path; a stale mark did this until 2026-09-23 and rebuilt the whole window on every send
-  const wrap = RENDER.slice(RENDER.indexOf("function reconcileOptimistic(s: Session): void {"), RENDER.indexOf("function reconcileOptimisticInner("));
-  assert.match(wrap, /const before = s\.events\.slice\(\);[\s\S]*?reconcileOptimisticInner\(s\);[\s\S]*?repaintFromChange\(s, before\);/);
+  const wrap = RENDER.slice(RENDER.indexOf("function reconcileOptimistic(s: Session, clearBoundary: boolean = false): void {"), RENDER.indexOf("function reconcileOptimisticInner("));
+  assert.match(wrap, /const before = s\.events\.slice\(\);[\s\S]*?reconcileOptimisticInner\(s, clearBoundary\);[\s\S]*?repaintFromChange\(s, before\);/);
   assert.match(wrap, /if \(at === 0\) v\.rediff = true; else v\.rendered = Math\.min\(v\.rendered, at\);/);
   // the fast path it defeats keys on length, the rediff mark and the painted unit count
   assert.match(RENDER, /const current = v\.rendered === len && !v\.stale && !v\.rediff && v\.el\.childNodes\.length > 0 && !!v\.painted && v\.painted\.items\.length === total;/);
@@ -76,24 +99,24 @@ test("a send paints on ITS OWN keystroke even when the tail mutates in place (no
 
 test("every push entry point re-asserts (or retires) the optimistic tail", () => {
   // update(), chatTail(), and upsert() each call reconcileOptimistic after setting s.events
-  const calls = RENDER.match(/reconcileOptimistic\(s\);/g) || [];
+  const calls = RENDER.match(/reconcileOptimistic\(s[,)]/g) || [];   // reconcileOptimistic(s) and reconcileOptimistic(s, clearBoundary)
   assert.ok(calls.length >= 4, "reconcile wired into send + all three push paths, got " + calls.length);
 });
 
 test("retire needs a NEW landed atom (after the send's anchor); kernel provisionals only suppress", () => {
   // the entry is minted by the module (unanchored until the first reconcile stamps where the send sits)
-  assert.match(RENDER, /const p = newPending\(text, imgPaths, Date\.now\(\), qid, paths\);\s*\n\s*arr\.push\(p\);/);
+  assert.match(RENDER, /const p = newPending\(text, imgPaths, Date\.now\(\), qid, paths, clear\);\s*\n\s*arr\.push\(p\);/);
   assert.equal(newPending("x", undefined, 5).at, undefined);
   // the decision is the module's, read off KERNEL truth after our injections are stripped — the whole
   // resident array from the anchor on, never a tail count (2026-09-06 review)
-  assert.match(RENDER, /const r = reconcilePending\(s\.events as TailEvent\[\], list\);/);
+  assert.match(RENDER, /const r = reconcilePending\(s\.events as TailEvent\[\], list, clearBoundary\);/);
   assert.doesNotMatch(RENDER, /OPT_TAIL_SCAN/);
   assert.match(RENDER, /if \(r\.keep\.length\) pendingSent\.set\(s\.id, r\.keep\); else pendingSent\.delete\(s\.id\);/);
   assert.match(RENDER, /const inject = r\.inject\.filter\(\(p\) => !covered\.has\(p\)\);/);
   // and no clock anywhere in the file's decision: the TTL is gone for good
   assert.doesNotMatch(RENDER, /OPT_TTL_MS/);
   const SP = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "send-pending.ts"), "utf8");
-  assert.doesNotMatch(SP, /Date\.now\(\)(?!, qid: string = mintQid\(\), paths\?: string\[\]\): PendingSend)/, "the module reads no clock in a decision (only the press stamp's default, beside the id's)");
+  assert.doesNotMatch(SP, /Date\.now\(\)(?!, qid: string = mintQid\(\), paths\?: string\[\], clear\?: boolean\): PendingSend)/, "the module reads no clock in a decision (only the press stamp's default, beside the id's)");
 });
 
 // The optimistic echo rides the QUEUED idiom (the user 2026-07-16): to the reader an unconfirmed send and a

@@ -99,11 +99,11 @@ const { chromium } = require('playwright');
   });
   if (shots) await pg.screenshot({ path: shots + '-yourorder.png' });
   // a viewer arrangement (the strip's key) puts web first
-  await pg.evaluate(() => { const rows = Array.from(document.querySelectorAll('#rsp-panel .rsp-tbl tbody tr')); const web = rows.find((tr) => tr.textContent.includes('TESTHOST:web')); const sid = web && web.getAttribute('data-sid'); localStorage.setItem('romp:vieworder', JSON.stringify(sid ? [sid] : [])); });
+  await pg.evaluate(() => { const rows = Array.from(document.querySelectorAll('#rsp-panel .rsp-tbl tbody tr')); const web = rows.find((tr) => tr.textContent.includes('TESTHOST:web')); const sid = web && web.getAttribute('data-sid'); localStorage.setItem('romp:vieworder:shared', JSON.stringify(sid ? [sid] : [])); });
   await pg.click('#rsp-panel [data-act="order:spend"]'); await pg.click('#rsp-panel [data-act="order:yours"]');
   await pg.waitForFunction(() => document.querySelector('#rsp-panel [data-act="order:yours"]').classList.contains('on'), null, { timeout: 5000 });
   yourOrder.viewRows = await pg.evaluate(() => Array.from(document.querySelectorAll('#rsp-panel .rsp-tbl tbody tr')).map((tr) => tr.textContent.trim()));
-  await pg.evaluate(() => { localStorage.removeItem('romp:vieworder'); });
+  await pg.evaluate(() => { localStorage.removeItem('romp:vieworder:shared'); });
   // leave "your order" pressed: the phone reload below must read it back (the chip pressed on open, the rows ordered)
   await pg.click('#rsp-panel [data-act="measure:tok"]');
   await pg.click('#rsp-panel [data-act="range:days"]');

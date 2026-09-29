@@ -219,6 +219,10 @@ export function ringDemoClass(w: TabWidget, prefs: TabWidgetPrefs): string | nul
 export function ringSwitch(prefs: TabWidgetPrefs): (id: string) => boolean {
   return (id) => { const w = tabWidget(id); return !w || widgetOn(prefs, w); };
 }
+/** Whether the Needs-you count badge can appear at all: its own widget switch (badge MODE is the caller's to check). The
+ *  strip reserves keycap room only when a badge can show (render.ts's strip class), reading this so the caller need not
+ *  name the ring id itself (tab-rings.test.ts bans a hand-rolled ring class in render.ts). */
+export function needsYouWidgetOn(prefs: TabWidgetPrefs): boolean { return ringSwitch(prefs)("ring-waiting-on-you"); }
 
 // ── the built-in widgets ──────────────────────────────────────────────────────────────────────────────────────────
 
@@ -325,9 +329,9 @@ const RING_ROWS: Record<RingId, { label: string; description: string; demo: Widg
   "ring-needs-you": { label: "Blocked", demo: { state: "awaiting" },
                       description: "while the session is stopped: on a prompt, or on an API error only you can clear" },
   "ring-waiting-on-you": { label: "Needs you", demo: { state: "working", needsYou: true, needsYouCount: 2 },
-                           description: "while a card of the session's needs you, even as it goes on working; Blocked outranks it" },
+                           description: "while a card of the session's needs you, even as it goes on working; Blocked outranks it, though the state badge shows both at once" },
   "ring-retrying": { label: "Retrying", demo: { state: "retrying" },
-                     description: "while the session retries an API error on its own; Blocked or Needs you outranks it" },
+                     description: "while the session retries an API error on its own; Blocked outranks it, and Needs you does too, though the state badge shows Needs you and retrying at once" },
 };
 for (const id of RING_ORDER) {
   registerTabWidget({ id, label: RING_ROWS[id].label, description: RING_ROWS[id].description, defaultOn: true, slot: "ring", ring: id,

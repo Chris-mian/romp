@@ -4,14 +4,15 @@ on the tab strip's own roads (plans/sessions-pane-session-menu.md).
 The served dashboard page (the shell with its chat and Sessions panes) over a hermetic kernel with synthetic sessions (the
 notes-api world: web, api, tests, registered SDK records with closed transcripts, so nothing is ever spawned) and a goal store
 for api with one open top, so its row carries a tree. Roads, one browser run:
-  1. a right-click on api's head opens the menu: two rows, Rename and Delete (danger), on the token card, in both themes;
+  1. a right-click on api's head opens the menu: three rows, Rename, Restart session and Delete (danger, alone), on the
+     token card, in both themes;
   2. Rename: the inline input replaces the name; a new name and Enter post renameSession once, and the name propagates on the
      kernel's push to the row and to the chat strip's tab; a second edit ended by Escape posts nothing; a name the kernel
      refuses (a space in it) keeps the old name and brings the kernel's warning frame;
   3. Delete on the running session: the confirm carries the strip's title and names the open goal; Cancel posts nothing and
      the row stays; End session posts endSession then closeTab, the row leaves the pane and the tab leaves the strip;
-  4. keyboard: Shift+F10 on the focused head opens the menu with its first row focused; ArrowDown and Enter pick Delete; Escape
-     closes the confirm with nothing posted;
+  4. keyboard: Shift+F10 on the focused head opens the menu with its first row focused; ArrowDown twice and Enter pick
+     Delete; Escape closes the confirm with nothing posted;
   5. a push between the menu's opening and the pick: the list is rebuilt under the open menu (another session renamed by
      the kernel meanwhile), and Rename still edits the row as it stands now, and the pane keeps rendering afterwards (the
      round-two high: the pick once worked on the detached row and latched the render hold, freezing the pane);
@@ -215,6 +216,8 @@ const fr = await paneFrame();
 await fr.locator(headSel(cfg.web)).press("Shift+F10");
 await page.waitForTimeout(80);
 out.roads.kbMenu = await menuState();
+await page.keyboard.press("ArrowDown");
+out.roads.kbMovedOnce = await menuState();                        // Restart session, the row between the two (2026-09-23)
 await page.keyboard.press("ArrowDown");
 out.roads.kbMoved = await menuState();
 if (out.roads.kbMoved.open) await page.keyboard.press("Enter");   // with no menu, Enter would open the session instead
@@ -440,7 +443,9 @@ class SessionsMenuServed(unittest.TestCase):
         for key in ("menuDark", "menuLight"):
             m = r[key]
             self.assertTrue(m["open"], "%s: the menu opened: %r" % (key, m))
-            self.assertEqual((m["rows"], m["danger"], m["role"]), (["Rename", "Delete"], [False, True], "menu"), "%s: two rows, Delete marked danger: %r" % (key, m))
+            self.assertEqual((m["rows"], m["danger"], m["role"]),
+                             (["Rename", "Restart session", "Delete"], [False, False, True], "menu"),
+                             "%s: three rows since Restart session joined them (2026-09-23), Delete alone marked danger: %r" % (key, m))
             self.assertEqual(m["bg"], m["want"], "%s: the card's background is the theme's menu token: %r" % (key, m))
             self.assertNotIn(m["bg"], ("rgba(0, 0, 0, 0)", "transparent"), "%s: a painted card" % key)
         self.assertNotEqual(r["menuDark"]["bg"], r["menuLight"]["bg"], "the two themes resolve the token differently")
@@ -474,8 +479,10 @@ class SessionsMenuServed(unittest.TestCase):
 
     def test_4_the_keyboard_reaches_the_menu_and_the_confirm(self):
         r = self.result["roads"]
-        self.assertEqual((r["kbMenu"]["open"], r["kbMenu"]["rows"], r["kbMenu"]["focusedRow"]), (True, ["Rename", "Delete"], 0), "Shift+F10 on the focused head opens the menu with Rename focused: %r" % r["kbMenu"])
-        self.assertEqual(r["kbMoved"]["focusedRow"], 1, "ArrowDown moves to Delete: %r" % r["kbMoved"])
+        self.assertEqual((r["kbMenu"]["open"], r["kbMenu"]["rows"], r["kbMenu"]["focusedRow"]),
+                         (True, ["Rename", "Restart session", "Delete"], 0), "Shift+F10 on the focused head opens the menu with Rename focused: %r" % r["kbMenu"])
+        self.assertEqual(r["kbMovedOnce"]["focusedRow"], 1, "ArrowDown moves to Restart session: %r" % r["kbMovedOnce"])
+        self.assertEqual(r["kbMoved"]["focusedRow"], 2, "…and again to Delete: %r" % r["kbMoved"])
         self.assertTrue(r["kbConfirm"]["open"] and r["kbConfirm"]["title"].startswith("End “web”"), "Enter picks Delete and the confirm opens for web: %r" % r["kbConfirm"])
         self.assertEqual((r["kbEscaped"]["confirm"]["open"], r["kbEscaped"]["posted"], r["kbEscaped"]["row"]), (False, 0, "web"), "Escape closes the confirm with nothing posted: %r" % r["kbEscaped"])
 

@@ -426,3 +426,24 @@ test("badge mode: the SIX left-slot dot classes are told apart by shape or colou
     }
   }
 });
+
+test("the shape cue reaches the tag-overview row pip and the collapsed-group header pip: retrying is a HOLLOW amber ring there too, told from the filled working/awaiting pips by form (the keycap-width PR's carried PR 2080 point)", () => {
+  const css = read("styles.css");
+  const body = (re: RegExp, what: string) => { const m = css.match(re); assert.ok(m, what + " rule present"); return m![1]; };
+  const nc = (x: string) => x.replace(/\/\*[\s\S]*?\*\//g, "");
+  // The row pip (.snap-pip.retrying) and the header pip (.tab-group-pip.retrying) reuse the tab dot's status tokens, so
+  // retrying's amber cannot clear the categorical deficiency floor against the filled working gold (light 3.3) or the
+  // awaiting green (dark 2.7 on the overview) by COLOUR alone. Both are now HOLLOW amber rings, the tab dot's shape cue,
+  // so FORM tells them apart. RED at the base, where both were filled amber discs.
+  for (const [sel, label] of [["\\.snap-pip\\.retrying", "the tag-overview row pip"], ["\\.tab-group-pip\\.retrying", "the collapsed-group header pip"]] as const) {
+    const rule = nc(body(new RegExp("\\n" + sel + " \\{([^}]*)\\}"), label));
+    assert.match(rule, /background:\s*transparent/, label + " retrying is HOLLOW (a transparent fill), not a filled amber disc");
+    assert.match(rule, /box-shadow:\s*inset 0 0 0 [\d.]+px var\(--st-retrying-bg\)/, label + " is an inset amber ring (the tab dot's shape cue)");
+  }
+  // the states the pips paint as FILLED discs stay filled (no ring), so the shape difference from hollow retrying is real
+  for (const sel of ["\\.snap-pip\\.working", "\\.snap-pip\\.awaiting", "\\.tab-group-pip\\.blocked"]) {
+    const rule = nc(body(new RegExp("\\n" + sel + " \\{([^}]*)\\}"), sel));
+    assert.match(rule, /background:\s*var\(--st-/, sel + " is a FILLED disc");
+    assert.doesNotMatch(rule, /box-shadow/, sel + " has no ring (a filled disc, a distinct shape from hollow retrying)");
+  }
+});

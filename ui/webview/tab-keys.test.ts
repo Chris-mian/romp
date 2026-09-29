@@ -134,7 +134,7 @@ test("palette-main.ts: per-tab commands are registered from the store at boot an
   assert.match(MAIN, /function registerTabHotkey\(sid: string, name: string\): void \{\n\s*registerCommand\(\{ id: hotkeyCommandId\(sid\), title: "Switch to " \+ \(name \|\| sid\.slice\(0, 8\)\), run: \(\) => jumpToSession\(sid\) \}\);\n\s*hotkeySids\.add\(sid\);\n\s*invalidate\(\);/);
   assert.match(MAIN, /function syncTabHotkeys\(\): void \{[^\n]*\n\s*const set = loadTabKeys\(localStorage\);\n\s*for \(const \[sid, name\] of Object\.entries\(set\)\) registerTabHotkey\(sid, name\);[\s\S]*?\n\s*syncTabHotkeys\(\);/, "at boot, before any pane loads");
   assert.match(MAIN, /const f = \(w\.__rompChatTarget && w\.__rompChatTarget\(sid\)\) \|\| pane\("f-chat"\);/, "the column already showing it, else the one last worked in");
-  assert.match(MAIN, /postMessage\(\{ type: "jumpSession", id: sid \}, "\*"\)/);
+  assert.match(MAIN, /postMessage\(\{ type: "jumpSession", id: sid, gesture: true \}, "\*"\)/);   // the hot key is the reader's gesture (2026-09-23)
   // the pane's ask (the message) and the probe global run ONE function: the session joins the set, its command exists,
   // the dialog opens on that row; when it closes the focus goes back to the asking pane's composer, and a session
   // left with no chord leaves the set

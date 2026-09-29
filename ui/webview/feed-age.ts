@@ -29,6 +29,17 @@ export function liveNow(hostNow: number, hostNowAtMs: number, nowMs: number): nu
 /** "3m ago" | "(3m ago)" | a running DURATION "42m" / "1h 5m" (the awaiting box's waited time, the
  *  working narration's elapsed time, the waiting-on chip) — the labels that used to be baked into
  *  caption strings and moved only because every card re-rendered on every frame. */
+/** The age words every stamped label reads: "<1m ago" under a minute (the user 2026-07-20: a card the user just acted on stamps t=now, and
+ *  a counting "0s ago"/"14s ago" label is churn without information; the tint already says "fresh"), then minutes, hours, days. Here, not in
+ *  the feed, since the box content round: the chat page's Needs you row stamps the card's line with the same words. */
+export function relAge(sec: number): string {
+  const s = Math.max(0, sec);
+  if (s < 60) return `<1m ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}
+
 export type AgeFmt = "plain" | "paren" | "dur";
 
 /** The slice of an element the refresh reads and writes — HTMLElement satisfies it; tests use a plain object. */

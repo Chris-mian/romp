@@ -431,6 +431,8 @@ export function openLightbox(path: string, sid?: string | null, pin?: string): v
   const dismiss = () => { wrap.remove(); document.removeEventListener("keydown", onKey, true); };
   const onKey = (ev: KeyboardEvent) => {
     if (ev.key === "Escape") { ev.stopPropagation(); dismiss(); return; }
+    if (ev.ctrlKey || ev.altKey || ev.metaKey) return;   // a modified arrow is a chord (the shell's session pair), not a step: two capture
+    //                                                      listeners on one document both fire whatever the other stops (review, 2026-09-23)
     if ((ev.key === "ArrowLeft" || ev.key === "ArrowRight") && step) {
       ev.stopPropagation(); ev.preventDefault();         // the chat must not scroll under the lightbox
       step(ev.key === "ArrowLeft" ? -1 : 1);             // ← older, → newer — the transcript's own order

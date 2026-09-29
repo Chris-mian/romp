@@ -9,11 +9,11 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
-const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
+const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.css"), "utf8");   // the card's sections moved to a sheet both pages import (plans/needs-you.md)
 
 test("the section BODIES live in .fask-secs; the toggles moved to the time row (the user 2026-07-07)", () => {
-  assert.match(FEED, /const secs = el\("div", "fask-secs"\); secs\.style\.display = "none";/);
+  assert.match(FEED, /const secs = el\("div", "fask-secs"\);/); assert.match(FEED, /secs\.style\.display = "none";\s*\n\s*row3\.append\(\.\.\.se\.toggles, actions\);/, "built by the shared builder (card-sections.ts), placed by the card");
   assert.match(FEED, /bgBtn\.textContent = "Background"/, "capitalized like Clear");
   assert.match(FEED, /takeBtn\.textContent = "Summary"/);
   assert.match(FEED, /secs\.append\(bgBody, distill, stallBody\)/, "secs holds the BODIES only (incl. the stall body) — the toggles ride row3 now");
@@ -51,11 +51,12 @@ test("hovering the SELECTED (.on) toggle gives it a reverse highlight — the ac
 test("state: a single mutually-exclusive secChoice (bg | summary | subgoals | tasks | none); default follows Collapsed", () => {
   // Sub-goals joined Background/Summary as the THIRD mutually-exclusive section (the user 2026-07-08);
   // the "Awaiting task" list is the FOURTH (the user 2026-07-13)
-  assert.match(FEED, /const secChoice = new Map<string, "bg" \| "summary" \| "subgoals" \| "tasks" \| "stall" \| "none">\(\);/);
+  assert.match(FEED, /export type SecChoice = "bg" \| "summary" \| "subgoals" \| "tasks" \| "stall" \| "none";/); assert.match(FEED, /export const secChoice = new Map<string, SecChoice>\(\);/);
   // absent from the map → the DEFAULT, set by the footer "Collapsed" toggle (off → summary, on → none)
-  assert.match(FEED, /return secChoice\.get\(id\) \?\? \(feedPrefs\(\)\.collapsed \? "none" : hasAwaitTasks \? "tasks" : "summary"\);/);
+  assert.match(FEED, /return secChoice\.get\(id\) \?\? \(collapsed \? "none" : hasAwaitTasks \? "tasks" : "summary"\);/);   // the card's sections, tree and badges moved to card-sections.ts (plans/needs-you.md, one builder with the Needs you row)
+  assert.match(FEED, /collapsed: \(\) => feedPrefs\(\)\.collapsed,/, "the feed hands the shared builder its Collapsed preference; the chat page hands false");
   // click the showing section → off; click another → switch (one at a time)
-  assert.match(FEED, /secChoice\.set\(id, choice === want \? "none" : want\)/);
+  assert.match(FEED, /setSectionChoice\(id, choice === want \? "none" : want\)/);   // through the setter that crosses the shell\'s two documents (round two of the box content PR)
   assert.match(FEED, /a\._bgBtn\.onclick = pick\("bg"\);/);
   assert.match(FEED, /a\._takeBtn\.onclick = pick\("summary"\);/);
   assert.match(FEED, /subBtn\.onclick = pick\("subgoals"\);/);
@@ -86,8 +87,8 @@ test("the MODAL always shows BOTH sections, labeled background / summary", () =>
 
 test("background shows only alongside a produced takeaway, and the takeaway keeps its deep-link", () => {
   assert.match(FEED, /const bg = distillShown && it\.background \? it\.background : null;/);
-  assert.match(FEED, /applySections\(a, it, distillShown\);/);   // the recursive re-apply inside pick()
-  assert.match(FEED, /dl\.classList\.add\("fask-distill-link"\)/);
+  assert.match(FEED, /if \(!sectionHosts\(id\)\.length\) \{ applySections\(a, it, distillShown, env\); env\.afterApply\?\.\(a\); \}/);   // the re-apply inside pick() for a host outside the registry; the setter re-applies the registered ones
+  assert.match(FEED, /dle\.classList\.add\("fask-distill-link"\)/);
   // the background body stays typographically identical to the summary
   assert.match(CSS, /\.fask-bg-body, \.fask-stall-body \{[^}]*font-size: 0\.86em/);
   assert.match(CSS, /\.fask-bg-body, \.fask-stall-body \{[^}]*opacity: 0\.82/);

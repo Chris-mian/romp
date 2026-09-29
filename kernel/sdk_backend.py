@@ -631,13 +631,66 @@ EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max", "ultracode")   # ultra
 SDK_MAX_BUFFER = 100 * 1024 * 1024
 
 
+def _parse_router_models(raw):
+    """ROMP_ROUTER_MODELS -> the declared gateway ids: comma-separated, order kept, whitespace stripped, duplicates
+    and empties dropped. kernel._parse_router_models is the byte-for-byte twin; tests/test_router_models.py pins
+    them equal (the kernel must run without this module, so neither imports the other's)."""
+    out, seen = [], set()
+    for part in str(raw or "").split(","):
+        p = part.strip()
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
+_ROUTER_IDS = frozenset()   # the ids the kernel installed this life (declared or from the gateway's listing), told through
+#                             set_router_ids; monotonic on purpose (a session still running a removed id keeps its badge)
+
+
+def set_router_ids(ids):
+    """The kernel's word on the gateway ids it installed (kernel._router_tell_backend, at every apply and remove): the
+    declared list this module can read itself PLUS the ids a gateway's listing added, which only the kernel knows. The
+    badge, the served-model learn and the live count read the union through _router_declared."""
+    global _ROUTER_IDS
+    _ROUTER_IDS = frozenset(str(i) for i in (ids or ()) if i)
+
+
+# The first-party skip's twin (kernel._router_first_party): a declared Claude version id or family alias is never a
+# gateway id, so the badge keeps labelling it as first-party ('Opus 4.8', 'Opus') whatever the variable says. The
+# regex is the kernel's _MODEL_ID_RE byte for byte and the aliases its shipped families; tests/test_router_models.py
+# pins both equal. (The kernel's catalog-filed ids, _catalog_family, are beyond a twin: the told set carries only
+# ids the kernel actually installed, so they never arrive that way either.)
+_ROUTER_FIRST_PARTY_RE = re.compile(r"^claude-(fable|opus|sonnet|haiku)-(\d+(?:-\d+)*)$")
+_ROUTER_FIRST_PARTY_ALIASES = ("fable", "opus", "sonnet", "haiku")
+
+
+def _router_first_party(mid):
+    mid = re.sub(r"\[[^\]]*\]$", "", str(mid or "").strip().lower())   # the kernel's _model_id_clean: lower-cased, tag stripped
+    return mid in _ROUTER_FIRST_PARTY_ALIASES or bool(_ROUTER_FIRST_PARTY_RE.match(mid))
+
+
+def _router_declared():
+    """The gateway ids this process knows: the operator's ROMP_ROUTER_MODELS after the first-party skip (the
+    environment the manager handed the process; a short split per call, no memo, so a test's env change is seen)
+    united with the ids the kernel told it (set_router_ids: what it installed, a listing's ids included). The BADGE's
+    use: such an id is a real model id the CLI may report and is shown verbatim — the Extra models switch's state
+    plays no part, because a session still running a removed id keeps its badge."""
+    return frozenset(m for m in _parse_router_models(os.environ.get("ROMP_ROUTER_MODELS"))
+                     if not _router_first_party(m)) | _ROUTER_IDS
+
+
 def pretty_model(raw: str) -> str:
     """A raw SDK model id → the short badge the tmux statusline shows, so SDK and tmux sessions read the
     same and the model picker's 'current' highlight (which matches on the leading word) lights up.
     'claude-opus-4-8' → 'Opus 4.8', 'claude-haiku-4-5-20251001' → 'Haiku 4.5', 'claude-fable-5' → 'Fable 5'.
-    Unrecognised ids pass through verbatim."""
+    A declared gateway id (ROMP_ROUTER_MODELS) shows VERBATIM, and the picker row reads the same id: one name per
+    model, so the pickers' current-model tick (the badge against the row's value, exactly or on a space boundary)
+    holds. Unrecognised ids pass through verbatim."""
     if not raw:
         return ""
+    if raw in _router_declared():
+        return raw
     m = re.match(r"claude-([a-z]+)-(\d+)(?:[-.](\d+))?", raw)
     if not m:
         return raw
@@ -656,7 +709,7 @@ def model_label(live: str, chosen: str) -> str:
         return live
     if not chosen or chosen == "default":
         return ""
-    return pretty_model(chosen) if chosen.startswith("claude-") else chosen.capitalize()
+    return pretty_model(chosen) if (chosen.startswith("claude-") or chosen in _router_declared()) else chosen.capitalize()
 
 
 def _alias_label(alias: str) -> str:
@@ -665,7 +718,7 @@ def _alias_label(alias: str) -> str:
     if not alias or alias == "default":
         return ""
     alias = re.sub(r"\[[^\]]*\]$", "", alias)   # fable[1m] → Fable: the context tag is not part of the name
-    return pretty_model(alias) if alias.startswith("claude-") else alias.capitalize()
+    return pretty_model(alias) if (alias.startswith("claude-") or alias in _router_declared()) else alias.capitalize()
 
 
 def _is_compact_cmd(text: str) -> bool:
@@ -4987,6 +5040,21 @@ def write_sdk_default(state_dir: Path, **fields) -> None:
         _write_sdk_defaults(state_dir, d)
 
 
+def reset_sdk_default_model_if(state_dir: Path, expected: str) -> bool:
+    """Reset the remembered `model` to the account default ONLY IF it still reads `expected`, under _defaults_lock:
+    the kernel's create door judges the seed it read and must not overwrite a pick that landed since (a dormant
+    pick's write, with its own fresh modelTok, between the read and the reset). A fresh modelTok goes with the
+    reset, as write_sdk_default mints. Returns whether the reset landed."""
+    with _defaults_lock:
+        d = read_sdk_defaults(state_dir)
+        if str(d.get("model") or "") != str(expected or ""):
+            return False
+        d["model"] = "default"
+        d["modelTok"] = _mint_write_tok()
+        _write_sdk_defaults(state_dir, d)
+        return True
+
+
 def _swap_sdk_default_locked(state_dir: Path, key: str, value):
     """swap_sdk_default's body, for a caller that already holds _defaults_lock and has more to do under
     the same hold (SdkBackend._seed_write_pending inserts the write's node before letting go: with the
@@ -5688,6 +5756,22 @@ class SdkSession:
         self._pending_meta: list = queue_meta_from_reg(reg)   # the ids the mirror carries, aligned with _pending
         self._fed_meta: list = []
         self._landed_qid: dict = {}
+        # A /clear the CLI has TAKEN is tracked by the IDENTITY of its optimistic echo (the taken copy's qid),
+        # so its echo retires on the exact event that proves THIS copy ran and never by text: a /clear resets
+        # the transcript and writes NO user record for itself, so its echo can never land, and, batched with a
+        # message in the same whole second, is never overtaken either. Keyed on the TAKE, not the FEED (round
+        # two's feed-time record stranded a /clear fed mid-turn: the message's result drained the list before
+        # the CLI ever took the /clear): a fed copy sits in self._untaken until _untaken_taken fires, and only
+        # THEN is its qid recorded here. _taken_clear_qids holds the qids of taken-not-yet-resolved /clears,
+        # FIFO: the lastSid-flipping init retires the oldest (that flip IS the fresh conversation), and the
+        # turn's settle drains the rest so no stranded entry can poison a later fork/reconnect flip. A /clear
+        # still QUEUED or fed-but-UNTAKEN has no qid here and keeps its echo, so an unplanned CLI death or a
+        # restart flags/re-delivers it on the resumable roads. _own_turn_clear_qid is the qid of a /clear the
+        # CLI took as its OWN fresh turn: the settle backstop retires it when that turn ends with no flip (a
+        # /clear that found nothing to clear still ran); a mid-turn SWALLOWED /clear is not its own turn, so it
+        # keeps its echo for settle_echoes to flag as a genuine loss.
+        self._taken_clear_qids: list[str] = []
+        self._own_turn_clear_qid: str | None = None
         self._ping_feeding = False   # a rename ping was fed and its turn hasn't streamed yet: hold the
         #                              queue so no message can share its pre-turn window (the CLI batches
         #                              everything pre-start into ONE record — the 2026-08-25 fold); cleared
@@ -5717,6 +5801,32 @@ class SdkSession:
             self._compacting = True
         if any(_is_clear_cmd(t) for t in self._pending):   # same restored-queue rule for a queued /clear
             self._clearing = True
+        # A /clear the previous kernel had already handed the CLI (TAKEN, awaiting its flip) is not in the
+        # queue any more, so restore its take-tracking from the persisted mirror (reg['clearingTaken']) and
+        # relight the bracket, but ONLY when the CLI its host KEPT still holds it (_lease_survives). A CLI
+        # the restart did not survive never runs that /clear, so its echo is a genuine loss (_reseed_echoes /
+        # _mark_dropped_echoes), not a boundary to wait on. Never inferred from the echoes (an old stuck
+        # /clear echo would relight a false Clearing row); only this explicit list restores.
+        try:
+            _kept = self.backend._lease_survives(self.sid) if hasattr(self.backend, "_lease_survives") else False
+        except Exception:
+            _kept = False
+        if _kept:
+            _taken = [q for q in (reg.get("clearingTaken") or []) if isinstance(q, str) and q]
+            if _taken:
+                self._taken_clear_qids = _taken[-16:]
+                self._clearing = True
+            _own = reg.get("clearingOwnTurn")   # a taken /clear that ran with NOTHING to clear retires at its OWN settle: restore its arm too
+            if isinstance(_own, str) and _own:
+                self._own_turn_clear_qid = _own
+                self._clearing = True
+        elif reg.get("clearingTaken") or reg.get("clearingOwnTurn"):
+            # the restart did NOT keep this CLI, so that /clear never runs and its echo is a genuine loss
+            # (_reseed_echoes / _mark_dropped_echoes). DROP the stale mirror keys so a LATER restart over a
+            # different, host-kept CLI cannot relight the bracket from them (a Clearing row with nothing
+            # clearing). Written here rather than via _persist_echoes: the session is not yet registered, so
+            # _persist_echoes would skip these keys, and the drop is the only way to clear them now.
+            self.backend._update_reg_dropping(self.sid, drop=("clearingTaken", "clearingOwnTurn"))
         self._input_wake: asyncio.Event | None = None
         self._cur_ask_fut: asyncio.Future | None = None
         self._ask_serial = asyncio.Lock()            # ONE live ask per session: the SDK dispatches every control
@@ -5803,6 +5913,9 @@ class SdkSession:
         if meta and meta.get("qid"):
             self._fed_meta.append({"qid": meta["qid"], "qts": meta.get("qts"), "text": text, "t": int(time.time())})
             del self._fed_meta[:-64]                       # bounded: a landing is paired within a turn or two
+        # A /clear's echo is tracked at the TAKE, not here at the feed: the copy sits in self._untaken until the
+        # CLI demonstrably takes it (_untaken_taken), and only then is its qid recorded for retirement (round
+        # two recorded it here and stranded a mid-turn-fed /clear). `fresh` (fed from idle) rides _untaken.
         return text, meta
 
     def pending_meta(self):
@@ -6008,7 +6121,7 @@ class SdkSession:
             except Exception:
                 self.backend._log("persist queue (%s): %s" % (self.name, traceback.format_exc()))
 
-    def interrupt(self):
+    def interrupt(self, climb=True):
         """Escalating stop (the user 2026-07-10, terminal parity). The old body was `if self.loop and
         self.client: <control request>` — a wedged CLI ignored the request ('no current client', 14
         deep in manager.log while nimbus sat unresponsive) and a missing client made the press a
@@ -6016,9 +6129,20 @@ class SdkSession:
         recovery. Now every press climbs interrupt_action's ladder — control request, SIGINT the CLI,
         SIGKILL (its stream death runs the existing crash-heal + resume) — and every rung logs what it
         did. The episode resets when a turn settles or a fresh turn starts, so a later stop is polite
-        again."""
+        again.
+
+        climb=False is a Restart's ask (SdkBackend.relaunch): the polite rung when this episode has not
+        used it, and never a signal. A restart is not a kill, and a CLI the ladder killed under an armed
+        reconnect left the session with no CLI, since the reconnect waits for a result that never comes
+        (the post-merge review of #2059, 2026-09-24). False when that ask sent nothing."""
         with self._lock:
-            action, self._intr_level = interrupt_action(self._intr_level, bool(self.loop and self.client))
+            action, level = interrupt_action(self._intr_level, bool(self.loop and self.client))
+            if climb or action == "control":
+                self._intr_level = level
+        if not climb and action != "control":
+            self.backend._log("interrupt (%s): a restart asks a turn to stop politely only; %s not sent"
+                              % (self.name, action))
+            return False
         if action == "control":
             # Flip the in-flight flag SYNCHRONOUSLY, here on the kernel thread, before scheduling the async
             # _do_interrupt. The kernel stamps _interrupt_clicked and pushes the instant it returns from this
@@ -6028,8 +6152,9 @@ class SdkSession:
             self._interrupted = True
             self.loop.call_soon_threadsafe(
                 lambda: asyncio.ensure_future(self._do_interrupt()))
-            return
+            return True
         self._signal_cli(signal.SIGINT if action == "sigint" else signal.SIGKILL, action)
+        return True
 
     def _signal_cli(self, sig, action):
         """Deliver an escalated interrupt as a real signal to this session's own CLI (the child of THIS
@@ -6310,6 +6435,15 @@ class SdkSession:
         self._intr_level = 0
         self._compacting = False   # an abandoned /compact turn can't emit its boundary/result on the dead client
         self._clearing = False     # same: an abandoned /clear turn can't emit its init/result either
+        # A /clear this abandoned client had TAKEN can never flip now, so drop its take-tracking too, not just
+        # the bracket: leaving _taken_clear_qids / _own_turn_clear_qid would let the next unrelated turn's
+        # settle drain retire its echo (hiding the loss), and their persisted mirror would relight the bracket
+        # on a later restart over a host-kept CLI. Re-persist so the reg mirror drops them as well.
+        _had_take = bool(self._taken_clear_qids or self._own_turn_clear_qid)
+        self._taken_clear_qids = []
+        self._own_turn_clear_qid = None
+        if _had_take:
+            self.backend._persist_echoes(self.sid)
         self._mark("waiting")
         self.backend.retire_live_work(self.sid)    # the abandoned turn's stream is gone with its client
         if stranded and not self.resume_sid:
@@ -7303,6 +7437,7 @@ class SdkSession:
                         # before the yield: the CLI has not seen the text yet, so its record can only begin
                         # at or after the file's size now (_transcript_mark's argument).
                         self._untaken = {"text": str(item), "item": item, "fresh": fresh, "settled": False,
+                                         "qid": (_meta or {}).get("qid"),   # the copy's id, for the /clear-echo retire at the TAKE
                                          "t": int(time.time()), "off": None, "fsid": None}
                 if item is None:
                     await self._input_wake.wait()   # idle, or holding behind a wedged turn → wait for a change
@@ -8486,7 +8621,17 @@ class SdkSession:
             # the CLI took the last fed text (an exact event: _untaken_taken): the next queued text can go
             # in as its own message now. Checked BEFORE the result settle below marks the turn ended, so a
             # result frame is read against the state the text was fed into.
+            _took = self._untaken
             self._untaken = None
+            # a /clear the CLI has now TAKEN: record its echo's identity so it retires on THIS copy's own
+            # boundary (the flip it causes, or its own turn's settle), never by text and never before the CLI
+            # takes it (a still-queued or fed-but-untaken /clear is left owed, so an unplanned death flags it).
+            if _took and _took.get("qid") and _is_clear_cmd(_took.get("text") or ""):
+                self._taken_clear_qids.append(_took["qid"])
+                del self._taken_clear_qids[:-16]           # bounded: a /clear resolves within a turn
+                if _took.get("fresh"):
+                    self._own_turn_clear_qid = _took["qid"]   # taken from idle → its OWN turn (the no-flip backstop)
+                self.backend._persist_echoes(self.sid)     # mirror the take (reg['clearingTaken']) so a restart before its flip, on a host-kept CLI, restores it
             if self._input_wake is not None:
                 self._input_wake.set()
         if isinstance(msg, SystemMessage) and msg.subtype == "init":
@@ -8520,6 +8665,19 @@ class SdkSession:
                 # clearing bracket ends here (event-based; the ResultMessage below is only the backstop).
                 clearing = self._clearing
                 self._clearing = False
+                # Retire the echo of the TAKEN /clear this flip belongs to, by IDENTITY (the taken copy's
+                # qid), NEVER by text: the flip is the exact event that proves THIS /clear ran (the fresh
+                # conversation exists), and its optimistic echo can never land a record of its own. Keyed on
+                # the taken ledger, not the clearing BRACKET (send() lights it at enqueue) nor the feed (a
+                # fed-but-untaken /clear is not owned by this flip): a still-queued or untaken /clear keeps
+                # its echo; a fork/reconnect flip with no taken /clear retires nothing; two taken /clears
+                # retire one at a time (FIFO). A batched message's echo lands by its own record as ever.
+                taken_clear = self._taken_clear_qids.pop(0) if getattr(self, "_taken_clear_qids", None) else None
+                if taken_clear:
+                    if taken_clear == getattr(self, "_own_turn_clear_qid", None):
+                        self._own_turn_clear_qid = None    # the flip retired it: the settle backstop has nothing to do
+                    self.backend.retire_clear_echoes(self.sid, taken_clear)
+                    self.backend._persist_echoes(self.sid)   # mirror the POP even if the retire removed no echo, else reg['clearingTaken'] keeps the spent qid
                 if clearing:
                     # The CLI zeroed total_cost_usd and modelUsage at this instant (a /clear resets both,
                     # same lifecycle); reset the spend watermarks on the EVENT rather than waiting for the
@@ -8787,9 +8945,12 @@ class SdkSession:
                 m = None
             # Only adopt a REAL model id. Injected / synthetic assistant turns carry model="<synthetic>" (and
             # the CLI writes it to the transcript too); pretty_model passes unrecognised ids through verbatim,
-            # so an unguarded assign would CORRUPT the model badge to "<synthetic>". A real id always contains
-            # "claude" (claude-opus-4-8, us.anthropic.claude-…); keep the last good one otherwise.
-            if m and "claude" in m.lower():
+            # so an unguarded assign would CORRUPT the model badge to "<synthetic>". A real id contains
+            # "claude" (claude-opus-4-8, us.anthropic.claude-…), is a gateway id this process knows (declared in
+            # ROMP_ROUTER_MODELS or told by the kernel, the Extra models switch), or is the id this session PICKED
+            # (self._model_id: after a kernel restart under an off switch the told set is empty, but the model the
+            # CLI reports for the pick it was given is real; review find, 2026-09-21); keep the last good one otherwise.
+            if m and ("claude" in m.lower() or m in _router_declared() or (self._model_id and m == self._model_id)):
                 self._learn_model(pretty_model(m), raw=str(m), served=True)
         elif isinstance(msg, ResultMessage) and self._consume_move_settle(msg):
             pass   # the accepted move's turn-less result — nothing ended, so nothing settles (see the def)
@@ -9007,13 +9168,31 @@ class SdkSession:
                 # the authoritative flag so parked ops proceed immediately, instead of waiting out a 180s cap.
                 self._compacting = False
                 self._clearing = False   # /clear backstop: the turn settled, whatever the init did or didn't flip
+                # The turn the /clear rode has ended. A /clear the CLI took as its OWN fresh turn that reached
+                # NO flip (a /clear with nothing to clear still ran) retires here, the settle twin of the flip
+                # retire, by IDENTITY (the taken copy's qid) and never by text. The RETIRE CALL runs in the
+                # failed-step loop below, NOT inline: it touches a file and a lock (retire_clear_echoes ->
+                # _persist_echoes / _wake_push) and a raise here must never stop the settle (the block's rule
+                # at the finally comment above). A mid-turn SWALLOWED /clear was never its own turn, so it
+                # keeps its echo for settle_echoes to flag as a loss. Draining _taken_clear_qids ends the
+                # turn's tracking so no stranded entry poisons a later fork/reconnect flip.
+                _had_taken = bool(getattr(self, "_taken_clear_qids", None))
+                own_clear = getattr(self, "_own_turn_clear_qid", None)
+                self._own_turn_clear_qid = None
+                if hasattr(self, "_taken_clear_qids"):
+                    self._taken_clear_qids = []
                 self._settled_msg = msg  # the exact event the failure report reads: the settle ran for THIS result
                 if self._input_wake is not None:   # turn done → release the next queued turn, if any
                     self._input_wake.set()
                 failed = []
-                for what, step in (("the turn-end count", lambda: self.backend._turn_completed(self.sid)),
-                                   #   ↑ a landed result re-arms the crash-resume budget + bumps turn_seq
-                                   ("the 'waiting' state write", lambda: self._mark("waiting"))):
+                _settle_steps = [("the turn-end count", lambda: self.backend._turn_completed(self.sid)),
+                                 #   ↑ a landed result re-arms the crash-resume budget + bumps turn_seq
+                                 ("the 'waiting' state write", lambda: self._mark("waiting"))]
+                if own_clear:   # the no-flip /clear echo retire (guarded like the other file/lock steps; still ahead of the woken feeder)
+                    _settle_steps.append(("the /clear echo retire", lambda: self.backend.retire_clear_echoes(self.sid, own_clear)))
+                if own_clear or _had_taken:   # mirror the emptied take list even if the retire above removed no echo (a no-op retire skips its own persist), so a restart restores nothing stale
+                    _settle_steps.append(("the /clear take mirror", lambda: self.backend._persist_echoes(self.sid)))
+                for what, step in _settle_steps:
                     try:
                         step()
                     except Exception as e:
@@ -14517,8 +14696,23 @@ class SdkBackend:
                     if a.get(flag):
                         e[flag] = True            # WHY it was dropped (the age line / the prompt gate), for the chat
                 snap.append(e)
+        # Beside the echo mirror: the qids of /clears the CLI has TAKEN but not yet resolved (the clearing
+        # bracket, per copy). A kernel restart between a /clear's take and its flip, on a CLI its host KEPT
+        # alive, would otherwise lose the take tracking (in-memory only), so the surviving CLI's flip would
+        # find nothing to retire and the /clear echo would later be flagged never-delivered though it ran.
+        # Persisted by IDENTITY (not inferred from the echoes: an old stuck /clear echo must not relight the
+        # bracket), restored in __init__ only when _lease_survives.
+        _s = getattr(self, "sessions", {}).get(sid)   # lockless dict.get (atomic under the GIL); a stand-in backend has none
+        kw = {"echoes": snap}
+        if _s is not None:
+            # Only a LIVE session owns the take mirror. A boot re-persist runs BEFORE the SdkSession is restored
+            # (sessions is empty then), so writing the mirror from the absent session would clobber the persisted
+            # clearingTaken to [] and defeat the restart restore; skip the keys instead and preserve them.
+            kw["clearingTaken"] = [q for q in list(getattr(_s, "_taken_clear_qids", None) or []) if isinstance(q, str) and q]   # the taken /clear ids
+            _own = getattr(_s, "_own_turn_clear_qid", None)   # the own-turn arm: a restored no-flip /clear retires at its settle, not flagged lost
+            kw["clearingOwnTurn"] = _own if isinstance(_own, str) and _own else None
         try:
-            self._update_reg(sid, echoes=snap)
+            self._update_reg(sid, **kw)
         except Exception as e:
             self._log("echo mirror (%s): registry write failed: %s" % (sid[:8], e))
 
@@ -15133,11 +15327,14 @@ class SdkBackend:
         self._poke()
         return True
 
-    def interrupt(self, sid: str) -> bool:
+    def interrupt(self, sid: str, climb: bool = True) -> bool:
         s = self.sessions.get(sid)
         if not s:
             return False
-        s.interrupt()
+        if climb:
+            s.interrupt()
+        elif not s.interrupt(climb=False):       # a Restart's ask (relaunch): nothing was sent, so nothing to mark
+            return False
         append_state(self.state_dir, sid, "idle", int(time.time()) - 1, by="interrupt")
         self._poke()
         return True
@@ -15625,6 +15822,54 @@ class SdkBackend:
             self._stand_down_move(s, sid)
             return ""
         self._finish_move(s, sid, old, new)
+        return ""
+
+    def relaunch(self, sid: str) -> str:
+        """Relaunch this session's CLI process in place (see SessionBackend.relaunch; the user 2026-09-23,
+        who wanted one action for what End + Revive was doing in two — a session that has been up since
+        before a CLI upgrade cannot reach a model only the new binary knows). "" on success, else the
+        reason, verbatim for the user.
+
+        THE ROAD IS THE ONE ALREADY HERE: request_reconnect, what /effort, per-session env and the billing
+        switch take to apply a connect-time change. The run loop leaves its `async with ClaudeSDKClient`
+        and re-enters it, and for a kernel child that IS a new CLI process — spawned from `cli_path`, the
+        `claude` symlink the kernel resolved (_claude_bin), so the fresh process is whatever version is
+        installed NOW. Nothing else is touched: no kill, no `alive` flip, no death record, so no surface
+        ever paints this session dead on the way through (the board's tab, its place and its history all
+        stay put), and the reconnect resumes the same conversation.
+
+        A RUNNING TURN IS CUT, and the dashboard's confirm says so before it gets here: the reconnect is
+        ARMED first and the turn is then interrupted, so the arm exists before the interrupted turn's
+        result fires it (the deferred reconnect the ResultMessage handler runs — the CLI is never torn
+        down under a live turn, whichever order the two land in). The interrupt is the polite control
+        request, once per stop episode, and never Stop's SIGINT or SIGKILL: a Restart clicked again on a CLI
+        ignoring the request waits for the turn to end instead of killing it. A queued-but-not-started turn is not
+        interrupted: there is nothing running to cut, and the armed reconnect fires at the next turn end.
+
+        A session with no live object (dormant, or one this kernel has not started this life) has no
+        process to replace — connect() starts one, which is a fresh CLI on the current binary and so the
+        same outcome by the shortest road."""
+        reg = read_reg(self.state_dir, sid)
+        if not reg:
+            return "romp has no record of this session"
+        if not reg.get("alive"):
+            return "this session is not running — revive it to bring it back"
+        with self._lock:
+            s = self.sessions.get(sid)
+        if s is None:
+            # nothing to tear down: the next connect IS the fresh CLI
+            return "" if self.connect(sid) else "the session's CLI did not start (see the kernel log)"
+        with s._lock:
+            running = s.inflight > 0          # a turn in flight NOW (busy() also counts a queued one: nothing to cut there)
+        s.request_reconnect()                 # armed first — see the docstring's order
+        # the polite rung only, never Stop's ladder: a click again while the CLI ignores the request must not
+        # signal it (SdkSession.interrupt's climb=False; the post-merge review of #2059, 2026-09-24)
+        asked = running and self.interrupt(sid, climb=False)
+        self._log("relaunch (%s): %s; its CLI is replaced by a fresh one resuming the same conversation"
+                  % (s.name, "the running turn is cut" if asked else
+                     "the running turn was already asked to stop, and the fresh CLI comes up when it ends" if running else
+                     "idle, reconnecting now"))
+        self._poke()
         return ""
 
     def _stand_down_move(self, s, sid: str) -> None:
@@ -17038,7 +17283,8 @@ class SdkBackend:
         THE RULE: every site that adds, replaces, pops, flags or REWORDS an atom in `_live` calls this,
         once per call that changed something: _stash_live, _forward (its eviction included), unqueue (the
         cancelled copy's echo), dismiss_echo, prune_live,
-        retire_live_work, settle_echoes (the overtaken flags, one bump per call that flagged), and the two
+        retire_live_work, retire_clear_echoes (the /clear echo popped at its boundary), settle_echoes (the
+        overtaken flags, one bump per call that flagged), and the two
         flag writes _mark_dropped_echoes makes outside the lock (each takes
         the lock for its bump). tests/test_live_tail_rev.py pins the set by source, so a new queue or echo
         mutator that touches `_live` fails that census until it bumps. Only a CHANGE bumps: a prune that
@@ -17225,6 +17471,48 @@ class SdkBackend:
                       % (sid[:8], a["_echo_text"]), problem=True)
         self._persist_echoes(sid)                      # the flag rides the mirror across a restart
         self._wake_push()
+
+    def retire_clear_echoes(self, sid: str, qid: str) -> None:
+        """Drop the ONE /clear input echo named by `qid` at the CLEAR BOUNDARY of the /clear the CLI took:
+        the lastSid flip that proves it ran (SdkSession._on_message init), or, for a /clear that found
+        nothing to clear, its own turn's ResultMessage settle. Keyed on the TAKEN copy's IDENTITY, NEVER by
+        text: the caller supplies the qid it recorded when the CLI TOOK this /clear (SdkSession._taken_clear_qids;
+        a still-queued or fed-but-untaken /clear is never passed here, so its echo is left owed).
+
+        A /clear resets the transcript and writes NO user record for itself, so its echo can never LAND
+        (prune_live's by-text match never fires) and, sent in the SAME whole second as a batched message,
+        is never OVERTAKEN either (settle_echoes' strictly-later floor): with neither exit it rode every
+        push as a dashed 'sending…' /clear chip that never retired, beside the delivered message and its
+        answer (the user's batch report). The boundary is the exact event that proves the /clear RAN, so its
+        echo has done its job and retires here, event-based, no floor. A /clear that was never taken (still
+        queued, boot-restored) or was taken but SWALLOWED (folded mid-turn, not its own turn) reaches no
+        boundary of its own and keeps its echo, so a genuine loss still shows: settle_echoes flags it dropped
+        once a later human turn overtakes it (the swallowed copy is drained from the taken list at settle so
+        it never poisons a later flip, but its echo is not retired).
+        The echo's dict key IS its qid (send() stashes it under the copy's key), and a command-feedback atom
+        is skipped as prune_live skips it (it owes no landing). A batched message's echo lands as ever by its
+        own record. Pops only, never a stash, so it is off the two-stash census (test_live_tail_rev.py) and
+        bumps the revision like every retiring sweep."""
+        if not qid:
+            return
+        removed = False
+        with self._live_lock:
+            d = self._live.get(sid)
+            if not d:
+                return
+            a = d.get(qid)      # the echo is stashed under its own qid (send: _stash_live(sid, key, echo))
+            if a is not None and a.get("_echo_text") and not a.get("command") \
+                    and _is_clear_cmd(a.get("_echo_text") or ""):
+                if d.pop(qid, None) is not None:
+                    removed = True
+            if removed:
+                self._touch_live(sid)
+            if not d and self._live.get(sid) is d:
+                self._live.pop(sid, None)
+        if removed:
+            self.forget_fed(sid, qid)      # the fed ledger entry too: its landing will never come (it wrote no record)
+            self._persist_echoes(sid)      # the mirror drops it too, so a restart mid-clear re-seeds nothing stale
+            self._wake_push()
 
     def retire_live_work(self, sid: str) -> None:
         """Drop the sid's live-tail WORK atoms (stream messages — not input echoes, not command feedback)

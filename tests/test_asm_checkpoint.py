@@ -106,8 +106,8 @@ class Harness(unittest.TestCase):
         with em._ASM_CKPT_LOCK:
             em._HYDRATED.clear(); em._HYDRATED_BYTES[0] = 0
         em._LAZY_FILES.clear()
-        memo = getattr(em, "_ASM_DOC_MEMO", None)          # the seeded walk's document memo (2026-09-15); getattr so a copy of
-        if memo is not None:                               #  this file at an older base reds on behaviour, not on the name
+        memo = getattr(em, "_ASM_DOC_MEMO", None)          # the document memo the seeded walk and the restore share; getattr
+        if memo is not None:                               #  so a copy of this file at an older base reds on behavior, not on the name
             with em._ASM_CKPT_LOCK:
                 memo.clear()
                 getattr(em, "_ASM_DOC_MEMO_BYTES", [0])[0] = 0
@@ -1192,9 +1192,9 @@ class SettledCut(Harness):
 
     def test_the_standing_document_holds_until_the_tail_reaches_the_share_or_a_compaction_lands(self):
         """Correction 2, the churn bound: with the entry standing (no restart), a settled turn appended past the cut leaves
-        the document as it is (`written`: the tail is under an eighth of the pre-cut bytes); once the tail past the standing
-        cut reaches the share the settle rewrites the document with a later cut; a compaction landing past the cut rewrites
-        at once."""
+        the document as it is (the tail is under an eighth of the pre-cut bytes; since 2026-09-24 the parse after the write
+        re-seats the entry on the document, so the writer finds it `restored`); once the tail past the standing cut reaches
+        the share the settle rewrites the document with a later cut; a compaction landing past the cut rewrites at once."""
         base = compacting_variant([G.uline(NOW - 3600, "hello " * 2000, "u1", None), G.aline(NOW - 3595, "hi " * 4000, "a1", "u1", stop="end_turn")], "churn")
         recs = base + _turns_after(base, "churn", 2)
         path, whole, wrote = self._written_and_equal("churn", recs)
@@ -1205,7 +1205,10 @@ class SettledCut(Harness):
         recs = recs + _turns_after(recs, "small", 1)
         pp = Path(path); pp.write_text("".join(json.dumps(r) + "\n" for r in recs))
         self.parse(path); em._ASM_CKPT_STATS["skipped"] = {}
-        self.assertFalse(self.doc(path)); self.assertEqual(em.asm_checkpoint_stats()["skipped"], {"written": 1}, "%s" % em.asm_checkpoint_stats()["skipped"])
+        # `restored`, not `written`: the parse re-seated the whole entry on its own document (2026-09-24), which stands for it.
+        # The writer's churn hold for an entry that stays WHOLE (the `written` skip this line pinned before) is pinned in
+        # test_asm_reseat's ARefusedReseatStaysWhole, on entries a refusal keeps whole
+        self.assertFalse(self.doc(path)); self.assertEqual(em.asm_checkpoint_stats()["skipped"], {"restored": 1}, "%s" % em.asm_checkpoint_stats()["skipped"])
         self.assertEqual(len(_doc(path)["records"]), n0, "the document is the one written before")
         # the tail grows to the share: the settle rewrites with a later cut
         tail = os.path.getsize(path) - pre
@@ -2329,15 +2332,16 @@ class SeededDocumentMemo(Harness):
             rewound, fails = jd._per_file_rewound(sid, files)
             self.assertEqual(fails, 0); sets.append(rewound)
         self.assertEqual(sets, [answer, answer, answer], "the three walks agree with the memo road's answer")
-        read = em.read_bytes_report().get(doc_path, 0)
-        self.assertEqual(read, size, "the document decoded ONCE for three walks: %d bytes read of a %d byte document (the base read it three times)" % (read, size))
-        self.assertEqual(em.asm_checkpoint_stats()["parse"].get("seeded:asmDocMemo", 0) - hits0, 2, "two walks served from the memo")
+        read = em.read_bytes_report().get(doc_path, 0)             # the one decode is the restore's before the walks, since the restore
+        #                                                             reads through the same memo (2026-09-24): the walks read none of it
+        self.assertEqual(read, 0, "the document decoded ONCE, by the restore, for three walks: %d bytes read of a %d byte document (the base read it three times)" % (read, size))
+        self.assertEqual(em.asm_checkpoint_stats()["parse"].get("seeded:asmDocMemo", 0) - hits0, 3, "all three walks served from the memo")
 
     def test_a_memo_hit_still_reads_the_leafs_guard_bytes(self):
         jd, b_sid, b_leaf, namers, leaves, answer = self._world("gd", idx=2)
         doc_path = str(em._asm_ckpt_file(str(b_leaf)))
         self._restored_first(b_leaf, b_sid)
-        jd._per_file_rewound(namers[0], [str(leaves[namers[0]])])                    # the miss primes the memo
+        jd._per_file_rewound(namers[0], [str(leaves[namers[0]])])                    # a hit: the restore filled the memo (2026-09-24)
         doc = json.loads(gzip.decompress(pathlib.Path(doc_path).read_bytes()))        # the document's own cut and guard
         cut_off, _pre_n, guard_hex = doc["files"][b_sid]["cut"]; guard = bytes.fromhex(guard_hex)
         self.assertTrue(guard)
@@ -2357,7 +2361,7 @@ class SeededDocumentMemo(Harness):
         jd, b_sid, b_leaf, namers, leaves, answer = self._world("ip", idx=3)
         doc_path = str(em._asm_ckpt_file(str(b_leaf))); size = os.path.getsize(doc_path)
         self._restored_first(b_leaf, b_sid)
-        jd._per_file_rewound(namers[0], [str(leaves[namers[0]])])                    # the miss primes the memo
+        jd._per_file_rewound(namers[0], [str(leaves[namers[0]])])                    # a hit: the restore filled the memo (2026-09-24)
         st0 = os.stat(doc_path)
         data = bytearray(pathlib.Path(doc_path).read_bytes()); data[-1] ^= 0x01        # one byte flipped, the size the same
         pathlib.Path(doc_path).write_bytes(bytes(data)); os.utime(doc_path, ns=(st0.st_atime_ns, st0.st_mtime_ns + 1_000_000_000))
@@ -2429,6 +2433,8 @@ class SeededDocumentMemo(Harness):
         self.addCleanup(setattr, em, "_ASM_DOC_MEMO_CAP", saved)
         with em._READ_BYTES_LOCK:
             em._READ_BYTES.clear()
+        with em._ASM_CKPT_LOCK:                                                         # the restores memoized all three under the default
+            em._ASM_DOC_MEMO.clear(); em._ASM_DOC_MEMO_BYTES[0] = 0                     #  ceiling (2026-09-24): the walks fill it under this one
         for jd, b_sid, b_leaf, namers, leaves, answer in worlds:
             rewound, fails = jd._per_file_rewound(namers[0], [str(leaves[namers[0]])])
             self.assertEqual((fails, rewound), (0, answer))

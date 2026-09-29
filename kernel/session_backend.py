@@ -18,7 +18,7 @@ abstract method, so the duck-typing can't drift.
 Method groups:
   liveness/identity — owns, live_sessions
   control           — send, interrupt, set_model, set_mode, set_effort, set_fast, clear, compact
-  lifecycle         — spawn, resume, move, connect, kill, rename
+  lifecycle         — spawn, resume, move, relaunch, connect, kill, rename
   coordination      — working_note, set_working_note, wake   (backend-agnostic: the kernel keeps the note in
                       its own store, and the SDK backend wakes a session by an enqueue)
   chat tail         — pending_queued, live_atoms, prune_live
@@ -342,6 +342,21 @@ class SessionBackend(ABC):
         backend never reads as movable by omission."""
         return ("this session's backend has no way to move a running session — "
                 "start a new session in that folder instead")
+
+    def relaunch(self, sid: str) -> str:
+        """Relaunch a session's own CLI PROCESS in place, keeping the session: the process it is running
+        ends and a fresh one resumes the same conversation (the user 2026-09-23, whose long-lived sessions
+        were stuck on the CLI they launched with, so a model only a newer CLI knows was out of reach — the
+        alias resolved to the old model and the new id was refused as unrecognized). Everything that makes
+        the session itself — its sid, name, folder, tags, model and effort picks, queue and transcript —
+        is untouched, and nothing here marks it dead: this is one action, not an end and a revive.
+        "" on success; any other string is the reason it did not happen, shown to the user verbatim.
+        SDK-only for now (see SdkBackend.relaunch, which rides the reconnect road every connect-time
+        switch already takes); a backend with no relaunch primitive romp can drive inherits this
+        refusal, worded for no backend in particular, so a new backend never reads as relaunchable by
+        omission — `move`'s shape."""
+        return ("this session's backend has no way to relaunch a running session — "
+                "end it and revive it instead")
 
     @abstractmethod
     def kill(self, sid: str) -> bool: ...

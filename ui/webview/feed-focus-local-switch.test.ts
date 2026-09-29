@@ -85,7 +85,7 @@ test("the kernel's frame reconciles: only the echo (the pending session and its 
 test("the chat tells the shell its tab on every switch with its announcement number and whether the reader made it, and re-announces it when a jump reached a closed session or landed on the tab already shown", () => {
   const fn = slice(RENDER, "function notifyActive() {", "// Move id to the front of the recency stack");
   assert.match(RENDER, /let activeTabNonce = 0;/);
-  assert.match(fn, /const nonce = \+\+activeTabNonce;\s*\n\s*const gesture = inInputEvent\(\);/, "one number per announcement; the gesture read off the event under dispatch");
+  assert.match(fn, /const nonce = \+\+activeTabNonce;\s*\n\s*const gesture = gestureHeld \|\| inInputEvent\(\);/, "one number per announcement; the gesture read off the event under dispatch, or held by a message the reader sent (asGesture, 2026-09-23)");
   assert.match(fn, /if \(vscodeApi\) vscodeApi\.postMessage\(\{ type: "activeTab", id: activeId, nonce \}\);/, "the kernel's copy carries the number it echoes");
   assert.match(fn, /window\.parent\.postMessage\(\{ romp: "activeTab", id: activeId, nonce, gesture \}, "\*"\)/, "the shell's copy, for the feed pane on the same page, tagged");
   assert.match(RENDER, /if \(activeId === m\.id\) notifyActive\(\);/,

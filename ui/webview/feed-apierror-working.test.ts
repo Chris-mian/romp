@@ -34,7 +34,7 @@ test("Retry renders WITH its explaining badge as one visual unit — never alone
   // badge immediately before its button, as DIRECT row2 children: grouped mode hides idwrap (the
   // card drops its name there), which is exactly how the screenshot got a lone Retry with no badge —
   // the badge sat in the hidden wrap while the action-row button stayed visible
-  assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, origin,/);
+  assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, badges\);/);   // the badges and the swirl moved to card-sections.ts (round two of the box content PR: one builder for the card and the Needs you row)
   assert.match(FEED, /actions\.append\(revive\);/);   // the held-mail Approve and Deny left this row 2026-09-19 (a notice card's stored actions)
   assert.doesNotMatch(FEED, /actions\.append\(apiRetry/, "no lone Retry detached from its badge");
   assert.doesNotMatch(FEED, /idwrap\.append\([^)]*apiBadge/, "…and never inside the grouped-mode-hidden idwrap");

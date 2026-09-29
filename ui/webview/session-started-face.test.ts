@@ -8,7 +8,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const ROOT = path.resolve(process.cwd(), "..");
-const FEED = fs.readFileSync(path.join(ROOT, "ui", "webview", "feed.ts"), "utf8");
+const FEED = fs.readFileSync(path.join(ROOT, "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.join(ROOT, "ui", "webview", "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
 
 test("the card item and the tree node carry the session-started records the kernel ships", () => {
   assert.match(FEED, /interface AskItem \{\n  sessionStarted\?: \{ why: string; parent: string \| null \} \| null;/, "the card's face record");
@@ -19,7 +19,7 @@ test("a session-started root says so on its own line beside the sections, shown 
   const face = FEED.indexOf('fe = el("div", "fask-distill fask-face");');
   assert.ok(face > 0, "the face has its own element (the distill line's look), created once");
   assert.ok(FEED.includes("secs.parentNode!.insertBefore(fe, secs.nextSibling);"), "kept OUTSIDE the collapsible sections, whose logic hides the distill line");
-  const sections = FEED.indexOf("applySections(a, it, !!distillShown);");
+  const sections = FEED.indexOf("applySections(a, it, !!distillShown, sectionEnv);");   // the card's sections, tree and badges moved to card-sections.ts (plans/needs-you.md, one builder with the Needs you row)
   assert.ok(sections > 0 && face > sections, "set after the section logic runs");
   assert.ok(FEED.includes('"Started by the session while working on \\u201c" + ss.parent + "\\u201d: "'), "names the parent request when known");
   assert.ok(FEED.includes('"Started by the session on its own: "'), "and says so plainly when none is known");

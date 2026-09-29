@@ -100,9 +100,13 @@ test("drop commits through the SAME reorderTo — neighbor + side, hidden-view i
     "the neighbours inside the dragged copy's own group first (T264b)");
   assert.match(body, /const prev = prevIn \?\? \(nextIn \? null : walk\(dragged\.previousElementSibling, back, false\)\);/,
     "…falling back across groups only when the group holds no other tab");
-  // …and a drop changes no membership: a tab landing in another section re-sections on the next
-  // render — the tab menu's "Move to" rows are the membership path (v1)
-  assert.doesNotMatch(body, /editUnion|moveUnion|editTag/, "no tag write on a tab drop");
+  // …and since 2026-09-23 the drop also WRITES THE TAG its zone names (the user: dragging a tab onto a
+  // group should put the session IN it, and the ungrouped row should take the tag back off). The decision
+  // is drag-join.ts's, read off the same zone the cue painted; the write is the tab menu's Tags flyout's
+  // own (postTagEdit, or the editTag wire), so ONE writer owns tags — the handler inlines none of it.
+  assert.match(body, /const d = tabDropFor\(dragged, draggedId, viewTagUnion\(effViews\(\)\)\)\.drop;/);
+  assert.match(body, /if \(postTabDropTag\(d, draggedId\)\) tabDragCommitted = true;/);
+  assert.doesNotMatch(body, /editUnion|moveUnion|editTag|postTagEdit/, "no tag writer inlined in the handler");
   // …and reorderTo still persists exactly as before
   const rt = between("function reorderTo(", "\n}");
   assert.match(rt, /commitTabOrder\(\);/);
@@ -127,7 +131,11 @@ test("cancel (Escape / dropped outside) re-renders from the untouched order, FLI
   // without its manager, 2026-09-10) is a cancelled drag, so the strip FLIPs home
   const drop = between('tabs.addEventListener("drop"', "});");
   assert.match(drop, /tabDragCommitted = reorderTo\(/);
-  assert.doesNotMatch(drop, /tabDragCommitted = true;/);
+  // the ONE other claim of a commit is a tag write that ACTUALLY happened (drag into / out of a group,
+  // 2026-09-23): postTabDropTag answers false for a drop that wrote nothing, so a gesture that moved
+  // nothing and wrote nothing still takes the cancel path and FLIPs home
+  assert.equal((drop.match(/tabDragCommitted = true;/g) || []).length, 1);
+  assert.match(drop, /if \(postTabDropTag\(d, draggedId\)\) tabDragCommitted = true;/);
 });
 
 test("reduced motion: the mutation still happens, only the transition is skipped", () => {

@@ -6,7 +6,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed-age.ts"), "utf8");   // relAge lives in feed-age.ts since round two of the box content PR: the chat page's Needs you row reads the same words
 
 test("relAge renders every sub-minute age as \"<1m ago\", never a seconds count", () => {
   assert.match(FEED, /if \(s < 60\) return `<1m ago`;/);

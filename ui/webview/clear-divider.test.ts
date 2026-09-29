@@ -95,6 +95,16 @@ test("sdk backend: the clearing bracket is set on delivery and ends on exact eve
   // ends: the lastSid-flipping init (the fork landed) + the turn's ResultMessage backstop
   assert.match(SDK, /self\.backend\._update_reg\(self\.sid, lastSid=fsid\)[\s\S]{0,400}self\._clearing = False/);
   assert.match(SDK, /self\._compacting = False\n\s*self\._clearing = False\s*# \/clear backstop/);
+  // both ends retire the never-landing /clear echo (the batch report) BY THE TAKEN COPY'S IDENTITY (qid), never by
+  // text: the init flip pops the oldest taken /clear qid, and the backstop retires a /clear taken as its OWN turn
+  // that reached no flip. A queued or fed-but-untaken or swallowed /clear keeps its echo (test_clear_batch_echo_retire.py).
+  assert.match(SDK, /def retire_clear_echoes\(self, sid: str, qid: str\) -> None:/);
+  assert.match(SDK, /taken_clear = self\._taken_clear_qids\.pop\(0\)[\s\S]{0,600}self\.backend\.retire_clear_echoes\(self\.sid, taken_clear\)/);
+  // the settle backstop runs in the failed-step loop (a raise in the retire cannot stop the settle), keyed on the own-turn qid
+  assert.match(SDK, /own_clear = getattr\(self, "_own_turn_clear_qid", None\)/);
+  assert.match(SDK, /_settle_steps\.append\(\("the \/clear echo retire", lambda: self\.backend\.retire_clear_echoes\(self\.sid, own_clear\)\)\)/);
+  // the /clear's echo qid is recorded when the CLI TAKES the copy (not at the feed): a fed-but-untaken /clear is left owed
+  assert.match(SDK, /if _took and _took\.get\("qid"\) and _is_clear_cmd\(_took\.get\("text"\) or ""\):[\s\S]{0,300}self\._taken_clear_qids\.append\(_took\["qid"\]\)/);
 });
 
 // executed twin of the python truth table — the command sniff is the bracket's trigger, so its shape

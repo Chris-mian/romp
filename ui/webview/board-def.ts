@@ -92,11 +92,12 @@ export const FEED_KINDS: Readonly<Record<KindId, CardKind>> = {
   goal: {
     id: "goal",
     sections: [                                                   // the toggles makeAskCard mints; applySections wires them
-      { id: "bg", label: "Background", via: "makeAskCard" },
-      { id: "summary", label: "Summary", via: "makeAskCard" },
-      { id: "subgoals", label: null, via: "makeAskCard" },        // "N sub-goals", the count in the label (applySections)
-      { id: "stall", label: "Stalled", via: "makeAskCard" },
-      { id: "tasks", label: null, via: "makeAskCard" },           // the awaiting pill's word (spin-caption awaitWord)
+      // the section toggles are minted by the shared builder (card-sections.ts buildSectionElements) since the box content round: the Needs you row builds the same
+      { id: "bg", label: "Background", via: "buildSectionElements" },
+      { id: "summary", label: "Summary", via: "buildSectionElements" },
+      { id: "subgoals", label: null, via: "buildSectionElements" },        // "N sub-goals", the count in the label (applySections)
+      { id: "stall", label: "Stalled", via: "buildSectionElements" },
+      { id: "tasks", label: null, via: "buildSectionElements" },           // the awaiting pill's word (spin-caption awaitWord)
     ],
     actions: [
       CLEAR,
@@ -110,7 +111,7 @@ export const FEED_KINDS: Readonly<Record<KindId, CardKind>> = {
     ],
     menu: MENU,
   },
-  placeholder: { id: "placeholder", sections: [{ id: "tasks", label: null, via: "makeAskCard" }], actions: [CLEAR, BELL], menu: MENU },
+  placeholder: { id: "placeholder", sections: [{ id: "tasks", label: null, via: "buildSectionElements" }], actions: [CLEAR, BELL], menu: MENU },
   parked: { id: "parked", sections: [], actions: [CLEAR, { id: "revive", label: "Revive", via: "makeAskCard" }, BELL], menu: MENU },
   notice: {
     id: "notice",

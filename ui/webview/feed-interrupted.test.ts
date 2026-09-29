@@ -9,19 +9,19 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
-const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
+const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.css"), "utf8");   // the badge and paragraph rules moved to the sheet both pages import (plans/needs-you.md)
 
 test("the interrupted badge is built once and rides the wrapping chip row", () => {
-  assert.match(FEED, /const intBadge = el\("span", "fask-interrupted"\)/);
-  assert.match(FEED, /intBadge\.textContent = "interrupted"/, "text label, no emoji/glyph");
-  assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge\)/);
-  assert.match(FEED, /a\._interrupted = intBadge;/);
+  assert.match(FEED, /badge\("fask-interrupted", BADGE_WORDS\.interrupted\.text, BADGE_WORDS\.interrupted\.title\)/);   // the badges moved to card-sections.ts (round two of the box content PR: one builder for the card and the Needs you row)
+  assert.match(FEED, /interrupted: \{ text: "interrupted", title: /, "text label, no emoji/glyph (the words in card-sections.ts, worn by the Needs you row too)");
+  assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, badges\)/);
+  assert.match(FEED, /a\._badges = badges;/);
 });
 
 test("it.interrupted toggles the badge, yielding to the stalled chips and the in-flight interrupting badge", () => {
   assert.match(FEED,
-    /\(it\.interrupted && !it\.interrupting && !it\.nudgeFailed\) \? "" : "none";/,
+    /if \(it\.interrupted && !it\.interrupting && !it\.nudgeFailed\) out\.push\(badge\("fask-interrupted"/,
     "past-tense badge shows only once the interrupt has SETTLED (not while interrupting) and no nudge-failed story covers the card");
   assert.match(FEED, /interrupted\?: boolean;/, "the card payload carries the kernel flag");
 });

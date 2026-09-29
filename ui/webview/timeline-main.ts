@@ -3,7 +3,7 @@
 // together with the boot glue, into dist/timeline.js for the rompTimeline
 // webview view. The extension host holds the kernel WebSocket (app=timeline)
 // and relays frames via postMessage, exactly like chat/feed.
-import { installDomHelpers, dispatchFrame, bridgeFunctions } from "./timeline-boot";
+import { installDomHelpers, dispatchFrame, bridgeFunctions, writeTabGroupsBlob } from "./timeline-boot";
 import { installSettingsSync, loadSettings, onExternalSettingsChange } from "./settings";
 import { applyTheme } from "./theme";
 import { perfFrameHandler } from "./perf-telemetry";
@@ -18,6 +18,8 @@ const post = (m: Record<string, unknown>) => api.postMessage(m);
 
 installDomHelpers(HTMLElement.prototype);
 Object.assign(window, bridgeFunctions(post));
+// the view's fold write, the one implementation (timeline-boot.ts writeTabGroupsBlob; federation.ts sets the same slot on a browser page)
+(window as any).__rompWriteTabGroups = writeTabGroupsBlob;
 // Usage bars belong to the host's chrome (here: the status-bar item's menu),
 // not the pane — the view hands the /usage payload to the host and keeps its
 // own toolbar copy hidden, like it does for the web shell's rail.

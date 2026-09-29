@@ -35,7 +35,7 @@ test("the post-reload restore is one-shot and never clobbers live typing", () =>
 
 test("every draft mutation keeps the persisted copy in sync (switch / send / close)", () => {
   // tab switch stashes the leaving tab's draft (and renders the entering tab's citation chip) → persist
-  assert.match(RENDER, /ta\.value = drafts\.get\(id\) \?\? "";\s*\n\s*growComposer\(ta\);\s*\n\s*renderComposerChips\(id\);[\s\S]*?persistDrafts\(\);/);
+  assert.match(RENDER, /ta\.value = drafts\.get\(id\) \?\? "";\s*\n\s*refreshComposerMenus\?\.\(\);\s*\n\s*growComposer\(ta\);\s*\n\s*renderComposerChips\(id\);[\s\S]*?persistDrafts\(\);/);   // the menus re-read the swapped text first (2026-09-23)
   // sending clears the draft (and ends its start-stamp) → persist
   assert.match(RENDER, /drafts\.delete\(activeId\); draftStartedAt\.delete\(activeId\); persistDrafts\(\);\s*\/\/ sent/);
   // closing a tab drops its draft AND its citation AND its edit pill → persist (the user 2026-08-04)

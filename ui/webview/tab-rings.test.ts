@@ -33,7 +33,7 @@ test("the tab wears its ring through the registry's composition, right after the
   for (const c of [...RINGS, "tab-ask"]) assert.equal(RENDER.split('"' + c + '"').length - 1, 0, "no hand-rolled ring class in render.ts (" + c + "): the classes live in the registry");
   assert.doesNotMatch(RENDER, /tabAskClass/, "the branch's one-off ask class is gone: the magenta ring is a widget like the others");
   assert.match(RENDER, /^import \{ tabStateClass, sectionPip, sectionPipMembers, sectionPipTitle \} from "\.\/tab-state";/m);
-  assert.match(RENDER, /^import \{ composeTabWidgets, composeTabRing, applyTabBadgeMode, needsYouPhrase, ringSwitch, tabHotkey, miniChord \} from "\.\/tab-widgets";/m);   // miniChord joined the import with the per-tab hot keys (merged 2026-09-14)
+  assert.match(RENDER, /^import \{ composeTabWidgets, composeTabRing, applyTabBadgeMode, needsYouPhrase, ringSwitch, tabHotkey, miniChord, needsYouWidgetOn \} from "\.\/tab-widgets";/m);   // miniChord joined the import with the per-tab hot keys (merged 2026-09-14); needsYouWidgetOn gates the keycap-room strip class (2026-09-24)
   // the folded header's pip and its tooltip read the same switches, so a fold never shows a colour no unfolded tab would
   const head = RENDER.slice(RENDER.indexOf("function makeGroupHead("), RENDER.indexOf("function applyTabStatus("));
   assert.match(head, /const kind = sectionPip\(hidden\.map\(\(id\) => sessions\.get\(id\)\?\.status\), ringSwitch\(settings\.tabWidgets\)\);/);
@@ -116,8 +116,13 @@ test("the reference says what the Needs you cue means, when it shows (idle, wait
   assert.match(REF, prose("Blocked outranks Needs you, and Needs you outranks retrying."));
   assert.match(REF, prose("With notifications on, the card entering Needs you is also what notifies you"));
   assert.match(REF, prose("the session picker marks the same sessions with the magenta count dot, on each picker row and on the button that names the current session"), "the phone's picker carries the mark too");
-  // the rings as widgets (2026-09-14): the three rows, their switches, the one-at-a-time rule and what a switched-off ring leaves
-  assert.match(REF, prose("each with its own switch, listed in that order because a tab wears one cue at a time and the first that applies wins: Blocked over Needs you over retrying."));
+  // the rings as widgets (2026-09-14): the three rows, their switches, the precedence order and what a switched-off ring leaves
+  assert.match(REF, prose("each with its own switch, listed in that precedence order: Blocked over Needs you over retrying."));
+  // the precedence-copy fix (2026-09-24, PR 2080 review): the ring precedence is kept for the badge off, but the copy no
+  // longer claims one cue at a time universally: with the state badge on (the default), a Blocked or retrying tab ALSO
+  // wears the Needs-you count dot, so the reference names that instead of teaching a false one-cue rule.
+  assert.match(REF, prose("with the state badge on (the default), the Needs-you count dot also shows beside Blocked's red ring and beside the retrying amber dot"));
+  assert.doesNotMatch(REF, prose("a tab wears one cue at a time and the first that applies wins: Blocked over Needs you over retrying."), "the old universal one-cue claim is gone (a default badge tab wears two cues at once)");
   assert.match(REF, /\*\*Tab widgets\*\*\s+\(\*\*Blocked\*\*, \*\*Needs\s+you\*\*, \*\*Retrying\*\*\)/, "the rows by their labels, in precedence order");
   assert.match(REF, prose("A cue switched off leaves the tab with its dot; the small dot on a folded group's header and the phone's picker follow the same switches."));
   assert.match(REF, prose("the three rings around a tab are listed below those rows without a place in the order, since a ring has no side of the name"), "the strip paragraph's Tab widgets sentence");

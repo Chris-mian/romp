@@ -10,7 +10,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
 // ── the switch: the View menu's fourth row ───────────────────────────────────────────────────────────
@@ -105,7 +105,7 @@ test("the section's cards are SECOND elements: its own caches under 'f:' keys, t
   assert.doesNotMatch(sec, /\baskEls\b|\bgroupEls\b/, "never the board's caches — no card below moves because of the section");
   // the same update gate as the board (feed-card-gate.ts)
   assert.match(sec, /const ik = cardInputsKey\(e\.ask, gate\);\s*\n\s*if \(cardNeedsUpdate\(card as any, e\.ask, ik\)\) \{ updateAskCard\(card, e\.ask\); \(card as any\)\._ik = ik; \}/);
-  assert.match(sec, /function removeFocusSection\(\): void \{\s*\n\s*const sec = document\.getElementById\("feed-focus"\) as any;\s*\n\s*if \(sec\) \{ \(sec\._rule as HTMLElement \| undefined\)\?\.remove\(\); sec\.remove\(\); \}[^\n]*\n\s*fsAskEls\.clear\(\); fsGroupEls\.clear\(\);/,
+  assert.match(sec, /function removeFocusSection\(\): void \{\s*\n\s*const sec = document\.getElementById\("feed-focus"\) as any;\s*\n\s*if \(sec\) \{ \(sec\._rule as HTMLElement \| undefined\)\?\.remove\(\); sec\.remove\(\); \}[^\n]*\n\s*for \(const \[id, f\] of Array\.from\(fsAskEls\)\) unregisterSectionHost\(id, f\);[^\n]*\n\s*fsAskEls\.clear\(\); fsGroupEls\.clear\(\);/,
     "the section leaves with its rule, which is its sibling since the divider moved under the box (the user 2026-09-19)");
   // the rule is built with the section and placed after it, before the board, every render
   assert.match(sec, /sec\.append\(head, empty, cols\);\s*\n\s*\(sec as any\)\._rule = rule;/, "the rule is not a child of the section");
@@ -180,7 +180,9 @@ test("Clear, its 180 ms finish and Undo resolve by ITEM across both copies, neve
   assert.doesNotMatch(FEED, /if \(askEls\.get\(it\.itemId\) === card && card\.classList\.contains\("dismissing"\)\)/, "the element-identity guard is gone from the ask card's finish");
   assert.match(FEED, /for \(const c of groupTwins\(cur\.turnId\)\) c\.classList\.add\("dismissing"\);/, "…and the group card's");
   assert.match(FEED, /for \(const c of cardTwins\(it\.itemId\)\) c\.classList\.remove\("dismissing"\);/, "Undo restores both copies");
-  assert.match(FEED, /const f = fsAskEls\.get\(m\.itemId\);[\s\S]*?leaving\.push\(\[f, \(\) => fsAskEls\.get\(m\.itemId\) === f, \(\) => fsAskEls\.delete\(m\.itemId\)\]\);/, "the session-wide Clear takes the copies along");
+  assert.match(FEED, /const f = fsAskEls\.get\(m\.itemId\);[\s\S]*?leaving\.push\(\[f, \(\) => fsAskEls\.get\(m\.itemId\) === f, \(\) => \{ fsAskEls\.delete\(m\.itemId\); unregisterSectionHost\(m\.itemId, f\); \}\]\);/, "the session-wide Clear takes the copies along, out of the registry too");
+  assert.match(FEED, /if \(c\) leaving\.push\(\[c, \(\) => askEls\.get\(m\.itemId\) === c, \(\) => \{ askEls\.delete\(m\.itemId\); unregisterSectionHost\(m\.itemId, c\); \}\]\);/, "…and the board's card leaves the registry the same way (a contributor's note on PR 2141: the board-card branch had no covering test)");
+  assert.match(FEED, /for \(const id of Array\.from\(fsAskEls\.keys\(\)\)\) if \(!desired\.has\("f:a:" \+ id\)\) \{ const f = fsAskEls\.get\(id\); f\?\.remove\(\); if \(f\) unregisterSectionHost\(id, f\); fsAskEls\.delete\(id\); \}/, "a copy whose card left the focused session's view leaves the registry as it leaves the section (the same note)");
   assert.match(FEED, /for \(const \[tid, g\] of Array\.from\(fsGroupEls\)\) \{/, "…group copies too");
 });
 
@@ -200,7 +202,8 @@ test("the three follow-ups after the review: Tab keeps the copy, Clear from a co
   // (b) Clear from the copy still gives the board run's header its one-motion exit (the section has no run headers)
   assert.match(FEED, /dressHeaderIfLast\(askEls\.get\(it\.itemId\) \?\? card, it\.sid\);/);
   // (c) a section pill picked on either copy repaints both: the disclosure is the card's
-  assert.match(FEED, /const twins = cardTwins\(id\);\s*\n\s*if \(twins\.length\) \{ for \(const c of twins\) applySections\(c as any, \(c as any\)\._it \?\? it, distillShown\); \}/);
+  assert.match(FEED, /setSectionChoice\(id, choice === want \? "none" : want\);\s*\n\s*if \(!sectionHosts\(id\)\.length\) \{ applySections\(a, it, distillShown, env\); env\.afterApply\?\.\(a\); \}/); assert.match(FEED, /function reapplyHosts\(id: string\): void \{\s*\n\s*for \(const c of sectionHosts\(id\)\) \{\s*\n\s*const h = c as any; if \(!h\._it \|\| !h\._sectionEnv\) continue;\s*\n\s*applySections\(h, h\._it, !!h\._distillShown, h\._sectionEnv\);\s*\n\s*\(h\._sectionEnv as SectionEnv\)\.afterApply\?\.\(c\);/, "the setter re-applies every host of the item and runs the page's after-apply last (rounds two and three of the box content PR)");
+  assert.match(FEED, /askEls\.set\(e\.ask\.itemId, card\);\s*\n\s*registerSectionHost\(e\.ask\.itemId, card\);/, "the board card joins the item\'s host set"); assert.match(FEED, /fsAskEls\.set\(e\.ask\.itemId, card\);\s*\n\s*registerSectionHost\(e\.ask\.itemId, card\);/, "and the focused copy");
 });
 
 // ── feed.css: the section's rules, through the variables ─────────────────────────────────────────────

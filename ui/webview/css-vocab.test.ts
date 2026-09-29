@@ -269,7 +269,7 @@ test("the Needs you box's rules (.ntc-, #notices) draw their colours from the to
     || /^1px solid var\(--[a-z-]+\)$/.test(v) || /^linear-gradient\(var\(--[a-z-]+\), var\(--[a-z-]+\)\), var\(--[a-z-]+\)$/.test(v)   // the header's opaque ground, in tokens
     || v === "none";   // no colour literal: the destructive red is the per-theme --deny token and the filled deny's text its --deny-fg (the manager's read of PR 2039)
   for (const rule of rules) for (const [, v] of decls(rule)) assert.ok(vocab(v), "a box colour outside the vocabulary: " + rule.trim());
-  assert.match(CHAT, /\.ntc-head \{[^}]*background: linear-gradient\(var\(--box-bg\), var\(--box-bg\)\), var\(--bg\); \}/, "the header's opaque ground is the box wash over the page, in tokens");
+  assert.match(CHAT, /\.ntc-bar \{[^}]*background: linear-gradient\(var\(--box-bg\), var\(--box-bg\)\), var\(--bg\); \}/, "the header bar's opaque ground is the box wash over the page, in tokens");
   for (const [name, css, sel] of [["styles.css", CHAT, ".ntc-btn.ntc-ok"]] as const) {   // the feed's fq-ok twin left with the rule no element wore (the second contributor's post-merge note on PR 2014)
     const rule = css.split("\n").find((l) => l.startsWith(sel + " {")) || "";
     assert.ok(rule.includes("border-color: color-mix(in srgb, var(--accent) 90%, transparent)"), name + ": the ok button's border is the accent's own on both themes, at the share that clears the 3:1 non-text floor on the light theme: " + rule);

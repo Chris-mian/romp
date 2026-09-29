@@ -331,14 +331,19 @@ def _no_model_catalog_fetch():
 os.environ["ROMP_CLI_SCOPE"] = "0"
 _CLI_SCOPE_LIMIT_VARS = ("ROMP_CLI_SCOPE_MEMORY_MAX", "ROMP_CLI_SCOPE_MEMORY_HIGH", "ROMP_CLI_SCOPE_MEMORY_SWAP_MAX",
                          "ROMP_CLI_SCOPE_OOM_SCORE_ADJ")
-for _v in _CLI_SCOPE_LIMIT_VARS:
+# The Extra models switch's declaration (2026-09-21): a developer's shell exporting ROMP_ROUTER_MODELS (and a listing
+# URL) would otherwise reach every lab kernel — any module that dispatches a real setRouterModels gesture (the setting
+# enumerators do) would install the operator's families mid-suite and fetch the gateway's list live. Floored unset at
+# import and per test, like the scope limits; tests/test_router_models.py sets them per test with a cleanup.
+_ROUTER_ENV_VARS = ("ROMP_ROUTER_MODELS", "ROMP_ROUTER_MODELS_URL")
+for _v in _CLI_SCOPE_LIMIT_VARS + _ROUTER_ENV_VARS:
     os.environ.pop(_v, None)
 
 
 @pytest.fixture(autouse=True)
 def _no_cli_scope():
     os.environ["ROMP_CLI_SCOPE"] = "0"
-    for v in _CLI_SCOPE_LIMIT_VARS:
+    for v in _CLI_SCOPE_LIMIT_VARS + _ROUTER_ENV_VARS:
         os.environ.pop(v, None)
     # The CLI-binary floor above, re-asserted per test for the same reason as the scope's: a test module's module-level
     # write executes at COLLECTION and would hold for every test after it. tests/test_login_flow.py once set its mock CLI

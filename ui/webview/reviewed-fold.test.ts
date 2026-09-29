@@ -10,8 +10,8 @@ import * as path from "node:path";
 import { distillStaleNote } from "../../ui/webview/distiller-line";
 
 const W = (f: string) => fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", f), "utf8");
-const FEED = W("feed.ts");
-const FEEDCSS = W("feed.css");
+const FEED = W("feed.ts") + W("card-sections.ts");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
+const FEEDCSS = W("feed.css") + W("card-sections.css");   // the card's sections moved to a sheet both pages import (plans/needs-you.md)
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "bin", "romp-kernel"), "utf8");
 const JUDGE = fs.readFileSync(path.resolve(process.cwd(), "..", "bin", "romp-judge"), "utf8");
 

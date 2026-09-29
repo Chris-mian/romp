@@ -70,7 +70,8 @@ test("stripGroupRows defaults ON: every tag group on its own row; an explicit fa
 // `!== false` is only the GUARD around it, keeping a chosen false off and coercing a non-boolean stored value to a real
 // boolean. The EXISTING key is kept, not a fresh one: no writer ever merged the old default into stored profiles (the
 // gear's load() defaults exclude the key, no webview saveSettings caller, broadcastSettings/installSettingsSync write
-// the stored object as-is), so a stored false is always a chosen off, and a fresh key would only discard it.
+// the stored object as-is, and feed.ts setViewPref is a raw read-modify-write of its own feed keys that never touches the
+// whole object), so a stored false is always a chosen off, and a fresh key would only discard it.
 test("tabStateBadge defaults ON (the badge is the default): absent reads on, a chosen false stays off through a save and a settings-sync write, a literal true stays on", () => {
   assert.equal(DEFAULT_SETTINGS.tabStateBadge, true);
   delete store["romp:settings"];

@@ -37,7 +37,7 @@ T0 = NOW - 3600
 def _norm(store):
     """A store's content as plain JSON with the forensic arrival stamps dropped: record_verdict stamps `at`
     from the clock at replay time, so two loads a second apart differ there and nowhere else."""
-    out = json.loads(json.dumps({k: v for k, v in store.items() if k != "_baseRev"}))
+    out = json.loads(json.dumps({k: v for k, v in store.items() if k not in ("_baseRev", "_baseSrc")}))   # the writer's transient base reference beside the CAS base
     for nd in (out.get("nodes") or {}).values():
         for e in nd.get("log") or []:
             e.pop("at", None)
@@ -106,7 +106,9 @@ class SharedStoreCache(unittest.TestCase):
         self.assertEqual(_norm(shared), _norm(writer), "same guard, same replay, same rollup")
         self.assertEqual(shared["_baseRev"], writer["_baseRev"], "the CAS base rides the shared view too, so a "
                          "shallow copy handed to save_goals still meets the CAS")
-        self.assertEqual(json.dumps(shared), json.dumps(writer), "json.dumps sees a plain store")
+        plain = lambda st: {k: v for k, v in st.items() if k not in jd._NONCONTENT_KEYS}   # the writer alone carries its transient base reference
+        self.assertEqual(json.dumps(plain(shared)), json.dumps(plain(writer)), "json.dumps sees a plain store, the same content")
+        self.assertEqual(json.loads(json.dumps(writer)).get("_baseSrc"), {}, "and a loaded writer store still serializes whole, its reference as exactly an empty object (the round-two verifier of PR 2115: a first-character check was tautological)")
         nid = self._nid(1)
         self.assertIsInstance(shared, dict)
         self.assertIsInstance(shared["nodes"][nid], jd.GuardedNode)
@@ -804,6 +806,113 @@ class WriterParseMemo(unittest.TestCase):
         self.assertEqual(jd.raw_store_stats()["entries"], 2)
         self.assertEqual(jd._raw_store_evict_unowned(set()), 2, "no owner at all: every entry goes")
         self.assertEqual(jd.raw_store_stats()["entries"], 0)
+
+    def _versions(self, n):
+        """Publish `n` versions through the writer, loading each (a load rolls the memo past the version it held, a publish keeps
+        its text): the path's history fills."""
+        for i in range(n):                           # loop-ok: bounded by the caller
+            w = jd.load_goals(SID); w["nodes"]["%s:g1" % SID]["parentId"] = "V%d" % i; jd.save_goals(SID, w)
+
+    def _held(self, path_s):
+        """(read versions, published texts) the memo keeps for `path_s`, read from the two deques themselves: a premise or a drop that reads the
+        behaviour, not a gauge key (the round-three verifier of PR 2101: three pins were red at the earlier head on a missing key, not on the
+        surviving history). The published deque is absent on the heads before round four, which held the texts in the readers' deque."""
+        with jd._RAW_STORE_LOCK:
+            return (len(jd._RAW_HISTORY.get(path_s, ())), len(getattr(jd, "_RAW_PUBLISHED", {}).get(path_s, ())))
+
+    def test_the_bytes_gauge_covers_the_history(self):
+        """The second contributor's pre-merge review of PR 2101: the history stood outside the gauge, three versions of a deleted
+        3.3 MB store at 0 bytes. Every history version's parse or text counts beside the entries' text and pickle."""
+        p = self._seed()
+        self._versions(2)
+        self.assertGreater(sum(self._held(str(p))), 0, "premise: the path holds kept versions")
+        s = jd.raw_store_stats()
+        with jd._RAW_STORE_LOCK:   # the payloads by position, so the read at an earlier head (pairs, or triples with the text beside the parse) counts the same bytes
+            memo = sum(len(e[1]) + len(e[2]) for e in jd._RAW_STORE.values())
+            hist = sum(len(x) for dq in jd._RAW_HISTORY.values() for e in dq for x in e[1:] if x) + sum(len(t) for dq in getattr(jd, "_RAW_PUBLISHED", {}).values() for _i, t in dq)
+        self.assertGreater(hist, 0)
+        self.assertEqual(s["bytes"], memo + hist, "bytes is the entries' text and pickle plus every kept version, a parse or a text (before: the entries alone)")
+        self.assertEqual((s["history"], s["published"]), self._held(str(p)), "the two counts are the deques' lengths")
+
+    def test_the_history_goes_with_the_path_on_forget(self):
+        """Unparseable bytes at the path drop its entry (as before) and its history with it."""
+        p = self._seed()
+        self._versions(2)
+        self.assertGreater(sum(self._held(str(p))), 0, "premise: the path holds kept versions")
+        p.write_text("{not json")
+        self.assertEqual(jd.load_goals(SID)["nodes"], {}, "quarantined: the fresh store")
+        self.assertEqual(self._held(str(p)), (0, 0), "the kept versions went with the path (before: they survived every drop)")
+        s = jd.raw_store_stats()
+        self.assertEqual((s["entries"], s["history"], s["published"], s["bytes"]), (0, 0, 0, 0), "and the gauge says so")
+
+    def test_the_history_goes_with_the_path_on_the_absent_eviction(self):
+        """A deleted store's history is dropped by the compaction sweep's absent eviction, with the gauge following (before: three versions
+        kept after both evictions, at 0 bytes on the gauge)."""
+        p = self._seed()
+        self._versions(2)
+        self.assertGreater(sum(self._held(str(p))), 0, "premise: the path holds kept versions")
+        p.unlink()
+        self.assertEqual(jd._raw_store_evict_absent(), 1, "one path dropped")
+        self.assertEqual(self._held(str(p)), (0, 0), "the kept versions went with the path (before: they survived every drop)")
+        s = jd.raw_store_stats()
+        self.assertEqual((s["entries"], s["history"], s["published"], s["bytes"]), (0, 0, 0, 0), "and the gauge says so")
+        self.assertEqual(jd._raw_store_evict_absent(), 0, "nothing left to drop")
+
+    def test_the_history_goes_with_the_path_on_the_unowned_eviction(self):
+        """The unowned eviction drops a path's history beside its entry; the owned path keeps both."""
+        sid2 = "77777777-8888-4999-aaaa-cccccccccccc"
+        self._seed()
+        s = {"rompUuid": sid2, "seq": 0, "placementsV": jd.PLACEMENTS_V, "nodes": {}, "placements": {}, "status": {}}
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "Another session's goal"}], [])
+        jd.rollup_status(s, session_closed=False)
+        jd.save_goals(sid2, s)
+        self._versions(2)
+        w = jd.load_goals(sid2); w["nodes"]["%s:g1" % sid2]["parentId"] = "theirs"; jd.save_goals(sid2, w)
+        jd.load_goals(sid2)                          # rolls the memo past the version above: a read version kept at any head (the premise holds where the published texts are not kept)
+        p2 = str(jd.GOALDIR / (sid2 + ".json")); p1 = str(jd.GOALDIR / (SID + ".json"))
+        own = self._held(p1)
+        self.assertGreater(sum(self._held(p2)), 0, "premise: the unowned path holds kept versions")
+        self.assertGreater(sum(own), 0, "premise: the owned path holds kept versions")
+        self.assertEqual(jd._raw_store_evict_unowned({SID}), 1, "the path no discovered session owns is dropped")
+        self.assertEqual(self._held(p2), (0, 0), "its kept versions went with it (before: they survived every drop)")
+        self.assertEqual(self._held(p1), own, "the owned path's stand")
+        st = jd.raw_store_stats()
+        self.assertEqual((st["entries"], st["history"], st["published"]), (1,) + own)
+
+    def test_a_publish_keeps_its_text_beside_the_readers_slots_and_a_read_moves_the_version_to_its_parse(self):
+        """The second contributor's pre-merge review of PR 2101: only a read filled the raw memo, so a writer's own published version was
+        not findable as its next base. A publish keeps the text it wrote under the written identity in a deque of its own, beside the
+        readers' history and never in it (the round-three verifier: in one deque a publish evicted a concurrent holder's read base a cycle
+        early); the read that rolls the memo past that version keeps its parse in the readers' history and drops the text."""
+        p = self._seed()                             # the seed's publish: one published text, no read version
+        path_s = str(p); seed = self._ident(p)
+        with jd._RAW_STORE_LOCK:
+            pub = list(jd._RAW_PUBLISHED.get(path_s, ())); hist = list(jd._RAW_HISTORY.get(path_s, ()))
+        self.assertEqual(([(i == seed, isinstance(t, str)) for i, t in pub], hist), ([(True, True)], []), "the published version's text under the identity the rename carried, the readers' history empty")
+        self.assertEqual(jd._base_nodes(path_s, seed)["%s:g1" % SID]["text"], "A goal", "found as a base without any read")
+        jd.load_goals(SID)                           # the memo now holds this version (and drops its published text: the memo stands for it)
+        w = jd.load_goals(SID); w["nodes"]["%s:g1" % SID]["parentId"] = "V1"; jd.save_goals(SID, w)   # a second published text
+        with jd._RAW_STORE_LOCK:
+            pub = [i for i, _t in jd._RAW_PUBLISHED.get(path_s, ())]
+        self.assertEqual(pub, [self._ident(p)], "the later publish's text stands, the seed's gone with the read that took it")
+        jd.load_goals(SID)                           # rolls the memo past the seed's version: its parse to the readers' history; the memo takes V1 and drops its text
+        with jd._RAW_STORE_LOCK:
+            pub = list(jd._RAW_PUBLISHED.get(path_s, ())); hist = list(jd._RAW_HISTORY.get(path_s, ()))
+        self.assertEqual([i for i, _b in hist], [seed], "the seed's version is held as its parse in the readers' history")
+        self.assertEqual(pub, [], "no published text stands for a version the memo or the readers' history holds")
+        self.assertEqual(jd._base_nodes(path_s, seed)["%s:g1" % SID]["text"], "A goal", "still found, from the parse now")
+
+    def test_a_read_of_a_published_version_drops_its_text_the_memo_now_stands_for_it(self):
+        """The round-four verifier of PR 2101: the read dropped a published text only for the version the memo rolled PAST, never for the one
+        it just took, so the memo's current version kept a duplicate text in the published deque (the store's size again per path). The read
+        that fills the memo with a published version drops that version's text; the base is still found, from the memo."""
+        p = self._seed(); path_s = str(p); seed = self._ident(p)
+        self.assertEqual(self._held(path_s), (0, 1), "premise: the seed's publish kept its text")
+        jd.load_goals(SID)                           # the memo takes the seed's version
+        self.assertEqual(self._held(path_s), (0, 0), "its published text is gone: the memo's text and parse stand for it (before: a duplicate)")
+        self.assertEqual(jd._base_nodes(path_s, seed)["%s:g1" % SID]["text"], "A goal", "and the base is found, from the memo")
+        s = jd.raw_store_stats()
+        self.assertEqual((s["entries"], s["published"]), (1, 0))
 
     def test_a_read_fault_raises_as_before_and_nothing_is_remembered(self):
         p = self._seed()

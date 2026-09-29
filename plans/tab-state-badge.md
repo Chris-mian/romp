@@ -142,3 +142,24 @@ The retrying ring stays in ring mode (byte-identical to today); the left-dot ret
   (red at the old offsets) and, with a hot key seeded on the needs-you tabs, the keycap left of the badge box in both
   themes and both chromes (red with no widen rule). The kernel's mobile `.m-badge` is a `position:static` reserve-room
   flow item, not this absolute corner dot, so it is untouched.
+
+- 2026-09-24 (the keycap-width fix, carrying the PR 2096 and PR 2080 post-merge reviews): the keycap widen was gated on
+  the NON-EMPTY count badge (`.tab:has(.tab-key):has(.tab-badge:not(:empty))`), so a keycap tab's width flipped by 14px
+  (12px dense) each time its Needs-you count appeared or cleared, and at a wrap-boundary viewport the strip gained or lost
+  a row and the transcript slid under the reader: a T262g violation (a tab's width must not change with its state). The
+  "Shape and place" note above and pin 1 meant the DOT never changes the tab's size, but the count-gated keycap reserve
+  did. FIX: the reserve moves to the KEYCAP ALONE (`#tabs.badge-keycap-room .tab:has(.tab-key)`, dense the same), under a
+  strip-level class the strip carries only in badge mode with the Needs-you widget on (render.ts renderTabs, following
+  applyTabBadgeMode's own gate). So a keycap tab's width changes only on a USER action (a hot key, the mode, the widget),
+  never as a count appears or clears; ring mode and the widget off carry NO reserved room, so the pre-badge strip stays
+  the lab's reference. Pin 1 now also covers a keycap tab: the served lab asserts an idle keycap tab reserves the room in
+  badge mode (21px/17px) and reads the bare 7px/5px in ring mode and with the widget off, that a count flip on a keycap
+  tab moves neither its width nor `#tabbar`'s height at a wrap viewport, and the gear.css demo twin keeps the demo keycap
+  left of the badge. The DENSE badge inset returns to 1px (PR 2023's measured reason: the hover-lifted close glyph
+  overpaints less of the digits, about 7% of a dense "12" at 1px against 11% at 2px; the 2px of 2026-09-22 partly undid it).
+
+- 2026-09-24 (a carried PR 2080 point): the retrying shape cue reaches two more surfaces that separated retrying from
+  working by colour alone: the tag-overview row pip (`.snap-pip.retrying`) and the collapsed-group header pip
+  (`.tab-group-pip.retrying`) are now HOLLOW amber rings, not filled amber discs, so form tells them from the filled
+  working gold and awaiting green pips they sit beside (the pips reuse the tab dot's tokens, so the recorded deficiency
+  figures apply: light retrying-vs-working 3.3, dark retrying-vs-awaiting 2.7 on the overview). Pinned in theme-parity.test.ts.

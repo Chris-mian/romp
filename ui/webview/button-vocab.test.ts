@@ -17,7 +17,7 @@ import * as path from "node:path";
 
 const read = (f: string) => fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", f), "utf8");
 const CHAT = read("styles.css");
-const FEED = read("feed.css");
+const FEED = read("feed.css") + read("card-sections.css");   // the card's sections moved to a sheet both pages import (plans/needs-you.md)
 const GEAR = read("gear.css");
 
 const TOKENS: Array<[string, string]> = [

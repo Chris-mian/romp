@@ -81,7 +81,7 @@ test("executed: a peer's LENS change arriving on the kernel's tabOrder frame rev
   assert.match(ato, /\n  renderTabs\(\);\s*\n\s*syncTabKeysWithStrip\(\);\s*\n\}/, "applyTabOrder ends in the bare repaint that carries the reveal");
 });
 
-test("executed: the phone/desktop media flip empties the folded set and the repaint re-arms for the tabs it reveals (round three, medium 2)", () => {
+test("executed: the phone/desktop media flip repaints bare, and since the phone folds like the desktop (2026-09-23) it reveals nothing and arms nothing (round three, medium 2)", () => {
   // the listener, extracted and run with stubs: one bare repaint (under rounds two and three it would have needed to re-arm itself)
   const line = RENDER.split("\n").find((l) => l.includes('matchMedia(PHONE_LAYOUT_MEDIA).addEventListener("change"'));
   assert.ok(line, "the media-flip listener exists");
@@ -91,20 +91,22 @@ test("executed: the phone/desktop media flip empties the folded set and the repa
   new Function("window", "PHONE_LAYOUT_MEDIA", "renderTabs", line)({ matchMedia: () => mql }, PHONE_LAYOUT_MEDIA, () => { repaints++; });
   assert.ok(box.h, "the handler is installed on the media query list");
   box.h!(); assert.equal(repaints, 1, "the flip repaints the strip, bare");
-  // the same flip over one store state: the api section folded on the desktop, flat on the phone
+  // the same flip over one store state: the api section folded on the desktop AND on the phone (until 2026-09-23 the phone
+  // folded nothing, and this flip revealed the folded tabs; the reveal detector still runs inside that bare repaint)
   const st = setSectionCollapsed({ ...parseTabGroups(null), on: true }, "api", true);
   const visible = ["w1", "a1", "a2", "a3"];
   const desktop = planStrip(visible, UNIONS, st, "w1", false, null), phone = planStrip(visible, UNIONS, st, "w1", true, null);
   assert.deepEqual([...desktop.folded].sort(), ["a1", "a2"], "control: the desktop plan folds the api tabs away");
-  assert.deepEqual([...phone.folded], [], "control: the phone plan folds nothing (sectioning is desktop-only)");
+  assert.deepEqual([...phone.folded].sort(), ["a1", "a2"], "…and the phone plan folds the same ones");
   const det = detector();
   const onDesktop = paint(det, visible, desktop, new Set(["w1", "a3"]));
   assert.equal(onDesktop.armed, 0, "the desktop paint over the same shown set arms nothing");
   const onPhone = paint(det, visible, phone, onDesktop.shown);
-  assert.equal(onPhone.armed, 1, "the flip to the phone reveals a1 and a2: one arm");
-  assert.deepEqual([...onPhone.shown], visible, "every visible id shown");
-  const back = paint(det, visible, desktop, onPhone.shown);
-  assert.equal(back.armed, 0, "the flip back folds them again: no arm");
+  assert.equal(onPhone.armed, 0, "the flip to the phone reveals nothing: no arm");
+  assert.deepEqual([...onPhone.shown].sort(), ["a3", "w1"], "the same tabs shown");
+  // …while a fold the phone's own picker opens IS a reveal, and the repaint that carries it arms
+  const opened = planStrip(visible, UNIONS, setSectionCollapsed(st, "api", false), "w1", true, null);
+  assert.equal(paint(det, visible, opened, onPhone.shown).armed, 1, "the picker's heading opens api: a1 and a2 revealed, one arm");
 });
 
 test("executed: a rename crossing a standing #only= filter reveals the tab through the renamed frame's bare repaint (round three, low 1)", () => {

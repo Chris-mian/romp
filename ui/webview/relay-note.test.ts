@@ -12,8 +12,8 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
-const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.ts"), "utf8");   // the card's sections, tree and badges moved to card-sections.ts, one builder with the Needs you row (plans/needs-you.md)
+const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8") + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "card-sections.css"), "utf8");   // the card's note rule moved to the sheet both pages import (the Needs you row draws the same line)
 
 test("the card item and the modal tree node both carry relayNote from the kernel", () => {
   assert.equal((FEED.match(/^  relayNote\?: string \| null;/gm) || []).length, 2);
@@ -23,9 +23,9 @@ test("the card's note is its own element beside the sections, outside them, set 
   const made = FEED.indexOf('rn = el("div", "fask-distill fask-relaynote");');
   assert.ok(made > 0, "the note has its own element (the distill line's look), created once");
   assert.ok(FEED.includes("anchor.parentNode!.insertBefore(rn, anchor.nextSibling);"), "inserted beside the sections, never inside them or the distill element");
-  const sections = FEED.indexOf("applySections(a, it, !!distillShown);");
+  const sections = FEED.indexOf("applySections(a, it, !!distillShown, sectionEnv);");   // the card's sections moved to card-sections.ts (plans/needs-you.md, one builder with the Needs you row)
   assert.ok(sections > 0 && made > sections, "set after the section logic runs, so nothing re-hides it");
-  const body = FEED.slice(FEED.indexOf("function applySections("), FEED.indexOf("\nfunction updateAskCard("));
+  const body = FEED.slice(FEED.indexOf("export function applySections("), FEED.indexOf("\nexport const BADGE_WORDS"));   // the builder's whole body in card-sections.ts
   assert.ok(body.length > 1000 && !body.includes("_relayNote"), "the section logic never touches the note's element");
   assert.doesNotMatch(FEED, /\(a\._distill as HTMLElement\)\.append\(rn\)/, "never appended into the distill element again");
   assert.doesNotMatch(FEED, /blockSummary[^\n]*relayNote|relayNote[^\n]*blockSummary/, "never folded into the brief's text");

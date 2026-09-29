@@ -95,9 +95,10 @@ test("the pulse is exchange-scoped (T102): send-gesture latch, reply-record clea
 });
 test("a family click sends the kernel's alias default; a version the seed table lacks renders LOUDLY as new", () => {
   // the family row's label is the family's OWN label — never a version-table lookup — so an alias
-  // default ("fable") renders the same as a pinned id did; the ✓ matches on the leading word
+  // default ("fable") renders the same as a pinned id did; the ✓ matches on the leading word or the whole badge
+  // (a declared gateway id shows verbatim), both sides downcased — current-meta-tick.test.ts executes the rule
   assert.match(RENDER, /item\.textContent = c\.label;/);
-  assert.match(RENDER, /return \(st\.model \|\| ""\)\.toLowerCase\(\)\.startsWith\(value\);/);
+  assert.match(RENDER, /return !!v && \(cur === v \|\| cur\.startsWith\(v \+ " "\)\);/);
   // a version a running session's CLI reported that no seed table lists (kernel /models `learned`)
   // is offered AND marked, per the fail-loudly rule — a stale menu would hide a live model
   assert.match(RENDER, /learned\?: boolean/);
