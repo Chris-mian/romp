@@ -340,7 +340,7 @@ class OpeningMessage(unittest.TestCase):
 
     def test_the_file_frame_still_strips_to_the_comment_alone(self):
         body = km._comment_first_message("a passage", "just my comment", src="~/notes/x.md")
-        self.assertEqual(km._comment_strip_frame(body), "just my comment")
+        self.assertEqual(km._comment_strip_frame(body, "~/notes/x.md"), "just my comment")
 
 
 # ── the transcript → popover projection ───────────────────────────────────────────────────────────
@@ -688,6 +688,21 @@ class ThreadProjection(CommentBase):
                 km._thread_messages = saved_m
         finally:
             km._thread_events = saved
+
+    def test_the_frame_reads_a_file_threads_messages_by_its_file(self):
+        records = self._thread_records()
+        self._seed_thread(records=records)
+        with km._comments_lock:
+            data = km._load_comments(PARENT)
+            data["threads"][0]["src"] = "~/notes/a.md"
+            km._save_comments(PARENT, data)
+        saved, asked = km._thread_messages, []
+        km._thread_messages = lambda *a, **k: asked.append(k.get("src")) or []
+        try:
+            self._frame_thread(records, state="")
+        finally:
+            km._thread_messages = saved
+        self.assertEqual(asked, ["~/notes/a.md"])
 
     def test_a_fresh_thread_owes_a_reply_from_its_first_frame(self):
         # (vii)'s kernel half: pre-fork (reg still carries forkOf) the projections are empty by design —
@@ -1575,7 +1590,7 @@ class CommentOps(CommentBase):
         _, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why?")
         km._comment_resolve(PARENT, tid)
         saved = km._thread_messages
-        km._thread_messages = lambda tsid, cut, floor_t=0: [{"who": "user", "text": "the ask", "t": 5},
+        km._thread_messages = lambda tsid, cut, floor_t=0, src="": [{"who": "user", "text": "the ask", "t": 5},
                                                              {"who": "assistant", "text": "the answer", "t": 6}]
         try:
             self.assertIsNone(km._comment_merge(PARENT, tid))
@@ -2022,9 +2037,16 @@ class FileCommentText(unittest.TestCase):
 
     def test_only_a_framed_file_head_is_stripped(self):
         framed = km._comment_first_message("Kept gates:", "still true?", "~/notes/a.md")
-        self.assertEqual(km._comment_strip_frame(framed), "still true?")
+        self.assertEqual(km._comment_strip_frame(framed, "~/notes/a.md"), "still true?")
         plain = "About this part of the plan: I think\nwe should cut scope."
-        self.assertEqual(km._comment_strip_frame(plain), plain, "a plain two-line opener keeps its first line")
+        self.assertEqual(km._comment_strip_frame(plain, "~/notes/a.md"), plain, "a plain two-line opener keeps its first line")
+
+    def test_the_strip_keys_on_the_rows_own_file(self):
+        """A file-shaped head on a row that names no file, or another file, is the user's own text."""
+        opener = "About this part of ~/notes/b.md:\n\n> quoted by hand\n\nmy words"
+        self.assertEqual(km._comment_strip_frame(opener), opener, "a chat thread's row names no file")
+        self.assertEqual(km._comment_strip_frame(opener, "~/notes/a.md"), opener, "the row names another file")
+        self.assertEqual(km._comment_strip_frame(opener, "~/notes/b.md"), "my words")
 
     def test_a_relay_of_a_file_thread_names_the_file(self):
         body = km._merge_body("Kept gates:", [{"who": "you", "text": "cut it"}], "~/notes/a.md")

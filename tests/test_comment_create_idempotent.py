@@ -165,15 +165,16 @@ class CreateIsIdempotent(unittest.TestCase):
         return self._drive({"type": "commentCreate", "id": PARENT, "uuid": "", "exact": "Kept gates:",
                             "text": text, "src": "~/notes/decisions.md", "createId": "c-file-1"})
 
-    def test_a_file_passage_create_with_no_uuid_mints_a_thread_anchored_at_the_tip(self):
-        """A FILE passage carries a src and no message uuid; its thread is anchored at the conversation
-        tip, so the row is one the chat can open, and the opener names the file."""
+    def test_a_file_passage_create_with_no_uuid_mints_a_thread_anchored_at_the_last_chat_event(self):
+        """A FILE passage carries a src and no message uuid; its thread is anchored at the last chat event,
+        so the row is one the chat can open, and the opener names the file. The attachment-tip test below
+        tells that event apart from the transcript's leaf."""
         sends = []
         self.be.send = lambda sid, text: sends.append(text) or True
         self._file_create()
         rows = self._rows()
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["anchorUuid"], "a1", "the tip, so the thread row is openable")
+        self.assertEqual(rows[0]["anchorUuid"], "a1", "the last chat event, so the thread row is openable")
         self.assertEqual(rows[0]["cutUuid"], "", "still a tip fork: the whole conversation")
         self.assertEqual(rows[0]["src"], "~/notes/decisions.md")
         self.assertEqual([a["uuid"] for a in self._acks()], [""], "the ack keeps the file viewer's empty uuid")
@@ -208,8 +209,8 @@ class CreateIsIdempotent(unittest.TestCase):
         self.assertEqual({f.get("createId") for f in self.sent if f["type"] != "comments"}, {"c-file-1"})
         self.assertEqual(km._SDK_PROBLEM_SEQ[0], before + 1)
         text = km._SDK_BOOT_PROBLEMS[-1]["text"]
-        self.assertTrue(text.startswith("A comment on ~/notes/decisions.md was not started ("), text)
-        self.assertIn("spawn refused", text)
+        self.assertTrue(text.startswith("A comment on ~/notes/decisions.md in web was not started, so its "
+                                        + "thread was removed. Reason: spawn refused."), text)
         self.assertTrue(text.endswith("Your words: Which of these still matter?"), text)
 
     def test_a_failure_the_socket_cannot_take_is_still_recorded(self):
@@ -221,6 +222,22 @@ class CreateIsIdempotent(unittest.TestCase):
         before = km._SDK_PROBLEM_SEQ[0]
         self._file_create()
         self.assertEqual(km._SDK_PROBLEM_SEQ[0], before + 1)
+
+    def test_a_thread_between_its_row_and_its_fork_is_owed_not_broken(self):
+        """A push landing after the row save and before the fork's registry entry reads the thread as
+        starting: no "unreadable" line, which would spend the latch a real loss needs."""
+        seen = []
+
+        def on_row(tid):
+            buf = io.StringIO()
+            with contextlib.redirect_stderr(buf):
+                seen.append(km._thread_owes_first_reply(tid, km._thread_reg(tid), {"cutUuid": "a1"}, []))
+            seen.append(buf.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()):
+            err, tid = km._comment_create(PARENT, "a1", "exponential backoff", "why?", on_row=on_row)
+        self.assertIsNone(err)
+        self.assertEqual(seen, [True, ""])
+        self.assertNotIn(tid, km._threads_starting, "settled once the create returns")
 
     def test_the_file_road_ack_carries_no_frame(self):
         """The thread has no registry entry yet at the early ack, so a frame would read it as unreadable."""
@@ -238,6 +255,22 @@ class CreateIsIdempotent(unittest.TestCase):
         self.assertEqual(self._acks(), [])
         self.assertEqual(self._fails(), [("c-file-1", km.FILE_COMMENT_NO_ANCHOR)])
         self.assertEqual(self._warns(), [], "the refusal reaches its own box alone")
+
+    def test_a_file_refusal_before_the_row_keeps_the_words_in_the_error_center(self):
+        """The box may be closed by the time the refusal lands, so the words must survive somewhere."""
+        km._built_chat.pop(PARENT, None)
+        real = km.build_session
+
+        def raising(*a, **k):
+            raise ValueError("torn line")
+        km.build_session = raising
+        self.addCleanup(setattr, km, "build_session", real)
+        before = km._SDK_PROBLEM_SEQ[0]
+        self._file_create(text="keep\nthese words")
+        self.assertEqual(km._SDK_PROBLEM_SEQ[0], before + 1)
+        self.assertEqual(km._SDK_BOOT_PROBLEMS[-1]["text"],
+                         "A comment on ~/notes/decisions.md in web was not saved. Reason: this conversation "
+                         + "could not be read, so the comment was not saved. Your words: keep these words")
 
     def test_the_anchor_is_read_from_the_pushers_last_build(self):
         km._built_chat[PARENT] = ("sig", {"id": PARENT, "events": [{"uuid": "u1"}, {"uuid": "b7"}]}, "", None)
@@ -270,7 +303,7 @@ class CreateIsIdempotent(unittest.TestCase):
             raise RuntimeError("spawn refused\nexit status 1")
         self.be.fork = boom
         self._file_create()
-        self.assertIn("(thread not created: spawn refused exit status 1)", km._SDK_BOOT_PROBLEMS[-1]["text"])
+        self.assertIn("Reason: spawn refused exit status 1.", km._SDK_BOOT_PROBLEMS[-1]["text"])
 
     def test_the_recorded_words_are_capped(self):
         self._boom_fork()
@@ -331,9 +364,10 @@ class CreateIsIdempotent(unittest.TestCase):
         """A refusal the user provoked is answered on the socket alone; nothing was acked, so nothing
         is recorded as a failed start."""
         before = km._SDK_PROBLEM_SEQ[0]
-        self._create(name="no spaces!")
+        self._create(name="no spaces!", create_id="c-chat")
         self.assertEqual(self._acks(), [])
         self.assertEqual(km._SDK_PROBLEM_SEQ[0], before)
+        self.assertEqual(len(self._warns()), 1, "a chat create with a createId still gets its toast")
 
     def test_the_same_create_twice_yields_one_thread_and_two_acks_naming_it(self):
         self._create(); self._create()

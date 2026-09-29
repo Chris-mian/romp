@@ -41,7 +41,7 @@ class CommentMerge(unittest.TestCase):
         self.be = FakeBE()
         self._saved = (km.Sessions.backend_for, km._thread_messages, km._push_soon)
         km.Sessions.backend_for = staticmethod(lambda sid: self.be)
-        km._thread_messages = lambda tsid, cut, floor_t=0: [
+        km._thread_messages = lambda tsid, cut, floor_t=0, src="": [
             {"who": "user", "text": "should the cache be write-through?", "t": 1},
             {"who": "assistant", "text": "Yes; it removes the stale-read window.", "t": 2}]
         km._push_soon = lambda: None
@@ -77,8 +77,12 @@ class CommentMerge(unittest.TestCase):
             data = km._load_comments(PARENT)
             data["threads"][0]["src"] = "~/notes/a.md"
             km._save_comments(PARENT, data)
+        asked = []
+        km._thread_messages = lambda tsid, cut, floor_t=0, src="": asked.append(src) or [
+            {"who": "user", "text": "cut it", "t": 1}]
         self.assertIsNone(km._comment_merge(PARENT, TSID))
         self.assertIn("~/notes/a.md", self.be.sent[0][1])
+        self.assertEqual(asked, ["~/notes/a.md"], "the opener's head is stripped by the row's own file")
 
     def test_a_refused_handoff_reverts_the_latch_and_kills_nothing(self):
         # T315 (the commit-13 review's second item): the merge sent with the default and checked only for an
@@ -95,7 +99,7 @@ class CommentMerge(unittest.TestCase):
         self.assertEqual([u for _, _, u in self.be.sent], [True], "the merge speaks as the user")
 
     def test_nothing_to_merge_reverts_the_latch_loudly(self):
-        km._thread_messages = lambda tsid, cut, floor_t=0: []
+        km._thread_messages = lambda tsid, cut, floor_t=0, src="": []
         err = km._comment_merge(PARENT, TSID)
         self.assertIn("no discussion to send back", err or "")
         self.assertEqual(self._row().get("status"), "open", "the latch never sticks on a refusal")
@@ -126,7 +130,7 @@ class CommentMerge(unittest.TestCase):
         # …and the next relay sends ONLY messages past the floor
         base = km._thread_messages(TSID, "", 0)
         newer = base + [{"who": "user", "text": "one more thought", "t": (base[-1]["t"] if base else 0) + 10}]
-        km._thread_messages = lambda tsid, cut, floor_t=0: newer
+        km._thread_messages = lambda tsid, cut, floor_t=0, src="": newer
         self.assertIsNone(km._comment_merge(PARENT, TSID))
         self.assertEqual(len(self.be.sent), 3, "the relay + the reply + the tail-only relay")
         self.assertIn("one more thought", self.be.sent[-1][1])
