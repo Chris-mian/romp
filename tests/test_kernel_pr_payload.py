@@ -342,7 +342,7 @@ def test_the_judge_s_call_repos_read_the_meta_and_a_removed_tree_is_unknown(tmp_
     repo_of_call = km._pr_call_repos(key)
     assert repo_of_call("a") == REPO
     assert repo_of_call("b") is None and repo_of_call("unseen") is None
-    assert km.jd.PR_CALL_REPO is km._pr_call_repos
+    assert km.jd.PR_CALL_REPO.__name__ == "_pr_call_repos", "the kernel hands the judge its call-repo reader"   # by name: another module's kernel copy may have registered its own
 
 
 def test_the_payload_runs_the_poll_clock_for_its_repo(monkeypatch):
